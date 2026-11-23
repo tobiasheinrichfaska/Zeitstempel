@@ -5,6 +5,11 @@ wegen CORS nicht direkt erreichen. Er läuft mit Node 24 und nur mit `node:`-Mod
 Abhängigkeit zur Laufzeit. **Nicht ausgerollt:** es gibt kein Image und keine Einrichtung; das entscheidet
 der Betreiber.
 
+**Nicht im Paket:** Das Paket (`npm install git+…`) enthält nur die Bibliothek, `services.json` und `anchors/`
+(Feld `files` der `package.json`). Das Relay (`relay/`) und die Werkzeuge (`scripts/`: `make-key.ts`, `probe.ts`,
+`spike.ts`) gehören nur zum Repository: Wer das Relay betreibt oder einen Schlüssel erzeugt, klont das Repository
+und führt die Befehle dort aus (`npm install`, dann `npm run relay`).
+
 ## Start
 
 ```bash
@@ -161,14 +166,23 @@ Konfiguration des Betreibers, und ein privater Schlüssel soll nie neben ihr lie
 und darf für Gruppe und Andere **nicht schreibbar** sein (z. B. Modus 0644 oder 0600). Beim Start gibt das Relay eine
 Warnung (`{"event":"warning",…}` auf stderr, nur Pfad und Modus, kein Inhalt) aus, wenn Gruppe oder Andere die Datei
 schreiben können (Modus & 0o022; POSIX, unter Windows entfällt die Prüfung); das Relay startet trotzdem. Lesbarkeit
-ist unbedenklich. Ein Fehler beim Lesen nennt Pfad und Regelname, nie Inhalt. **Grenze der Warnung:** sie prüft nur die Datei selbst,
+ist unbedenklich. Ein Fehler beim Lesen nennt Pfad und Regelname und, wenn ein Eintrag fehlerhaft ist, dessen Index in `keys` (`id in keys[2]`), nie Inhalt. **Grenze der Warnung:** sie prüft nur die Datei selbst,
 nicht das Verzeichnis, in dem sie liegt, und nicht den Eigentümer; wer das Verzeichnis schreiben kann, kann die
 Datei ersetzen. Verzeichnis und Eigentümer sind Sache des Betreibers. Doppelte `id`s in den Schlüsseln, die dem Relay
 übergeben werden, sind ein Startfehler.
 
-**Schlüssel erzeugen:** `node scripts/make-key.ts <kennung>` schreibt in zwei Zeilen auf die Konsole (und in keine
-Datei) den **privaten** Schlüssel (PKCS#8, base64url; gehört nur der App, geheim halten) und den Eintrag
-`{id, publicKey}` für die Schlüsseldatei. `npm run probe` liest `RELAY_PRIVATE_KEY` (der private Schlüssel,
+**Schlüssel erzeugen** (im geklonten Repository): `node scripts/make-key.ts <kennung>` (gleichwertig:
+`npm run -s make-key -- <kennung>`) schreibt in zwei Zeilen auf die Konsole (und in keine Datei) den **privaten**
+Schlüssel (PKCS#8, base64url; gehört nur der App, geheim halten) und den Eintrag `{id, publicKey}` für die
+Schlüsseldatei; ein Hinweis dazu geht auf stderr. Beispiel (gekürzt):
+
+```text
+$ node scripts/make-key.ts app-1
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…        <- Zeile 1: privater Schlüssel, nur für die App
+{"id":"app-1","publicKey":"BAsY3mTq0…"}                  <- Zeile 2: Eintrag für die Schlüsseldatei
+```
+
+Zeile 2 kommt in `keys` der Schlüsseldatei: `{"version": 2, "keys": [<Zeile 2>]}`. `npm run probe` liest `RELAY_PRIVATE_KEY` (der private Schlüssel,
 base64url) und `RELAY_KEY_ID` aus der Umgebung und signiert damit.
 
 **Grenze:** Der private Schlüssel liegt in der App. Eine Web-App, die ihn im Browser hält, kann ihn nicht vor ihren
@@ -213,7 +227,7 @@ Dienste ergeben zusammen 16 (4 je Dienst bei 15 s).
      method: 'POST',
      path,
      body: new TextEncoder().encode(text),
-     nowMs: Date.now(),
+     nowMs: Date.now(), // Millisekunden, nicht Sekunden
    });
    if (!signed.ok) throw new Error(signed.reason);
    const res = await fetch(relay + path, {
@@ -222,6 +236,10 @@ Dienste ergeben zusammen 16 (4 je Dienst bei 15 s).
      body: text,
    });
    ```
+
+   **`nowMs` ist die Zeit in Millisekunden seit 1970 (`Date.now()`), nicht in Sekunden.** Die Bibliothek verlangt eine
+   endliche Zahl ab 1e11 (Bruchteile sind erlaubt); ein kleinerer Wert, etwa Sekunden, ergibt `bad-options`, damit
+   nicht stillschweigend eine Zeit im Jahr 1970 signiert wird.
 
    `signRelayRequest` wirft nie und weist nie ab: auch für feindliche Proxys als Eingabe, als `privateKey` oder als
    `body` (werfendes `getPrototypeOf`/`get`) gibt es einen Code (`bad-options`/`bad-key`). Jede Eingabe wird einmal
@@ -238,7 +256,10 @@ Dienste ergeben zusammen 16 (4 je Dienst bei 15 s).
    selbst mit; wem sie traut, entscheidet sie. `genTime` des Relays ist nur eine Anzeige: maßgeblich ist
    `value.genTime` der eigenen Prüfung.
 3. Bei `401`: Schlüssel, Kennung und die Uhr der App prüfen (±60 s); ein Wiederholungsversuch mit demselben
-   Kopf wird ebenfalls mit `401` abgelehnt. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder
+   Kopf wird ebenfalls mit `401` abgelehnt. **Eine weitere Ursache:** Der Kopf trägt die Zeit nur in ganzen
+   Sekunden; zwei Anfragen mit demselben Pfad und demselben Körper in derselben Sekunde ergeben dieselbe
+   Nachricht und die zweite wird als Wiederholung abgelehnt (`401`). Nach `502`/`504` (die Anfrage wurde
+   angenommen) deshalb **mindestens 1 s warten**, bevor man erneut signiert und sendet. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder
    fragen. Bei `502`/`504`/Netzwerkfehler: später
    noch einmal versuchen oder einen anderen Dienst nehmen; ein Fehlschlag ist kein Beweis für etwas.
 4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes und Hash aufbewahren; geprüft wird später
@@ -261,6 +282,25 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                               |
 | 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token                                               |
 | 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                       |
+
+## Lokal testen
+
+Ohne Netz und ohne echten Dienst, im geklonten Repository (am besten in einer eigenen Kopie, damit die
+mitgelieferte `services.json` unverändert bleibt):
+
+1. Einen **Stub-Dienst** bauen, der auf `127.0.0.1` lauscht, die Anfrage (`application/timestamp-query`) liest und
+   ein **gültig signiertes** Token zurückgibt, z. B. mit `openssl ts -reply -queryfile … -signer … -inkey …
+-chain …` (eigene Wurzel, Zeitstempel-Zertifikat mit der erweiterten Schlüsselverwendung `timeStamping`, kritisch).
+   Die aufgezeichneten Antworten unter `tests/fixtures/` taugen dafür **nicht**: das Relay wählt die Nonce selbst
+   und verlangt sie in der Antwort zurück, eine aufgezeichnete Antwort trägt eine andere.
+2. In der Kopie von `services.json` die Adresse eines Dienstes auf den Stub setzen (`http://127.0.0.1:<port>/`)
+   und unter `anchors` die PEM-Datei der eigenen Wurzel eintragen; diese Datei liegt in `anchors/`.
+3. Das Relay mit `RELAY_ALLOW_PLAIN_HTTP=1` starten (der Stub spricht http), mit `RELAY_AUTH=off` (nur Loopback)
+   oder mit einer Schlüsseldatei wie oben; dazu keine neuen Einstellungen: es sind dieselben wie im Betrieb.
+
+Der Test-Harness `tests/relay.test.ts` ist ein Beispiel für den Aufbau im selben Prozess: er ersetzt den Dienst
+durch eine Funktion (`upstream`) und legt die Nonce fest (`random`), damit die aufgezeichnete Antwort passt; für
+einen Stub über http gilt die Anleitung oben.
 
 ## Was das Relay prüft
 

@@ -227,8 +227,8 @@ describe('the package: what it ships can be reached', () => {
     expect(readme).toContain('zeitstempel/services.json');
     expect(readme).toContain('zeitstempel/anchors/');
   });
-  it('a Git install builds: `prepare` runs the build, and the build starts from an empty dist', () => {
-    expect(pkg.scripts['prepare']).toBe('npm run build');
+  it('a Git install builds: `prepare` builds when typescript is there, and the build starts from an empty dist', () => {
+    expect(pkg.scripts['prepare']).toBe('node scripts/prepare.mjs');
     expect(pkg.scripts['build']).toMatch(/^node scripts\/clean-dist\.mjs && tsc /);
     expect(readme).toContain('## Installieren');
   });

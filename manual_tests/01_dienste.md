@@ -35,7 +35,7 @@
 
 **Schlüssel:** Dieser Lauf braucht **keine** Schlüssel (das Relay läuft in demselben Prozess, mit einem Schlüsselpaar
 nur für diesen Lauf). Nur mit `--relay <url>` (ein laufendes Relay, das signierte Anfragen verlangt) müssen
-`RELAY_PRIVATE_KEY` (privater Schlüssel, wie ihn `npm run make-key -- <kennung>` in der ersten Zeile ausgibt) und
+`RELAY_PRIVATE_KEY` (privater Schlüssel, wie ihn `node scripts/make-key.ts <kennung>` in der ersten Zeile ausgibt) und
 `RELAY_KEY_ID` in der Umgebung stehen, nie auf der Kommandozeile.
 
 ## MT-03: Das Relay von außen ansprechen
@@ -64,8 +64,15 @@ nur für diesen Lauf). Nur mit `--relay <url>` (ein laufendes Relay, das signier
 
 **Schritte**
 
-1. Schlüsselpaar erzeugen: `npm run make-key -- test-app` (Ausgabe nur im Terminal). Zeile 1 ist der private
-   Schlüssel (nirgends ablegen, nicht ins Repo), Zeile 2 der Eintrag für die Schlüsseldatei.
+1. Schlüsselpaar erzeugen: `node scripts/make-key.ts test-app` (gleichwertig: `npm run -s make-key -- test-app`;
+   Ausgabe nur im Terminal). Zeile 1 ist der private Schlüssel (nirgends ablegen, nicht ins Repo), Zeile 2 der
+   Eintrag für die Schlüsseldatei, z. B. (gekürzt):
+
+   ```text
+   MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…
+   {"id":"test-app","publicKey":"BAsY3mTq0…"}
+   ```
+
 2. Eine Schlüsseldatei **außerhalb des Repos** (oder mit einem Namen, den `.gitignore` abdeckt, z. B.
    `relay-keys.json`) anlegen: `{"version": 2, "keys": [<Zeile 2>]}`.
 3. `RELAY_KEYS_FILE=relay-keys.json RELAY_ORIGINS=http://localhost:5178 npm run relay` starten.

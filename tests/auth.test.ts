@@ -49,6 +49,15 @@ describe('signRelayRequest', () => {
     expect(later.value.split('.')[2]).toBe(String(TS + 1));
     expect(accepts(later.value, 'POST', '/v1/stamp/freetsa', TS + 1, BODY)).toBe(true);
   });
+  it('takes fractions of milliseconds and the lower bound 1e11, but not seconds', async () => {
+    const frac = await signRelayRequest(input({ nowMs: NOW_MS + 0.25 }));
+    expect(frac.ok).toBe(true);
+    expect((await signRelayRequest(input({ nowMs: 1e11 }))).ok).toBe(true);
+    expect(await signRelayRequest(input({ nowMs: NOW_MS / 1000 }))).toEqual({
+      ok: false,
+      reason: 'bad-options',
+    });
+  });
   it('binds method, path, time and body: the signature is not valid for any other message', async () => {
     const r = await signRelayRequest(input());
     if (!r.ok) throw new Error(r.reason);
@@ -114,6 +123,10 @@ describe('signRelayRequest', () => {
       [{ body: 'text' }, 'bad-options'],
       [{ nowMs: Number.NaN }, 'bad-options'],
       [{ nowMs: -1 }, 'bad-options'],
+      [{ nowMs: Number.POSITIVE_INFINITY }, 'bad-options'],
+      [{ nowMs: Math.floor(NOW_MS / 1000) }, 'bad-options'], // seconds instead of milliseconds
+      [{ nowMs: 0 }, 'bad-options'],
+      [{ nowMs: 1e11 - 1 }, 'bad-options'],
     ];
     for (const [over, reason] of codes) {
       expect(await signRelayRequest(input(over)), JSON.stringify(over).slice(0, 40)).toMatchObject({

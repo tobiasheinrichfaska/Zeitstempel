@@ -36,10 +36,12 @@ export function publicKeyObject(point: Uint8Array): KeyObject | null {
  * Strict reader of the key file: `{"version": 2, "keys": [{"id", "publicKey"}]}` with 1 to 64 keys,
  * ids of the form `[a-z][a-z0-9-]{0,31}`, public keys as unpadded base64url of an uncompressed point
  * (65 bytes) that lies on the curve P-256, no duplicate id, no duplicate key, no other fields. The
- * failure carries a rule name, never content.
+ * failure carries a rule name and, for an entry, its index in `keys`, never content.
  */
 export function readKeyFile(data: unknown): Result<RelayKey[]> {
-  const bad = (rule: string) => fail('bad-key-file', rule);
+  // `index`: the position of the entry in `keys` (never its content)
+  const bad = (rule: string, index?: number) =>
+    fail('bad-key-file', index === undefined ? rule : `${rule} in keys[${index}]`);
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return bad('not-an-object');
   const top = data as Record<string, unknown>;
   if (Object.keys(top).sort().join() !== 'keys,version') return bad('fields');
@@ -50,18 +52,19 @@ export function readKeyFile(data: unknown): Result<RelayKey[]> {
   const keys: RelayKey[] = [];
   const ids = new Set<string>();
   const points = new Set<string>();
-  for (const entry of top.keys as unknown[]) {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return bad('entry');
+  for (const [index, entry] of (top.keys as unknown[]).entries()) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
+      return bad('entry', index);
     const e = entry as Record<string, unknown>;
-    if (Object.keys(e).sort().join() !== 'id,publicKey') return bad('entry-fields');
-    if (typeof e.id !== 'string' || !KEY_ID.test(e.id)) return bad('id');
-    if (typeof e.publicKey !== 'string') return bad('public-key');
+    if (Object.keys(e).sort().join() !== 'id,publicKey') return bad('entry-fields', index);
+    if (typeof e.id !== 'string' || !KEY_ID.test(e.id)) return bad('id', index);
+    if (typeof e.publicKey !== 'string') return bad('public-key', index);
     const point = fromBase64Url(e.publicKey);
-    if (!point || point.length !== 65) return bad('public-key');
-    if (publicKeyObject(point) === null) return bad('public-key-point');
+    if (!point || point.length !== 65) return bad('public-key', index);
+    if (publicKeyObject(point) === null) return bad('public-key-point', index);
     const hex = toHex(point);
-    if (ids.has(e.id)) return bad('duplicate-id');
-    if (points.has(hex)) return bad('duplicate-key');
+    if (ids.has(e.id)) return bad('duplicate-id', index);
+    if (points.has(hex)) return bad('duplicate-key', index);
     ids.add(e.id);
     points.add(hex);
     keys.push({ id: e.id, publicKey: point });

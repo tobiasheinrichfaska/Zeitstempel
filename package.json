@@ -32,7 +32,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/fix-declarations.mjs",
-    "prepare": "npm run build",
+    "prepare": "node scripts/prepare.mjs",
     "relay": "node relay/main.ts",
     "probe": "node scripts/probe.ts",
     "spike": "node scripts/spike.ts",

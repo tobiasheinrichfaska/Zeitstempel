@@ -104,15 +104,20 @@ describe('relay settings', () => {
       '*',
       'a.example',
     ]) {
-      expect(() => readSettings({ RELAY_ORIGINS: o }), o).toThrow();
+      // the variable is named, the text is German like the other configuration errors, and a string
+      // that is no URL at all gives the same message instead of the URL parser's English one
+      expect(() => readSettings({ RELAY_ORIGINS: o }), o).toThrow(
+        /^RELAY_ORIGINS: Herkunft muss genau https:\/\/host\[:port\] sein/,
+      );
     }
-    expect(() => readSettings({ PORT: '0' })).toThrow();
-    expect(() => readSettings({ PORT: 'abc' })).toThrow();
+    expect(() => readSettings({ PORT: '0' })).toThrow(/^PORT: /);
+    expect(() => readSettings({ PORT: 'abc' })).toThrow(/^PORT: /);
+    expect(() => readSettings({ PORT: '70000' })).toThrow(/^PORT: /);
     expect(() =>
       readSettings({
         RELAY_ORIGINS: Array.from({ length: 17 }, (_, i) => `https://o${i}.example`).join(','),
       }),
-    ).toThrow();
+    ).toThrow(/^RELAY_ORIGINS: zu viele Herkünfte/);
   });
 });
 

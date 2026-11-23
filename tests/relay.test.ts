@@ -547,6 +547,94 @@ describe('relay: start configuration', () => {
     expect(text).toMatch(/^HTTP\/1\.1 408 /);
     await new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
   });
+  /** A relay server with a short deadline on an own port; `close` ends it with all its connections. */
+  async function startShort(limits: { requestTimeoutMs?: number; maxConnections?: number } = {}) {
+    const { server } = createRelayServer(
+      {
+        services: SERVICES,
+        origins: [ORIGIN],
+        allowPlainHttp: false,
+        upstream: networkUpstream,
+        random: () => FREETSA_NONCE,
+        now: () => NOW,
+        keys: 'off',
+      },
+      limits,
+    );
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    return {
+      server,
+      port: (server.address() as AddressInfo).port,
+      connections: () => new Promise<number>((r) => server.getConnections((_e, n) => r(n))),
+      close: () =>
+        new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r()))),
+    };
+  }
+  /** Sends `payload` over a raw socket and returns what came back until the server closed it. */
+  function exchange(
+    port: number,
+    payload: string,
+  ): Promise<{ text: string; closedByServer: boolean }> {
+    return new Promise((resolve) => {
+      const s = net.connect(port, '127.0.0.1', () => s.write(payload));
+      let got = '';
+      s.on('data', (c) => (got += c.toString('utf8')));
+      s.on('error', () => undefined);
+      s.on('close', () => {
+        clearTimeout(timer);
+        resolve({ text: got, closedByServer: true });
+      });
+      const timer = setTimeout(() => {
+        s.destroy();
+        resolve({ text: got, closedByServer: false });
+      }, 3000);
+    });
+  }
+  it('answers 431 with Connection: close and closes when a header is too long', async () => {
+    const r = await startShort();
+    const res = await exchange(
+      r.port,
+      `GET /health HTTP/1.1\r\nHost: x\r\nX-Long: ${'a'.repeat(40_000)}\r\n\r\n`,
+    );
+    expect(res.text).toMatch(/^HTTP\/1\.1 431 /);
+    expect(res.text).toMatch(/\r\nConnection: close\r\n/);
+    expect(res.closedByServer).toBe(true);
+    await r.close();
+  });
+  it('answers 400 with Connection: close and closes for an invalid method', async () => {
+    const r = await startShort();
+    const res = await exchange(r.port, 'FOO /health HTTP/1.1\r\nHost: x\r\n\r\n');
+    expect(res.text).toMatch(/^HTTP\/1\.1 400 /);
+    expect(res.text).toMatch(/\r\nConnection: close\r\n/);
+    expect(res.closedByServer).toBe(true);
+    await r.close();
+  });
+  it('answers 408 with Connection: close to a client that reads normally', async () => {
+    const r = await startShort({ requestTimeoutMs: 300 });
+    const res = await exchange(r.port, 'POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\n');
+    expect(res.text).toMatch(/^HTTP\/1\.1 408 /);
+    expect(res.text).toMatch(/\r\nConnection: close\r\n/);
+    expect(res.closedByServer).toBe(true);
+    await r.close();
+  });
+  it('closes the connection of a client that never reads, at the latest about 2 s after the deadline', async () => {
+    const r = await startShort({ requestTimeoutMs: 300 });
+    // Many pipelined requests whose answers the client never reads: the answers pile up unsent, so
+    // `end()` alone would never finish. Then half a header: the deadline hits this connection.
+    const c = net.connect(r.port, '127.0.0.1', () => {
+      c.write('GET /health HTTP/1.1\r\nHost: x\r\n\r\n'.repeat(30_000));
+      setTimeout(() => c.write('POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\n'), 100);
+      c.pause();
+    });
+    c.on('error', () => undefined);
+    try {
+      await new Promise((res) => setTimeout(res, 300 + 2_300));
+      expect(await r.connections()).toBe(0);
+    } finally {
+      c.destroy();
+      await r.close();
+    }
+  }, 10_000);
   it('counts clients that go away during the body as client-aborted, not as internal', async () => {
     const h = await start({ keys: 'off' });
     const port = Number(new URL(h.base).port);

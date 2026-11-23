@@ -17,6 +17,8 @@ const PREFIX = 'zeitstempel-auth-v2';
 const MAX_PRIVATE_KEY_BYTES = 256;
 /** The relay takes at most 512 bytes of body; a larger one is not signed (`bad-options`). */
 const MAX_BODY_BYTES = 512;
+/** `nowMs` below this is taken for seconds (or garbage): 1e11 ms is 1973, 1e11 s is the year 5138. */
+const MIN_NOW_MS = 1e11;
 
 export interface SignRelayRequestInput {
   /** The private key: ECDSA P-256, PKCS#8 (DER) bytes. It stays in the app and is never returned. */
@@ -29,7 +31,11 @@ export interface SignRelayRequestInput {
   path: string;
   /** The raw bytes of the request body, exactly as sent. */
   body: Uint8Array;
-  /** The current time in milliseconds since the epoch (a parameter: the clock is the caller's). */
+  /**
+   * The current time in **milliseconds** since the epoch (`Date.now()`), not seconds; a parameter: the clock
+   * is the caller's. Finite and at least 1e11 (that is March 1973 in milliseconds, but year 5138 in
+   * seconds), so a value in seconds is refused (`bad-options`) instead of signing a time in 1970.
+   */
   nowMs: number;
 }
 
@@ -93,7 +99,9 @@ async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
   if (typeof path !== 'string' || !PATH.test(path) || /[?#]/.test(path)) return fail('bad-options');
   const body = copyOf(fields.body, 0, MAX_BODY_BYTES);
   if (body === null) return fail('bad-options');
-  if (typeof nowMs !== 'number' || !Number.isFinite(nowMs) || nowMs < 0) return fail('bad-options');
+  if (typeof nowMs !== 'number' || !Number.isFinite(nowMs) || nowMs < MIN_NOW_MS) {
+    return fail('bad-options'); // also a time in seconds
+  }
   const subtle = globalThis.crypto?.subtle;
   if (typeof subtle?.importKey !== 'function') return fail('unsupported-signature'); // e.g. plain http
   let key: CryptoKey;

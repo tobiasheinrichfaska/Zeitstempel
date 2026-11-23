@@ -26,15 +26,26 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
-  if (origins.length > RELAY_LIMITS.maxOrigins) throw new Error('too many origins');
+  if (origins.length > RELAY_LIMITS.maxOrigins) {
+    throw new Error(`RELAY_ORIGINS: zu viele Herkünfte (höchstens ${RELAY_LIMITS.maxOrigins})`);
+  }
   for (const o of origins) {
-    const u = new URL(o);
-    if ((u.protocol !== 'https:' && u.hostname !== 'localhost') || u.origin !== o) {
-      throw new Error(`origin must be exactly https://host[:port] (or http://localhost): ${o}`);
+    let exact = false;
+    try {
+      const u = new URL(o);
+      exact = (u.protocol === 'https:' || u.hostname === 'localhost') && u.origin === o;
+    } catch {
+      // not a URL at all: the same message as for an inexact origin
+    }
+    if (!exact) {
+      throw new Error(
+        `RELAY_ORIGINS: Herkunft muss genau https://host[:port] sein (oder http://localhost…): ${o}`,
+      );
     }
   }
   const port = Number(env.PORT ?? 8080);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('bad PORT');
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error('PORT: ungültig (ganze Zahl von 1 bis 65535 erwartet)');
   const only = (env.RELAY_SERVICES ?? '')
     .split(',')
     .map((s) => s.trim())

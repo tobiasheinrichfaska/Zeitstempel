@@ -70,11 +70,22 @@ describe('relay key file reader', () => {
     const off = Uint8Array.from(makeTestKey('x').publicKey);
     off[64] = off[64]! ^ 1;
     const r = readKeyFile(file([{ id: 'a', publicKey: toBase64Url(off) }]));
-    expect(r).toMatchObject({ ok: false, detail: 'public-key-point' });
+    expect(r).toMatchObject({ ok: false, detail: 'public-key-point in keys[0]' });
     expect(JSON.stringify(r)).not.toContain(toBase64Url(off));
     expect(
       JSON.stringify(readKeyFile(file([{ id: 'a', publicKey: p }, keyOf('a')]))),
     ).not.toContain(p);
+  });
+  it('names the index of the faulty entry, and loadKeys carries it into its message', () => {
+    const third = file([keyOf('a'), keyOf('b'), { id: 'Bad', publicKey: pub() }]);
+    expect(readKeyFile(third)).toMatchObject({ ok: false, detail: 'id in keys[2]' });
+    const dup = file([keyOf('a'), keyOf('b'), keyOf('a')]);
+    expect(readKeyFile(dup)).toMatchObject({ ok: false, detail: 'duplicate-id in keys[2]' });
+    // a rule of the whole file has no index
+    expect(readKeyFile(file([]))).toMatchObject({ ok: false, detail: 'key-count' });
+    expect(() => loadKeys('/x/keys.json', () => JSON.stringify(third))).toThrow(
+      /\(bad-key-file: id in keys\[2\]\)/,
+    );
   });
   it('checks the point itself: only a point of the curve gives a key object', () => {
     const point = makeTestKey('x').publicKey;
@@ -169,11 +180,11 @@ describe('scripts/make-key.ts', () => {
       method: 'POST',
       path: '/v1/stamp/freetsa',
       body: new Uint8Array(3),
-      nowMs: 1_000_000,
+      nowMs: 1_700_000_000_000,
     });
     expect(signed.ok).toBe(true);
     const key = publicKeyObject(fromBase64Url(entry.publicKey)!)!;
-    const message = authMessage('POST', '/v1/stamp/freetsa', 1000, new Uint8Array(3));
+    const message = authMessage('POST', '/v1/stamp/freetsa', 1_700_000_000, new Uint8Array(3));
     const sig = Buffer.from((signed as { value: string }).value.split('.')[3]!, 'base64url');
     expect(verify('sha256', Buffer.from(message), { key, dsaEncoding: 'ieee-p1363' }, sig)).toBe(
       true,

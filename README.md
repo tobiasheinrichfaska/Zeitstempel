@@ -21,16 +21,30 @@ Node 24 getestet; im Browser **einmal in Headless-Chromium geprüft (ohne die Re
 ```ts
 import { buildTimestampRequest, readTimestampResponse, verifyTimestampToken } from 'zeitstempel';
 
+// sha256: Uint8Array mit 32 Byte. nonce: 1 bis 16 Zufallsbytes, aufheben (für die Prüfung nötig).
+const nonce = crypto.getRandomValues(new Uint8Array(8));
 const request = buildTimestampRequest(sha256, nonce); // DER-Bytes für den Dienst (oder das Relay macht das)
+// request per HTTP POST an die Adresse des Dienstes senden (Content-Type: application/timestamp-query);
+// der Körper der Antwort ist answerBytes (ein Uint8Array). Browser erreichen die Dienste meist nicht (CORS): Relay.
 const response = readTimestampResponse(answerBytes); // { ok, value: { status, token, info } }
-const verified = await verifyTimestampToken(token, sha256, [anchorPem], { expectedNonce: nonce });
+if (!response.ok) throw new Error(response.reason);
+const verified = await verifyTimestampToken(response.value.token, sha256, [anchorPem], {
+  expectedNonce: nonce,
+  now: new Date(), // ohne `now` wird nicht gegen die Zukunft geprüft
+});
 // { ok: true, value: { genTime: '2026-11-23T13:05:56.000Z', signer, chainLength, … } }
 ```
+
+`verified.ok` heißt: „Dienst X bestätigt, dass dieser Hash spätestens zu `genTime` existierte“ – wenn man dem Anker
+traut. Der Stempel ist **nicht qualifiziert**, es gibt **keine Sperrprüfung**, und die Anker bestimmt der
+Aufrufer (`docs/grenzen.md`). Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime` ist
+im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `response.value.info` dagegen eine Zahl
+(Millisekunden seit 1970).
 
 Über das Relay (Browser): die Anfrage wird mit dem privaten Schlüssel der App signiert; das Token prüft die App selbst.
 
 ```ts
-import { signRelayRequest, toBase64Url } from 'zeitstempel';
+import { fromBase64Url, signRelayRequest, toBase64Url } from 'zeitstempel';
 
 const path = '/v1/stamp/freetsa';
 const body = new TextEncoder().encode(JSON.stringify({ hash: toBase64Url(sha256) }));
@@ -40,18 +54,21 @@ const auth = await signRelayRequest({
   method: 'POST',
   path,
   body,
-  nowMs: Date.now(),
+  nowMs: Date.now(), // Millisekunden, nicht Sekunden
 });
 if (!auth.ok) throw new Error(auth.reason);
 const res = await fetch(relayUrl + path, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-Zeitstempel-Auth': auth.value },
   body,
-}); // 200 { service, genTime, accuracyMs, serial, token }; das Token danach mit verifyTimestampToken prüfen
+});
+const token = fromBase64Url((await res.json()).token); // 200 { service, genTime, accuracyMs, serial, token }
+// das Token danach mit verifyTimestampToken prüfen (ohne expectedNonce: die Nonce wählt das Relay)
 ```
 
 Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt) gehört in die App; in einer Web-App ist er für die
-Besucher der Seite lesbar. Einzelheiten in [`docs/relay.md`](docs/relay.md).
+Besucher der Seite lesbar. Das Relay und die Werkzeuge (`relay/`, `scripts/`) sind **nicht im Paket** (nur Bibliothek,
+Dienstliste und Anker): dafür das Repository klonen. Einzelheiten und „Lokal testen“ in [`docs/relay.md`](docs/relay.md).
 
 Die Kernfunktionen (`buildTimestampRequest`, `readTimestampResponse`, `verifyTimestampToken`, `readServices`,
 `signRelayRequest`) werfen bei keiner gewöhnlichen Eingabe (gegen feindliche `Proxy`-Objekte sind `buildTimestampRequest`, `verifyTimestampToken`, `equalBytes` und `signRelayRequest` abgesichert und getestet); Fehler sind Codes (`{ ok: false, reason }`). Die Bausteine
@@ -71,8 +88,8 @@ und Adresse des Repositories sind dann einzusetzen):
 npm install git+https://<adresse-des-repositories>#<tag>
 ```
 
-Beim Installieren aus Git führt npm das Skript `prepare` aus (`npm run build`, braucht das mitinstallierte
-`typescript`), so dass `dist/` entsteht. Das Paket ist ESM-only (`import`), Node 24 oder ein Browser-Bündler.
+Beim Installieren aus Git führt npm das Skript `prepare` aus (`scripts/prepare.mjs`: baut `dist/`, wenn das
+mitinstallierte `typescript` da ist, und überspringt den Bau sonst mit einer Zeile auf stderr). Das Paket ist ESM-only (`import`), Node 24 oder ein Browser-Bündler.
 
 Außer dem Einstieg (`import … from 'zeitstempel'`) liefert das Paket die Daten für die Anwendung über `exports`:
 
