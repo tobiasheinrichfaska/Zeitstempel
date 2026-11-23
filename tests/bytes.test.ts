@@ -52,3 +52,59 @@ describe('E7: byte helpers never accept a wrong type silently', () => {
     expect(equalBytes(Uint8Array.of(1), Uint8Array.of(2))).toBe(false);
   });
 });
+
+describe('L3: equalBytes reads each length once, from the built-in getter, and only compares genuine arrays', () => {
+  /** A transparent proxy around `target` that counts every trap call (all traps, one counter). */
+  const counting = (target: Uint8Array, lie?: () => number) => {
+    const seen = { count: 0 };
+    const trap =
+      (name: string) =>
+      (...args: unknown[]) => {
+        seen.count += 1;
+        if (name === 'get' && args[1] === 'length' && lie) return lie();
+        return (Reflect as unknown as Record<string, (...a: unknown[]) => unknown>)[name]!(...args);
+      };
+    const handler = {
+      get: trap('get'),
+      getPrototypeOf: trap('getPrototypeOf'),
+      has: trap('has'),
+      ownKeys: trap('ownKeys'),
+      getOwnPropertyDescriptor: trap('getOwnPropertyDescriptor'),
+    } as ProxyHandler<Uint8Array>;
+    const proxy = new Proxy(target, handler);
+    return { proxy, seen };
+  };
+  it('a proxy whose length is 32 the first time and 0 afterwards is false', () => {
+    let reads = 0;
+    const { proxy } = counting(new Uint8Array(32), () => (reads++ === 0 ? 32 : 0));
+    expect(equalBytes(proxy, new Uint8Array(32))).toBe(false);
+    expect(equalBytes(new Uint8Array(32), proxy)).toBe(false);
+  });
+  it('a proxy is asked at most once per argument, whatever the order', () => {
+    const a = counting(new Uint8Array(4));
+    const b = counting(new Uint8Array(4));
+    expect(equalBytes(a.proxy, b.proxy)).toBe(false);
+    expect(a.seen.count).toBeLessThanOrEqual(1);
+    expect(b.seen.count).toBeLessThanOrEqual(1);
+    const c = counting(new Uint8Array(4));
+    expect(equalBytes(new Uint8Array(4), c.proxy)).toBe(false);
+    expect(c.seen.count).toBeLessThanOrEqual(1);
+  });
+  it('an own length property does not fool it (40 bytes claiming 4 are not equal to 4 bytes)', () => {
+    const lie = new Uint8Array(40);
+    Object.defineProperty(lie, 'length', { value: 4 });
+    expect(equalBytes(lie, new Uint8Array(4))).toBe(false);
+    expect(equalBytes(new Uint8Array(4), lie)).toBe(false);
+  });
+  it("the writers give a TypeError (not the proxy's own Error) for a proxy with a throwing trap", () => {
+    const boom = () => {
+      throw new Error('trap');
+    };
+    for (const trap of ['getPrototypeOf', 'get'] as const) {
+      const p = new Proxy(new Uint8Array(2), { [trap]: boom }) as Uint8Array;
+      expect(() => toBase64(p)).toThrow(TypeError);
+      expect(() => toBase64Url(p)).toThrow(TypeError);
+      expect(() => toHex(p)).toThrow(TypeError);
+    }
+  });
+});

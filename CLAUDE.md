@@ -17,7 +17,7 @@ an app can prove "this hash existed at the latest at time T".
 **Architecture:** `src/lib/` is the pure library (clock and randomness are parameters, errors are codes,
 the core functions never throw (`buildTimestampRequest`, `readTimestampResponse`, `verifyTimestampToken`, `readServices`, `signRelayRequest`: for no ordinary input; hostile proxies are covered and tested for `buildTimestampRequest`, `verifyTimestampToken`, `equalBytes`, `signRelayRequest`; inputs are copied by length, never iterated); the building blocks `readToken`, `parseCertificate`, `parsePemCertificates` throw `ReaderError` and the byte writers `toBase64`, `toBase64Url`, `toHex` a `TypeError` for a wrong type; strict bounded DER reader written here: no ASN.1 dependency). `relay/` is the I/O around it.
 `services.json` and `anchors/` are data. Status 0.1.0: **not published to npm, not tagged, not
-security-reviewed by a human; library tested under Node only, never in a browser.**
+security-reviewed by a human; library tested under Node; in a browser only once, in headless Chromium, without the relay authentication.**
 
 ## Key rules
 
@@ -98,7 +98,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
 
 ## Known Limitations
 
-- **Browser: checked once, in headless Chromium 157 only** (2026-11-23, `node scripts/browser-check.mjs`, by
+- **Browser: checked once, in headless Chromium 157 only, without the relay authentication (`signRelayRequest` not run in a browser)** (2026-11-23, `node scripts/browser-check.mjs`, by
   hand, needs Playwright with Chromium, which is not a dependency): the four recorded tokens verify (ECDSA P-384
   and RSA-4096 signers), wrong hash / wrong anchor / changed bytes are refused, and a cross-origin call to the
   relay (preflight included) works. Firefox and Safari were not run. In an insecure context (plain http, not
@@ -136,4 +136,4 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   with `scripts/make-request.ts` (the old ones stay valid for the tests).
 - Not on npm; consumers take it by Git tag (none yet).
 
-_Last updated: 2026-11-23 (run 7: inputs copied by length never iterated, `trust` at most 64 anchors, token in a SharedArrayBuffer verifies, start rule `min(start, now)`, `signRelayRequest` never throws; round 5: honest "never throws" statement, hostile proxies, `trust` must be an array, chain search cut short by a limit always `untrusted-chain`, mutation guards, README/FEATURES aligned with the ECDSA authentication)_
+_Last updated: 2026-11-23 (run 7: inputs copied by length never iterated, `trust` at most 64 anchors, token in a SharedArrayBuffer verifies, start rule: `startMs` only ever falls (lowered on every request), heads from before it are refused, `signRelayRequest` never throws; round 5: honest "never throws" statement, hostile proxies, `trust` must be an array, chain search cut short by a limit always `untrusted-chain`, mutation guards, README/FEATURES aligned with the ECDSA authentication)_

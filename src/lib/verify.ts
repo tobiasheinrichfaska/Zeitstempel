@@ -1,4 +1,4 @@
-import { byteLength, copyBytes, equalBytes, trimZeros } from './bytes.ts';
+import { byteLength, copyBytes, copyKnown, equalBytes, trimZeros } from './bytes.ts';
 import { DER_LIMITS, TAG, children, expect, integerBytes, octets, oid, parseDer } from './der.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
@@ -386,8 +386,9 @@ async function verifyChecked(
   // works with the copy only, so a buffer changed or emptied meanwhile, or one living in a
   // SharedArrayBuffer, changes nothing
   const tokenLength = byteLength(tokenBytes);
-  if (tokenLength !== null && tokenLength > DER_LIMITS.maxBytes) return fail('too-large');
-  const tokenCopy = copyBytes(tokenBytes, 0, DER_LIMITS.maxBytes);
+  if (tokenLength === null) return fail('malformed');
+  if (tokenLength > DER_LIMITS.maxBytes) return fail('too-large');
+  const tokenCopy = copyKnown(tokenBytes as Uint8Array, tokenLength); // the value is asked once, not twice
   if (!tokenCopy) return fail('malformed');
   // the list is read by length and index (once each), never through the iterator, and bounded first
   let trustList: unknown[];

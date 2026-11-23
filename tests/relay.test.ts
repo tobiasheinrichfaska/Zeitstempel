@@ -1437,19 +1437,66 @@ describe('relay: authentication', () => {
     await late.close();
     await fresh.close();
   });
-  it('does not shut the relay down when the start clock ran ahead and was corrected later', async () => {
-    const ahead = await start({ clockStart: NOW + 3_600_000 }); // started with a clock one hour too fast
-    ahead.clock.now = NOW; // corrected
+  describe('start rule: startMs only ever falls (lowest clock value seen so far)', () => {
     const body = bytesOf(BODY);
-    const t = Math.floor(NOW / 1000);
-    const go = (ts: number) =>
-      post(ahead, PATH, BODY, 'application/json', {
-        'X-Zeitstempel-Auth': ahead.sign(PATH, body, { ts }),
+    const go = (hh: Harness, ts: number) =>
+      post(hh, PATH, BODY, 'application/json', {
+        'X-Zeitstempel-Auth': hh.sign(PATH, body, { ts }),
       });
-    expect((await go(t)).status).toBe(200);
-    // the rule still holds against the corrected clock: more than a second before "now" is refused
-    expect((await go(t - 2)).status).toBe(401);
-    await ahead.close();
+    const prime = (hh: Harness) =>
+      post(hh, PATH, BODY, 'application/json', { 'X-Zeitstempel-Auth': 'garbage' });
+    const t0 = Math.floor(NOW / 1000);
+    /** Heads 0/1/2/5/30 s old at the current clock, one per 16 s (the service's own interval is 15 s). */
+    const agedHeads = async (hh: Harness, from: number) => {
+      for (const [i, age] of [0, 1, 2, 5, 30].entries()) {
+        hh.clock.now = NOW + 30_000 * from + 16_000 * i;
+        expect((await go(hh, Math.floor(hh.clock.now / 1000) - age)).status).toBe(200);
+      }
+    };
+
+    it('start clock one hour ahead, then corrected: heads 0/1/2/5/30 s old are all accepted', async () => {
+      const ahead = await start({ clockStart: NOW + 3_600_000 });
+      ahead.clock.now = NOW; // corrected
+      expect((await prime(ahead)).status).toBe(401); // first sight of the corrected clock
+      // a head from before the first corrected time stays refused (inside the window: only the start rule says no)
+      expect((await go(ahead, t0 - 2)).status).toBe(401);
+      await agedHeads(ahead, 1);
+      await ahead.close();
+    });
+    it('keeps refusing a head from before the real restart after an ahead start and a correction', async () => {
+      const first = await start({ clockStart: NOW - 30_000 });
+      const head = first.sign(PATH, body, { ts: t0 - 10 });
+      expect(
+        (await post(first, PATH, BODY, 'application/json', { 'X-Zeitstempel-Auth': head })).status,
+      ).toBe(200);
+      const second = await start({ clockStart: NOW + 3_600_000 }); // real restart at NOW, clock 1 h ahead
+      second.clock.now = NOW; // corrected
+      const again = await post(second, PATH, BODY, 'application/json', {
+        'X-Zeitstempel-Auth': head,
+      });
+      expect(again.status).toBe(401);
+      expect(second.calls).toHaveLength(0);
+      await first.close();
+      await second.close();
+    });
+    it('normal clock: heads 0 to 30 s old are accepted, one 2 s before the start is not', async () => {
+      const n = await start();
+      n.clock.now = NOW + 10_000;
+      expect((await go(n, t0 - 2)).status).toBe(401); // 12 s old, in the window, but before the start
+      await agedHeads(n, 1);
+      await n.close();
+    });
+    it('a jump of the clock backwards after the start lowers the start for good, never raises it', async () => {
+      const j = await start();
+      j.clock.now = NOW + 100_000;
+      expect((await go(j, t0 + 100)).status).toBe(200);
+      j.clock.now = NOW - 20_000; // the clock was wrong and is set back
+      expect((await go(j, t0 - 25)).status).toBe(401); // more than a second before the lowest value seen
+      expect((await go(j, t0 - 20)).status).toBe(200);
+      j.clock.now = NOW + 40_000; // forward again: startMs stays down
+      expect((await go(j, t0 - 19)).status).toBe(200); // 59 s old, in the window, before the original start
+      await j.close();
+    });
   });
   it('keeps an entry until ts + window + request timeout, not only until the window ends', async () => {
     const small = await start({ authReplayEntries: 1 });

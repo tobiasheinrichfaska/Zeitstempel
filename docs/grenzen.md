@@ -70,12 +70,14 @@ den der Aufrufer nach dem Aufruf leert oder ändert, ändert das Ergebnis nicht.
 Index gelesen (jeder Eintrag einmal, nie über den Iterator); mehr als 64 Einträge sind `bad-options`, geprüft
 bevor ein Eintrag gelesen wird.
 
-**Feindliche Proxys:** `buildTimestampRequest`, `verifyTimestampToken` und `equalBytes` lesen ihre Eingaben
-höchstens einmal und fangen jeden Wurf ab (ein `Proxy`, dessen `getPrototypeOf`- oder `get`-Falle wirft): Ergebnis ist ein Code
+**Feindliche Proxys:** `buildTimestampRequest`, `verifyTimestampToken`, `equalBytes` und `signRelayRequest` lesen ihre Eingaben
+höchstens einmal (der Prototyp eines Proxys wird je Argument höchstens einmal erfragt, auch beim Token; die Länge kommt aus dem
+eingebauten Getter, den ein Proxy nie besteht: `equalBytes` vergleicht nur echte `Uint8Array`, ein Proxy ist immer `false`) und fangen jeden Wurf ab (ein `Proxy`, dessen `getPrototypeOf`- oder `get`-Falle wirft): Ergebnis ist ein Code
 (`bad-hash`, `bad-nonce`, `bad-options`, `malformed`) bzw. `false`, nie eine Ausnahme oder ein abgelehntes
-Versprechen. Für `signRelayRequest` ist das nicht abgedeckt; die Bausteine `readToken`, `parseCertificate` und
+Versprechen. Das gilt auch für `signRelayRequest` (getestet: Proxy als Eingabe, Schlüssel und Körper, werfender
+`globalThis.crypto`; Ergebnis ein Code); die Bausteine `readToken`, `parseCertificate` und
 `parsePemCertificates` werfen einen `ReaderError`, die Byte-Schreiber (`toBase64`, `toBase64Url`, `toHex`) einen
-`TypeError`.
+`TypeError` (auch für einen Proxy, dessen Falle wirft: er ist kein echtes `Uint8Array`).
 
 **Bytes aus einem anderen Realm** (iframe, Worker, `vm`): Ein `Uint8Array` von dort besteht den
 `instanceof`-Test nicht und ergibt `bad-hash` bzw. `bad-options`. Der Aufrufer übergibt dann eine Kopie im
@@ -144,5 +146,5 @@ Die Bibliothek verwendet nur Standard-Schnittstellen (WebCrypto, `Uint8Array`, `
 Wächter-Test sorgt dafür, dass im Kern keine Node-Importe stehen. Am 2026-11-23 lief sie zusätzlich in
 **Headless-Chromium 157** (`node scripts/browser-check.mjs`): die vier aufgezeichneten Token wurden akzeptiert
 (Signierer ECDSA P-384 bei FreeTSA, RSA-4096 bei den anderen), ein falscher Hash, ein falscher Anker und
-veränderte Bytes wurden abgelehnt. **Nicht geprüft:** Firefox, Safari, mobile Browser. Auf einer Seite über
+veränderte Bytes wurden abgelehnt. Diese Prüfung lief ohne die Relay-Authentifizierung (`signRelayRequest`); sonst ist die Bibliothek im Browser nicht getestet. **Nicht geprüft:** Firefox, Safari, mobile Browser, `signRelayRequest` und der Aufruf des Relays mit Kopf. Auf einer Seite über
 einfaches `http` (nicht `localhost`) fehlt `crypto.subtle`; die Prüfung antwortet dann `unsupported-signature`.

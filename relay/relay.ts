@@ -89,7 +89,9 @@ export function createRelay(options: RelayOptions): Relay {
   const doVerify = options.verifySignature ?? verifySignatureNode;
   // Heads signed before this process started are refused (the replay cache is empty after a restart,
   // so an old head could otherwise be replayed once more within its window).
-  const startMs = options.now();
+  // Only ever lowered (on every request, see parseAuth), never recomputed upwards: a start clock that ran
+  // ahead and is corrected later drops it once to the first corrected time.
+  let startMs = options.now();
   // A key nobody holds: an unknown id still gets the same verification (against this random key made
   // for the process, whose private half is dropped at once), so the answer tells nothing. `verified`
   // also insists on a known id.
@@ -182,6 +184,7 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** Form and time of the auth header, before the body is read; null for anything wrong. */
   function parseAuth(req: IncomingMessage): Auth | null {
+    startMs = Math.min(startMs, options.now()); // never up: a clock jump back lowers it for good
     const value = req.headers['x-zeitstempel-auth'];
     if (typeof value !== 'string') return null;
     const m = AUTH_FORM.exec(value);
@@ -190,9 +193,8 @@ export function createRelay(options: RelayOptions): Relay {
     if (!signature || signature.length !== 64) return null;
     const ts = Number(m[2]);
     if (!inWindow(ts)) return null;
-    // Signed before this process started. `min(startMs, now)`: a start clock that ran ahead and was
-    // corrected later must not shut the relay down until real time catches up with it.
-    if (ts * 1000 < Math.min(startMs, options.now()) - 1000) return null;
+    // Signed before this process started (`startMs` is the lowest clock value seen so far).
+    if (ts * 1000 < startMs - 1000) return null;
     return { kid: m[1]!, ts, signature };
   }
 

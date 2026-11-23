@@ -8,9 +8,27 @@
  * `Uint8Array` of another realm (iframe, worker, `vm`) is none here: pass `new Uint8Array(x)`.
  */
 
+// The built-in `length` getter of every typed array: it reads the internal slot, so an own `length`, a
+// subclass override or a hostile prototype cannot change the answer (a proxy or a non-typed-array throws).
+const typedArrayLength = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype) as object,
+  'length',
+)!.get!;
+
+/** The length of a genuine `Uint8Array` (built-in getter, internal slot); `null` for anything else; never throws. */
+export function byteLength(value: unknown): number | null {
+  try {
+    if (!(value instanceof Uint8Array)) return null;
+    return typedArrayLength.call(value) as number;
+  } catch {
+    return null; // a proxy whose traps throw, a value without the internal slot
+  }
+}
+
 const needBytes = (bytes: unknown): Uint8Array => {
-  if (!(bytes instanceof Uint8Array)) throw new TypeError('a Uint8Array is required');
-  return bytes;
+  // a genuine Uint8Array only (a proxy, also a transparent one, and a trap that throws are a TypeError)
+  if (byteLength(bytes) === null) throw new TypeError('a Uint8Array is required');
+  return bytes as Uint8Array;
 };
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -65,33 +83,20 @@ export function toHex(input: Uint8Array): string {
   return Array.from(needBytes(input), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Never throws: anything but two equal `Uint8Array` (a proxy whose traps throw included) gives `false`. */
+/**
+ * Never throws: anything but two equal, genuine `Uint8Array` gives `false` (a proxy, whether its traps throw or
+ * not, is none). Each length is read once with the built-in getter (an own `length` or a subclass cannot change
+ * it) and the loop runs over that one number.
+ */
 export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   try {
-    if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
-    if (a.length !== b.length) return false;
+    const length = byteLength(a);
+    if (length === null || length !== byteLength(b)) return false;
     let diff = 0;
-    for (let i = 0; i < a.length; i += 1) diff |= a[i]! ^ b[i]!;
+    for (let i = 0; i < length; i += 1) diff |= a[i]! ^ b[i]!;
     return diff === 0;
   } catch {
     return false; // a hostile proxy: its traps throw
-  }
-}
-
-// The built-in `length` getter of every typed array: it reads the internal slot, so an own `length`, a
-// subclass override or a hostile prototype cannot change the answer (a proxy or a non-typed-array throws).
-const typedArrayLength = Object.getOwnPropertyDescriptor(
-  Object.getPrototypeOf(Uint8Array.prototype) as object,
-  'length',
-)!.get!;
-
-/** The length of a genuine `Uint8Array` (built-in getter, internal slot); `null` for anything else; never throws. */
-export function byteLength(value: unknown): number | null {
-  try {
-    if (!(value instanceof Uint8Array)) return null;
-    return typedArrayLength.call(value) as number;
-  } catch {
-    return null; // a proxy whose traps throw, a value without the internal slot
   }
 }
 
@@ -104,11 +109,16 @@ export function byteLength(value: unknown): number | null {
  * answers differently the second time, or is changed meanwhile, cannot change anything.
  */
 export function copyBytes(value: unknown, min: number, max: number): Uint8Array | null {
+  const length = byteLength(value);
+  if (length === null || length < min || length > max) return null;
+  return copyKnown(value as Uint8Array, length);
+}
+
+/** A copy of a value whose `byteLength` has been read already (once: a proxy is asked only once, not twice). */
+export function copyKnown(value: Uint8Array, length: number): Uint8Array | null {
   try {
-    const length = byteLength(value);
-    if (length === null || length < min || length > max) return null;
     const copy = new Uint8Array(length);
-    copy.set(value as Uint8Array);
+    copy.set(value);
     return copy;
   } catch {
     return null;

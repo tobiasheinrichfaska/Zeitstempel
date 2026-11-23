@@ -78,6 +78,25 @@ describe('J1: inputs are copied by length and set(), never through the iterator'
   });
 });
 
+describe('L3: the token proxy is asked once', () => {
+  it('verifyTimestampToken touches a token proxy at most once (one getPrototypeOf, no second read)', async () => {
+    let count = 0;
+    const count1 = () => {
+      count += 1;
+      return Reflect.getPrototypeOf(TOKEN);
+    };
+    const proxy = new Proxy(TOKEN, {
+      getPrototypeOf: count1,
+      get: (t, k) => (count++, Reflect.get(t, k)),
+    });
+    expect(await verifyTimestampToken(proxy, HASH, [ROOT], OPTIONS)).toEqual({
+      ok: false,
+      reason: 'malformed',
+    });
+    expect(count).toBeLessThanOrEqual(1);
+  });
+});
+
 describe('J2: trust is read by length and index', () => {
   it('a list of exactly 64 entries is accepted as a list, 65 is bad-options', async () => {
     const sixtyFour = [ROOT, ...new Array<string>(63).fill(ROOT)];

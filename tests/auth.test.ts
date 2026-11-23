@@ -1,6 +1,7 @@
 import { generateKeyPairSync, verify } from 'node:crypto';
 import { signRelayRequest, toBase64Url } from '../src/index.ts';
 import * as lib from '../src/index.ts';
+import { RELAY_LIMITS } from '../relay/limits.ts';
 import { authMessage, makeTestKey } from './auth-helpers.ts';
 
 const KEY = makeTestKey('app-1');
@@ -196,6 +197,32 @@ describe('signRelayRequest', () => {
       ok: true,
     });
     expect(await signRelayRequest(input({ body: new Uint8Array(0) }))).toMatchObject({ ok: true });
+  });
+  it("signs a body up to the relay's limit and refuses one byte more (MAX_BODY_BYTES = RELAY_LIMITS.bodyBytes)", async () => {
+    // src/lib must not import relay/: the two numbers are tied here, by behaviour
+    const limit = RELAY_LIMITS.bodyBytes;
+    expect(await signRelayRequest(input({ body: new Uint8Array(limit) }))).toMatchObject({
+      ok: true,
+    });
+    expect(await signRelayRequest(input({ body: new Uint8Array(limit + 1) }))).toMatchObject({
+      ok: false,
+      reason: 'bad-options',
+    });
+  });
+  it('never rejects when WebCrypto itself is hostile (getter on globalThis.crypto throws): bad-options', async () => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, 'crypto')!;
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      get() {
+        throw new Error('hostile crypto');
+      },
+    });
+    try {
+      expect(await signRelayRequest(input())).toEqual({ ok: false, reason: 'bad-options' });
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', saved);
+    }
+    expect(await signRelayRequest(input())).toMatchObject({ ok: true }); // restored
   });
   it('answers unsupported-signature without WebCrypto (insecure page)', async () => {
     vi.stubGlobal('crypto', {});

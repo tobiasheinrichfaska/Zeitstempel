@@ -5,7 +5,7 @@ der einer Datei) **spätestens zu einem bestimmten Zeitpunkt** existierte. Dazu 
 bei einem Zeitstempel-Dienst und prüft es.
 
 **Stand: 0.1.0, Entwurf, nicht auf npm, nicht von einem Menschen sicherheitsgeprüft.** Die Bibliothek ist unter
-Node 24 getestet, **nicht in einem Browser**.
+Node 24 getestet; im Browser **einmal in Headless-Chromium geprüft (ohne die Relay-Authentifizierung), sonst nicht getestet**.
 
 ## Bausteine
 
@@ -54,7 +54,7 @@ Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt) gehört
 Besucher der Seite lesbar. Einzelheiten in [`docs/relay.md`](docs/relay.md).
 
 Die Kernfunktionen (`buildTimestampRequest`, `readTimestampResponse`, `verifyTimestampToken`, `readServices`,
-`signRelayRequest`) werfen bei keiner gewöhnlichen Eingabe (gegen feindliche `Proxy`-Objekte sind `buildTimestampRequest`, `verifyTimestampToken` und `equalBytes` abgesichert, `signRelayRequest` nicht); Fehler sind Codes (`{ ok: false, reason }`). Die Bausteine
+`signRelayRequest`) werfen bei keiner gewöhnlichen Eingabe (gegen feindliche `Proxy`-Objekte sind `buildTimestampRequest`, `verifyTimestampToken`, `equalBytes` und `signRelayRequest` abgesichert und getestet); Fehler sind Codes (`{ ok: false, reason }`). Die Bausteine
 `readToken`, `parseCertificate` und `parsePemCertificates` werfen dagegen einen `ReaderError`, und die
 Byte-Helfer `toBase64`, `toBase64Url` und `toHex` einen `TypeError` bei falschem Typ (beides ist so
 dokumentiert). Bytes aus einem anderen Realm (iframe, Worker) bitte als `new Uint8Array(x)` übergeben. Alles Weitere steht in

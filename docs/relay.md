@@ -83,13 +83,14 @@ Orakel für Kennung oder Signatur. Ohne Kopf gibt es für einen bekannten Dienst
 POST und kanonischem Ziel nie etwas anderes als `401`):
 
 1. Form des Kopfes und `ts` innerhalb von ±`authWindowSeconds` (60 s) der Uhr des Relays, **vor** dem Lesen des
-   Körpers; zusätzlich darf `ts` nicht vor dem Start des Prozesses liegen (`ts` · 1000 ≥ min(Startzeit, jetzt) − 1000 ms;
-   gerechnet wird bei jeder Prüfung mit dem kleineren von Startzeit und aktueller Uhr, damit eine beim Start
-   vorgehende Uhr, die später korrigiert wird, das Relay nicht bis zum Einholen der echten Zeit stilllegt). Der
-   Wiederholungsspeicher liegt nur im Speicher und ist nach einem Neustart leer; ohne diese Regel ließe sich ein
+   Körpers; zusätzlich darf `ts` nicht vor dem Start des Prozesses liegen (`ts` · 1000 ≥ Startzeit − 1000 ms). Die
+   Startzeit wird nie neu berechnet, sondern bei jeder Anfrage an einen Dienst nur **gesenkt** (`Startzeit =
+min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging die Uhr beim Start vor und wird später
+   korrigiert, sinkt die Startzeit einmal auf den ersten beobachteten korrigierten Zeitpunkt; danach gilt für Köpfe ab
+   dort wieder das volle ±60-s-Fenster. Der Wiederholungsspeicher liegt nur im Speicher und ist nach einem Neustart leer; ohne diese Regel ließe sich ein
    mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: **nach einem
    Neustart sind Köpfe aus der Zeit davor ungültig** (die App signiert ohnehin jeden Versuch neu). **Widerruf
-   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen und das Relay neu starten. **Grenze:** geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur Korrektur der Uhr geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. Das Fenster wird **nach** dem Lesen
+   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen und das Relay neu starten. **Grenzen:** (a) Geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur ersten Anfrage nach der Korrektur geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). (b) Geht sie beim Start **vor**, werden Köpfe von vor der ersten Anfrage nach der Korrektur abgelehnt (die App signiert ohnehin jeden Versuch neu); Köpfe von vor dem echten Neustart bleiben abgelehnt, weil der echte Start nie nach dem ersten korrigierten Zeitpunkt liegt. (c) Die Startzeit sinkt nur bei Anfragen an einen Dienst; setzt jemand die Uhr nach dem Start zurück, gelten Köpfe bis zum niedrigsten dabei beobachteten Zeitpunkt, nie weiter zurück. Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. Das Fenster wird **nach** dem Lesen
    des Körpers noch einmal geprüft (ein langsamer Körper rettet keinen veralteten Kopf).
 2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Das Relay führt **für jeden wohlgeformten
    Kopf genau eine** Prüfung aus, auch bei unbekannter Kennung (gegen einen je Prozess zufällig erzeugten
