@@ -156,6 +156,13 @@ export function integerBytes(node: Node): Uint8Array {
   return v;
 }
 
+/** An INTEGER's content bytes (minimal encoding) that must not be negative (sign bit clear). */
+export function unsignedBytes(node: Node): Uint8Array {
+  const v = integerBytes(node);
+  if ((v[0]! & 0x80) !== 0) throw new ReaderError('malformed');
+  return v;
+}
+
 /** A small non-negative INTEGER as a number. */
 export function integerNumber(node: Node): number {
   const v = integerBytes(node);

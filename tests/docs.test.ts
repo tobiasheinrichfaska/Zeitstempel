@@ -11,6 +11,7 @@ const relayDoc = read('relay.md');
 const REASONS: Record<lib.Reason, true> = {
   'bad-hash': true,
   'bad-nonce': true,
+  'bad-options': true,
   'bad-services': true,
   'too-large': true,
   malformed: true,

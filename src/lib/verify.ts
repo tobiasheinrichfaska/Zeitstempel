@@ -11,11 +11,11 @@ export type TrustAnchors = readonly string[];
 export interface VerifyOptions {
   /** The nonce that was sent. When given, the token must carry exactly this nonce. */
   expectedNonce?: Uint8Array;
-  /** The moment at which certificates must be valid. Default: the token's own time. */
+  /** The moment at which certificates must be valid. Default: the token's own time. Must be a valid Date. */
   at?: Date;
-  /** The current time: a token from the future (beyond the skew) is refused. Default: not checked. */
+  /** The current time: a token from the future (beyond the skew) is refused. Default: not checked. Given but not a valid Date: `bad-options`. */
   now?: Date;
-  /** Allowed difference between the token time and `now`. Default 5 minutes. */
+  /** Allowed difference between the token time and `now`. Default 5 minutes; a number >= 0 (Infinity allowed), else `bad-options`. */
   maxSkewMs?: number;
   /** RFC 3161 wants the extended key usage to be critical. Default true. */
   requireCriticalEku?: boolean;
@@ -48,9 +48,13 @@ async function digest(name: HashName, data: Uint8Array): Promise<Uint8Array> {
 
 /** DER `ECDSA-Sig-Value` → the fixed-size `r || s` that WebCrypto verifies. */
 function ecdsaRaw(der: Uint8Array, size: number): Uint8Array {
-  const [r, s] = children(expect(parseDer(der), TAG.sequence)).map((n) =>
-    trimZeros(integerBytes(n)),
-  );
+  const parts = children(expect(parseDer(der), TAG.sequence));
+  if (parts.length !== 2) throw new ReaderError('signature-invalid');
+  const [r, s] = parts.map((n) => {
+    const bytes = integerBytes(n);
+    if ((bytes[0]! & 0x80) !== 0) throw new ReaderError('signature-invalid'); // negative
+    return trimZeros(bytes);
+  });
   if (!r || !s || r.length > size || s.length > size) throw new ReaderError('signature-invalid');
   const out = new Uint8Array(size * 2);
   out.set(r, size - r.length);
@@ -129,6 +133,19 @@ export function nameToString(name: Uint8Array): string {
 
 const same = (a: Uint8Array, b: Uint8Array) => equalBytes(a, b);
 
+const isValidDate = (d: unknown): d is Date =>
+  Object.prototype.toString.call(d) === '[object Date]' && Number.isFinite((d as Date).getTime());
+
+/** A given option must be usable: no silent skipping of a check because of a bad value. */
+function checkOptions(options: VerifyOptions): void {
+  if (options.now !== undefined && !isValidDate(options.now)) throw new ReaderError('bad-options');
+  if (options.at !== undefined && !isValidDate(options.at)) throw new ReaderError('bad-options');
+  const skew = options.maxSkewMs;
+  if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
+    throw new ReaderError('bad-options');
+  }
+}
+
 async function checkSigningCertificate(token: ParsedToken, signer: Certificate): Promise<void> {
   const attrs = token.signer.attributes;
   const v2 = attrs.get(OID.signingCertificateV2);
@@ -192,6 +209,7 @@ export async function verifyTimestampToken(
   if (!anchorsRead.ok) return anchorsRead;
   const anchors = anchorsRead.value;
   try {
+    checkOptions(options);
     const token = readToken(tokenBytes);
     const info: TstInfo = token.info;
     if (info.hashName !== 'SHA-256') throw new ReaderError('unsupported-hash');
@@ -201,7 +219,7 @@ export async function verifyTimestampToken(
       if (!info.nonce || !same(info.nonce, want)) throw new ReaderError('nonce-mismatch');
     }
     if (
-      options.now &&
+      options.now !== undefined &&
       info.genTime > options.now.getTime() + (options.maxSkewMs ?? DEFAULT_SKEW_MS)
     ) {
       throw new ReaderError('time-in-future');
@@ -239,10 +257,14 @@ export async function verifyTimestampToken(
     const eku = signer.eku;
     if (
       !eku ||
-      !eku.oids.includes(OID.ekuTimeStamping) ||
+      eku.oids.length !== 1 || // RFC 3161 § 2.3: exactly one purpose, id-kp-timeStamping
+      eku.oids[0] !== OID.ekuTimeStamping ||
       ((options.requireCriticalEku ?? true) && !eku.critical)
     ) {
       throw new ReaderError('bad-eku');
+    }
+    if (signer.unknownCritical && !anchors.some((a) => same(a.raw, signer.raw))) {
+      throw new ReaderError('bad-certificate');
     }
     if (signer.keyUsage !== null && (signer.keyUsage & 0xc0) === 0)
       throw new ReaderError('bad-eku');
@@ -262,6 +284,9 @@ export async function verifyTimestampToken(
         throw new ReaderError('not-a-ca');
       }
       if (!validAt(issuer, at)) throw new ReaderError('certificate-not-valid-at-time');
+      if (issuer.unknownCritical && !anchors.some((a) => same(a.raw, issuer.raw))) {
+        throw new ReaderError('bad-certificate'); // a trust anchor is the caller's decision, not checked
+      }
       length += 1;
       if (same(issuer.raw, current.raw)) throw new ReaderError('untrusted-chain'); // self-signed, not an anchor
       current = issuer;

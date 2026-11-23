@@ -3,6 +3,7 @@ export type Reason =
   // input
   | 'bad-hash'
   | 'bad-nonce'
+  | 'bad-options'
   | 'bad-services'
   // DER / structure
   | 'too-large'

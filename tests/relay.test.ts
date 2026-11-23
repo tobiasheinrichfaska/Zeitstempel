@@ -2,6 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { toBase64Url, verifyTimestampToken, fromBase64Url } from '../src/index.ts';
 import { loadServices } from '../relay/load.ts';
+import { readConfig } from '../relay/main.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
 import { createRelayServer } from '../relay/server.ts';
 import {
@@ -26,7 +27,12 @@ interface Harness {
 }
 
 async function start(
-  over: { upstream?: Upstream; allowPlainHttp?: boolean; services?: typeof SERVICES } = {},
+  over: {
+    upstream?: Upstream;
+    allowPlainHttp?: boolean;
+    services?: typeof SERVICES;
+    random?: (n: number) => Uint8Array;
+  } = {},
 ): Promise<Harness> {
   const calls: Uint8Array[] = [];
   const clock = { now: NOW };
@@ -39,7 +45,7 @@ async function start(
     origins: [ORIGIN],
     allowPlainHttp: over.allowPlainHttp ?? false,
     upstream: over.upstream ?? stand,
-    random: () => FREETSA_NONCE,
+    random: over.random ?? (() => FREETSA_NONCE),
     now: () => clock.now,
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -61,6 +67,22 @@ const post = (
   headers: Record<string, string> = {},
 ) => fetch(h.base + path, { method: 'POST', body, headers: { 'Content-Type': type, ...headers } });
 const hashJson = (h: Uint8Array) => JSON.stringify({ hash: toBase64Url(h) });
+
+/** Sends the request target as given (fetch would normalise `//` and friends). */
+function rawGet(h: Harness, path: string): Promise<{ status: number; body: string }> {
+  const port = Number(new URL(h.base).port);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method: 'GET' }, (res) => {
+      const parts: Buffer[] = [];
+      res.on('data', (c: Buffer) => parts.push(c));
+      res.on('end', () =>
+        resolve({ status: res.statusCode ?? 0, body: Buffer.concat(parts).toString('utf8') }),
+      );
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 describe('relay: stamping', () => {
   let h: Harness;
@@ -195,6 +217,26 @@ describe('relay: input', () => {
     expect((await fetch(`${h.base}/other`)).status).toBe(404);
     expect(h.calls).toHaveLength(0);
   });
+  it('answers request targets that are not URLs with 400 and keeps running', async () => {
+    for (const path of ['//', '//[', '//:', '///']) {
+      const res = await rawGet(h, path);
+      expect(res.status, path).toBe(400);
+      expect(JSON.parse(res.body), path).toEqual({ error: 'bad-request' });
+    }
+    expect((await fetch(`${h.base}/health`)).status).toBe(200);
+  });
+  it('answers 500 with a code when the relay itself breaks, and keeps running', async () => {
+    const h2 = await start({
+      random: () => {
+        throw new Error('no entropy, with secrets');
+      },
+    });
+    const res = await post(h2, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json');
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'internal' });
+    expect((await fetch(`${h2.base}/health`)).status).toBe(200);
+    await h2.close();
+  });
   it('lists only what it offers', async () => {
     const res = await fetch(`${h.base}/v1/services`);
     const body = (await res.json()) as { services: { id: string; qualified: boolean }[] };
@@ -211,6 +253,46 @@ describe('relay: input', () => {
       .services;
     expect(ids).toEqual(['freetsa', 'sectigo', 'digicert', 'certum']);
     await h2.close();
+  });
+});
+
+describe('relay: start configuration', () => {
+  it('names an unknown service id in RELAY_SERVICES and refuses to start', () => {
+    expect(() => readConfig({ RELAY_SERVICES: 'freetsa,nope' }, () => SERVICES)).toThrow(/nope/);
+    expect(() => readConfig({ RELAY_SERVICES: 'nope' }, () => SERVICES)).toThrow(/nicht angeboten/);
+  });
+  it('refuses an id the relay would not offer (http-only without RELAY_ALLOW_PLAIN_HTTP)', () => {
+    expect(() => readConfig({ RELAY_SERVICES: 'digicert' }, () => SERVICES)).toThrow(/digicert/);
+    expect(
+      readConfig(
+        { RELAY_SERVICES: 'digicert', RELAY_ALLOW_PLAIN_HTTP: '1' },
+        () => SERVICES,
+      ).services.map((s) => s.id),
+    ).toEqual(['digicert']);
+  });
+  it('refuses to start with no services at all', () => {
+    expect(() => readConfig({}, () => [])).toThrow(/keine Dienste/);
+    expect(() => readConfig({ RELAY_SERVICES: 'freetsa' }, () => [])).toThrow(/nicht angeboten/);
+  });
+  it('offers all loaded services, or the chosen ones', () => {
+    expect(readConfig({}, () => SERVICES).services.map((s) => s.id)).toEqual([
+      'freetsa',
+      'sectigo',
+    ]);
+    expect(
+      readConfig({ RELAY_SERVICES: ' sectigo ' }, () => SERVICES).services.map((s) => s.id),
+    ).toEqual(['sectigo']);
+  });
+  it('limits the open connections of the server', async () => {
+    const { server } = createRelayServer({
+      services: SERVICES,
+      origins: [ORIGIN],
+      allowPlainHttp: false,
+      upstream: networkUpstream,
+      random: () => FREETSA_NONCE,
+      now: () => NOW,
+    });
+    expect(server.maxConnections).toBe(RELAY_LIMITS.maxConnections);
   });
 });
 

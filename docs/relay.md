@@ -82,6 +82,7 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt |
 | 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                   |
+| 400    | `bad-request`                                                                   | Pfad ist keine gültige Adresse (z. B. `//`, `//[`)                             |
 | 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft               |
 | 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                               |
 | 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                     |
@@ -112,18 +113,22 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 
 ## Grenzen (`relay/limits.ts`)
 
-| Name                | Wert   | Bedeutung                                                    |
-| ------------------- | ------ | ------------------------------------------------------------ |
-| `bodyBytes`         | 512    | Größter Körper einer Anfrage                                 |
-| `upstreamBytes`     | 65536  | Größte Antwort eines Dienstes                                |
-| `upstreamTimeoutMs` | 10000  | Frist für den ganzen Aufruf beim Dienst                      |
-| `requestTimeoutMs`  | 10000  | Frist für die ganze eingehende Anfrage                       |
-| `perMinuteTotal`    | 60     | Anfragen je Minute über alle Dienste                         |
-| `windowMs`          | 60000  | Zeitfenster der Zähler                                       |
-| `maxSkewMs`         | 300000 | Erlaubter Unterschied zwischen Token-Zeit und Uhr des Relays |
-| `maxOrigins`        | 16     | Zahl der einstellbaren Herkünfte                             |
+| Name                | Wert   | Bedeutung                                                     |
+| ------------------- | ------ | ------------------------------------------------------------- |
+| `bodyBytes`         | 512    | Größter Körper einer Anfrage                                  |
+| `upstreamBytes`     | 65536  | Größte Antwort eines Dienstes                                 |
+| `upstreamTimeoutMs` | 10000  | Frist für den ganzen Aufruf beim Dienst                       |
+| `requestTimeoutMs`  | 10000  | Frist für die ganze eingehende Anfrage                        |
+| `perMinuteTotal`    | 60     | Anfragen je Minute über alle Dienste                          |
+| `windowMs`          | 60000  | Zeitfenster der Zähler                                        |
+| `maxSkewMs`         | 300000 | Erlaubter Unterschied zwischen Token-Zeit und Uhr des Relays  |
+| `maxOrigins`        | 16     | Zahl der einstellbaren Herkünfte                              |
+| `maxConnections`    | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab |
 
-Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4).
+Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4). `perMinuteTotal` und
+`minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht
+zeitlich, sondern lässt in einem Fenster von einer Minute höchstens so viele durch; danach kommen Anfragen mit
+`429` und `Retry-After`.
 
 **Grenze der Zähler:** Sie gelten für alle Aufrufer zusammen, nicht je Aufrufer (das Relay kennt keine
 Adressen). Ein einzelner Aufrufer kann das Limit für alle ausschöpfen. Schutz vor Überlast durch viele

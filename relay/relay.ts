@@ -186,14 +186,43 @@ export function createRelay(options: RelayOptions): Relay {
     );
   }
 
+  /** Last resort: a 500 with a code and no details. Never throws, so it cannot end the process. */
+  function answerInternal(res: ServerResponse, echo: string | null): void {
+    try {
+      if (!res.headersSent) send(res, 500, { error: 'internal' }, echo);
+      else res.end();
+    } catch {
+      res.destroy();
+    }
+  }
+
   function handle(req: IncomingMessage, res: ServerResponse): void {
-    const url = new URL(req.url ?? '/', 'http://relay.invalid');
     const sent = req.headers.origin;
     const origin = typeof sent === 'string' ? sent : null;
-    const allowed = origin !== null && options.origins.includes(origin);
-    const echo = allowed ? origin : null;
+    const echo = origin !== null && options.origins.includes(origin) ? origin : null;
+    try {
+      route(req, res, origin, echo);
+    } catch {
+      answerInternal(res, echo);
+    }
+  }
 
-    if (origin !== null && !allowed) return send(res, 403, { error: 'origin-not-allowed' }, null);
+  function route(
+    req: IncomingMessage,
+    res: ServerResponse,
+    origin: string | null,
+    echo: string | null,
+  ): void {
+    if (origin !== null && echo === null) {
+      return send(res, 403, { error: 'origin-not-allowed' }, null);
+    }
+    let url: URL;
+    try {
+      url = new URL(req.url ?? '/', 'http://relay.invalid');
+    } catch {
+      // e.g. `//`, `//[`: a target that is no address at all
+      return send(res, 400, { error: 'bad-request' }, echo);
+    }
     if (url.search !== '') return send(res, 400, { error: 'no-query' }, echo);
 
     if (req.method === 'OPTIONS') {
@@ -231,10 +260,7 @@ export function createRelay(options: RelayOptions): Relay {
         return send(res, 405, { error: 'method-not-allowed' }, echo, { Allow: 'POST' });
       const service = byId.get(m[1]!);
       if (!service) return send(res, 404, { error: 'unknown-service' }, echo);
-      stamp(req, res, service, echo).catch(() => {
-        if (!res.headersSent) send(res, 500, { error: 'internal' }, echo);
-        else res.end();
-      });
+      stamp(req, res, service, echo).catch(() => answerInternal(res, echo));
       return;
     }
     return send(res, 404, { error: 'not-found' }, echo);

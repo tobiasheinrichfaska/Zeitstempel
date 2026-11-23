@@ -16,4 +16,6 @@ export const RELAY_LIMITS = {
   maxSkewMs: 5 * 60_000,
   /** Largest number of origins that may be configured. */
   maxOrigins: 16,
+  /** Open connections at the same time; further ones are refused by the server. */
+  maxConnections: 256,
 } as const;

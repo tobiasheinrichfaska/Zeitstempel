@@ -6,12 +6,12 @@ import {
   ctx,
   expect,
   inner,
-  integerBytes,
   integerNumber,
   octets,
   oid,
   parseDer,
   time,
+  unsignedBytes,
   type Node,
 } from './der.ts';
 import { HASHES, OID, type HashName } from './oids.ts';
@@ -62,7 +62,7 @@ function readTstInfo(der: Uint8Array): TstInfo {
   const imprintParts = children(expect(f[2], TAG.sequence));
   const hashOid = oid(children(expect(imprintParts[0], TAG.sequence))[0]!);
   const imprint = octets(imprintParts[1]!);
-  const serial = toHex(trimZeros(integerBytes(f[3]!)));
+  const serial = toHex(trimZeros(unsignedBytes(f[3]!)));
   const genTime = time(expect(f[4], TAG.generalizedTime));
   let accuracyMs: number | null = null;
   let nonce: Uint8Array | null = null;
@@ -77,7 +77,7 @@ function readTstInfo(der: Uint8Array): TstInfo {
       }
       accuracyMs = ms;
     } else if (n.tag === TAG.integer && nonce === null) {
-      nonce = trimZeros(integerBytes(n));
+      nonce = trimZeros(unsignedBytes(n));
     } else if (n.tag === TAG.boolean || n.tag === ctx(0) || n.tag === ctx(1)) {
       if (n.tag === TAG.boolean) boolean(n);
     } else {
@@ -112,6 +112,14 @@ function readAttributes(set: Node): Map<string, Node> {
 
 /** Reads a token (`ContentInfo` holding `SignedData` over a `TSTInfo`). Throws `ReaderError`. */
 export function readToken(bytes: Uint8Array): ParsedToken {
+  try {
+    return readTokenStrict(bytes);
+  } catch (e) {
+    throw e instanceof ReaderError ? e : new ReaderError('malformed');
+  }
+}
+
+function readTokenStrict(bytes: Uint8Array): ParsedToken {
   const ci = children(expect(parseDer(bytes), TAG.sequence));
   if (oid(ci[0]!) !== OID.signedData || ci.length !== 2) throw new ReaderError('not-signed-data');
   const sd = children(expect(inner(expect(ci[1], ctx(0))), TAG.sequence));
@@ -139,7 +147,7 @@ export function readToken(bytes: Uint8Array): ParsedToken {
   const sid = children(expect(s[1], TAG.sequence)); // issuer and serial number only
   if (version !== 1) throw new ReaderError('unsupported-version');
   const issuer = expect(sid[0], TAG.sequence).raw;
-  const serial = trimZeros(integerBytes(sid[1]!));
+  const serial = trimZeros(unsignedBytes(sid[1]!));
   const digestOid = oid(children(expect(s[2], TAG.sequence))[0]!);
   if (!declaredDigests.includes(digestOid)) throw new ReaderError('bad-structure');
   const attrNode = s[3];

@@ -12,9 +12,10 @@ import {
   oid,
   parseDer,
   time,
+  unsignedBytes,
   type Node,
 } from './der.ts';
-import { OID } from './oids.ts';
+import { KNOWN_EXTENSIONS, OID } from './oids.ts';
 import { ReaderError } from './result.ts';
 
 /** What the verifier needs from a certificate; read strictly, nothing else is interpreted. */
@@ -41,6 +42,8 @@ export interface Certificate {
   /** First byte of the keyUsage bit string (0x80 digitalSignature, 0x40 nonRepudiation, 0x04 keyCertSign). */
   keyUsage: number | null;
   eku: { oids: string[]; critical: boolean } | null;
+  /** True when a critical extension is present that this reader does not know (RFC 5280 § 4.2). */
+  unknownCritical: boolean;
 }
 
 const LIMITS = { maxCertificates: 16, maxPemChars: 200_000 } as const;
@@ -59,23 +62,41 @@ function readExtensions(list: Node): Map<string, { critical: boolean; value: Uin
   return map;
 }
 
+/** Runs a reader and makes sure that only `ReaderError` can come out of it. */
+function strict<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (e) {
+    throw e instanceof ReaderError ? e : new ReaderError('malformed');
+  }
+}
+
 export function parseCertificate(der: Uint8Array): Certificate {
+  return strict(() => parseCertificateStrict(der));
+}
+
+function parseCertificateStrict(der: Uint8Array): Certificate {
   const root = expect(parseDer(der), TAG.sequence);
-  const [tbs, sigAlg, sigBits] = children(root);
+  const top = children(root);
+  if (top.length !== 3) throw new ReaderError('bad-certificate');
+  const [tbs, sigAlg, sigBits] = top;
   expect(tbs, TAG.sequence);
   expect(sigAlg, TAG.sequence);
   const signature = bitStringBytes(sigBits!);
   const fields = children(tbs!);
   let i = 0;
-  if (fields[0]!.tag === ctx(0)) {
+  if (fields[0]?.tag === ctx(0)) {
     if (integerNumber(inner(fields[0]!)) !== 2) throw new ReaderError('bad-certificate'); // v3
     i = 1;
   }
-  const serial = expect(fields[i]!, TAG.integer).value;
+  // version, serial, algorithm, issuer, validity, subject, key: at least these must be there
+  if (fields.length < i + 6) throw new ReaderError('bad-certificate');
+  const serial = unsignedBytes(expect(fields[i], TAG.integer));
   expect(fields[i + 1], TAG.sequence); // inner signature algorithm (must equal the outer one)
   if (!equalNode(fields[i + 1]!, sigAlg!)) throw new ReaderError('bad-certificate');
   const issuer = expect(fields[i + 2], TAG.sequence).raw;
   const validity = children(expect(fields[i + 3], TAG.sequence));
+  if (validity.length !== 2) throw new ReaderError('bad-certificate');
   const subject = expect(fields[i + 4], TAG.sequence).raw;
   const spkiNode = expect(fields[i + 5], TAG.sequence);
   const spkiParts = children(spkiNode);
@@ -87,9 +108,11 @@ export function parseCertificate(der: Uint8Array): Certificate {
   let isCa: boolean | null = null;
   let keyUsage: number | null = null;
   let eku: Certificate['eku'] = null;
+  let unknownCritical = false;
   const extNode = fields.find((f) => f.tag === ctx(3));
   if (extNode) {
     const exts = readExtensions(extNode);
+    for (const [id, e] of exts) if (e.critical && !KNOWN_EXTENSIONS.has(id)) unknownCritical = true;
     const bc = exts.get(OID.extBasicConstraints);
     if (bc) {
       const seq = children(expect(parseDer(bc.value), TAG.sequence));
@@ -125,6 +148,7 @@ export function parseCertificate(der: Uint8Array): Certificate {
     isCa,
     keyUsage,
     eku,
+    unknownCritical,
   };
 }
 
@@ -134,6 +158,10 @@ function equalNode(a: Node, b: Node): boolean {
 
 /** Reads every certificate of a PEM text (a bundle may hold several). */
 export function parsePemCertificates(pem: string): Certificate[] {
+  return strict(() => parsePemStrict(pem));
+}
+
+function parsePemStrict(pem: string): Certificate[] {
   if (pem.length > LIMITS.maxPemChars) throw new ReaderError('too-large');
   const out: Certificate[] = [];
   const re = /-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*)-----END CERTIFICATE-----/g;

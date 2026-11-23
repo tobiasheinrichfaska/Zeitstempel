@@ -12,9 +12,10 @@ Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 5. Das Attribut zum Zeitstempel-Zertifikat (`signingCertificate` oder `signingCertificateV2`) passt zum
    verwendeten Zertifikat.
 6. Die Signatur (RSA PKCS#1 v1.5 oder ECDSA P-256/P-384/P-521, mit SHA-256/384/512) stimmt.
-7. Das Zeitstempel-Zertifikat erlaubt Zeitstempel (erweiterte Schlüsselverwendung, standardmäßig kritisch
-   verlangt) und die Signatur-Verwendung.
-8. Alle Zertifikate der Kette waren **zur bestätigten Zeit** gültig, die Aussteller sind
+7. Das Zeitstempel-Zertifikat erlaubt Zeitstempel (erweiterte Schlüsselverwendung mit genau dem einen Zweck
+   `id-kp-timeStamping`, standardmäßig kritisch verlangt) und die Signatur-Verwendung.
+8. Alle Zertifikate der Kette waren **zur bestätigten Zeit** gültig, kein Zertifikat der Kette (Anker ausgenommen) trägt eine
+   kritische, unbekannte Erweiterung, die Aussteller sind
    Zertifizierungsstellen und erlauben das Ausstellen von Zertifikaten, und die Kette endet bei einem der
    übergebenen Anker.
 
@@ -36,6 +37,13 @@ Schnelltest (`npm run spike`).
 - **Die Anker selbst:** Wem man vertraut, entscheidet der Aufrufer. Die mitgelieferten Anker stammen aus
   einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke sind in `docs/dienste.md`
   aufgeführt, aber nicht mit den Betreibern abgeglichen.
+
+## Verhalten bei Fehlern (fail-closed)
+
+Ein Wert, der nicht zu den Prüfoptionen passt (`now`, `at` kein gültiges Datum, `maxSkewMs` keine Zahl oder
+negativ), ergibt `bad-options` statt einer still übersprungenen Prüfung. Unerwartetes, das nicht eindeutig
+gelesen werden kann, wird abgelehnt und nie als gültig durchgelassen; die Prüfung beantwortet im Zweifel mit
+einem Fehlercode (L6: reines fail-closed, keine weitere Sonderbehandlung).
 
 ## Was ein bestandener Test aussagt
 
