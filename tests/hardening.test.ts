@@ -10,9 +10,9 @@ import { build, ext, int, octet, oidT, seq, type Opts } from './token-builder.ts
 
 const TIME = new Date('2026-01-01T00:00:00Z');
 
-async function reason(o: Opts = {}, options: object = {}): Promise<Reason | 'ok'> {
+async function reason(o: Opts = {}, options: unknown = {}): Promise<Reason | 'ok'> {
   const t = build(o);
-  const r = await verifyTimestampToken(t.token, t.imprint, [t.caPem], options);
+  const r = await verifyTimestampToken(t.token, t.imprint, [t.caPem], options as object);
   return r.ok ? 'ok' : r.reason;
 }
 
@@ -60,7 +60,7 @@ describe('L2: critical unknown extension in a chain certificate', () => {
 });
 
 describe('L3: given options must be usable', () => {
-  const bad: [string, object][] = [
+  const bad: [string, unknown][] = [
     ['now: Invalid Date', { now: new Date(NaN) }],
     ['now: a string', { now: '2026-01-01' }],
     ['now: a number', { now: 0 }],
@@ -70,6 +70,23 @@ describe('L3: given options must be usable', () => {
     ['maxSkewMs: a string', { now: TIME, maxSkewMs: '5' }],
     ['maxSkewMs: negative', { now: TIME, maxSkewMs: -1 }],
     ['maxSkewMs: null', { now: TIME, maxSkewMs: null }],
+    ['options: null', null],
+    ['options: a number', 5],
+    ['options: a string', 'x'],
+    ['options: an array', []],
+    ['expectedNonce: null', { expectedNonce: null }],
+    ['expectedNonce: 0', { expectedNonce: 0 }],
+    ['expectedNonce: an empty string', { expectedNonce: '' }],
+    ['expectedNonce: a string', { expectedNonce: 'abc' }],
+    ['expectedNonce: NaN', { expectedNonce: NaN }],
+    ['expectedNonce: false', { expectedNonce: false }],
+    ['expectedNonce: an empty array', { expectedNonce: [] }],
+    ['expectedNonce: a plain array of numbers', { expectedNonce: [1, 2] }],
+    ['expectedNonce: empty bytes', { expectedNonce: new Uint8Array(0) }],
+    ['expectedNonce: 17 bytes', { expectedNonce: new Uint8Array(17).fill(1) }],
+    ['requireCriticalEku: null', { requireCriticalEku: null }],
+    ['requireCriticalEku: 0', { requireCriticalEku: 0 }],
+    ['requireCriticalEku: "false"', { requireCriticalEku: 'false' }],
   ];
   for (const [name, options] of bad) {
     it(`refuses ${name}`, async () => {
@@ -78,6 +95,26 @@ describe('L3: given options must be usable', () => {
   }
   it('treats a now in 1970 as given (a token from the future is refused)', async () => {
     expect(await reason({}, { now: new Date(0) })).toBe('time-in-future');
+  });
+  it('treats undefined as not given', async () => {
+    expect(await reason({}, undefined)).toBe('ok');
+    expect(
+      await reason(
+        { nonceBytes: Uint8Array.of(5) },
+        { expectedNonce: undefined, requireCriticalEku: undefined, now: undefined },
+      ),
+    ).toBe('ok');
+  });
+  it('checks a valid expectedNonce of 1 to 16 bytes', async () => {
+    const ok16 = new Uint8Array(16).fill(7);
+    expect(
+      await reason({ nonceBytes: Uint8Array.of(5) }, { expectedNonce: Uint8Array.of(5) }),
+    ).toBe('ok');
+    expect(
+      await reason({ nonceBytes: Uint8Array.of(5) }, { expectedNonce: Uint8Array.of(6) }),
+    ).toBe('nonce-mismatch');
+    expect(await reason({ nonceBytes: ok16 }, { expectedNonce: ok16 })).toBe('ok');
+    expect(await reason({}, { expectedNonce: Uint8Array.of(5) })).toBe('nonce-mismatch');
   });
   it('allows an infinite skew', async () => {
     expect(await reason({}, { now: new Date(0), maxSkewMs: Infinity })).toBe('ok');
@@ -211,5 +248,79 @@ describe('L7: ECDSA signature structure', () => {
   });
   it('still accepts the normal signatures', async () => {
     for (let i = 0; i < 10; i += 1) expect(await reason()).toBe('ok');
+  });
+});
+
+describe('N7: chain building tries every signature-valid issuer candidate', () => {
+  const unknownCrit = ext('1.2.3.4.5.6', true, octet(new Uint8Array(0)));
+  const base = { intermediate: {} };
+  it('verifies a chain through an intermediate', async () => {
+    expect(await reason(base)).toBe('ok');
+  });
+  it('is not blocked by a twin with a critical unknown extension in front of the real one', async () => {
+    expect(await reason({ ...base, twins: [{ extraExts: [unknownCrit] }] })).toBe('ok');
+  });
+  it('is not blocked by an expired twin in front of the real one', async () => {
+    expect(
+      await reason({ ...base, twins: [{ validity: ['20100101000000Z', '20150101000000Z'] }] }),
+    ).toBe('ok');
+  });
+  it('is not blocked by a twin that is no CA in front of the real one', async () => {
+    expect(await reason({ ...base, twins: [{ noCa: true }] })).toBe('ok');
+  });
+  it('is not blocked by several twins at once', async () => {
+    expect(
+      await reason({
+        ...base,
+        twins: [
+          { noCa: true },
+          { extraExts: [unknownCrit] },
+          { validity: ['20100101000000Z', '20150101000000Z'] },
+        ],
+      }),
+    ).toBe('ok');
+  });
+  it('a twin does not make an otherwise bad chain valid', async () => {
+    // the real intermediate carries a critical unknown extension: still refused, twins or not
+    const flawed = { intermediate: { extraExts: [unknownCrit] } };
+    expect(await reason(flawed)).toBe('bad-certificate');
+    expect(await reason({ ...flawed, twins: [{ extraExts: [unknownCrit] }] })).toBe(
+      'bad-certificate',
+    );
+    expect(await reason({ ...flawed, twins: [{ noCa: true }] })).not.toBe('ok');
+  });
+  it('reports the first failure when every candidate is unusable', async () => {
+    expect(
+      await reason({
+        ...base,
+        intermediate: { extraExts: [unknownCrit] },
+        twins: [{ noCa: true }],
+      }),
+    ).toBe('not-a-ca');
+  });
+});
+
+describe('N3: the intermediate certificate and trust anchors', () => {
+  const unknownCrit = ext('1.2.3.4.5.6', true, octet(new Uint8Array(0)));
+  const unknownPlain = ext('1.2.3.4.5.6', false, octet(new Uint8Array(0)));
+  it('refuses a critical unknown extension in the intermediate certificate', async () => {
+    expect(await reason({ intermediate: { extraExts: [unknownCrit] } })).toBe('bad-certificate');
+  });
+  it('accepts the same extension in the intermediate when it is not critical', async () => {
+    expect(await reason({ intermediate: { extraExts: [unknownPlain] } })).toBe('ok');
+  });
+  it('refuses a critical name constraint in the intermediate', async () => {
+    expect(await reason({ intermediate: { extraExts: [ext('2.5.29.30', true, seq())] } })).toBe(
+      'bad-certificate',
+    );
+  });
+  it('keeps allowing a critical unknown extension in the trust anchor (the root)', async () => {
+    expect(await reason({ caExts: [unknownCrit] })).toBe('ok');
+    expect(await reason({ caExts: [unknownCrit], intermediate: {} })).toBe('ok');
+  });
+  it('keeps allowing it when the intermediate itself is the trust anchor', async () => {
+    const t = build({ intermediate: { extraExts: [unknownCrit] } });
+    const r = await verifyTimestampToken(t.token, t.imprint, [t.intPem]);
+    expect(r.ok).toBe(true);
   });
 });

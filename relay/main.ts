@@ -3,9 +3,12 @@
 //   RELAY_ORIGINS            comma-separated browser origins that may call (default: none)
 //   RELAY_ALLOW_PLAIN_HTTP   "1" to use services that only answer over http (default: off)
 //   RELAY_SERVICES           comma-separated service ids to offer (default: all that fit)
+//   RELAY_KEYS_FILE          path of the key file (ids and verifiers; never in the repo); required
+//   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
 import { loadServices } from './load.ts';
+import { loadKeys, type RelayKey } from './keys.ts';
 import type { RelayService } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { networkUpstream } from './upstream.ts';
@@ -29,7 +32,21 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  return { origins, port, allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1', only };
+  if (env.RELAY_AUTH !== undefined && env.RELAY_AUTH !== '' && env.RELAY_AUTH !== 'off') {
+    throw new Error('RELAY_AUTH darf nur "off" sein (oder fehlen)');
+  }
+  const authOff = env.RELAY_AUTH === 'off';
+  if (authOff && (env.RELAY_KEYS_FILE ?? '') !== '') {
+    throw new Error('RELAY_AUTH=off und RELAY_KEYS_FILE schließen sich aus');
+  }
+  return {
+    origins,
+    port,
+    allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
+    only,
+    authOff,
+    keysFile: env.RELAY_KEYS_FILE ?? '',
+  };
 }
 
 /**
@@ -54,24 +71,47 @@ export function chooseServices<T extends { id: string; url: string }>(
   return chosen;
 }
 
-/** Settings and the services to offer, or a throw that names the problem. */
-export function readConfig(env: NodeJS.ProcessEnv, load: () => RelayService[] = loadServices) {
+/** Settings, the services to offer and the keys (or `'off'`), or a throw that names the problem. */
+export function readConfig(
+  env: NodeJS.ProcessEnv,
+  load: () => RelayService[] = loadServices,
+  readKeys: (path: string) => RelayKey[] = loadKeys,
+) {
   const settings = readSettings(env);
+  const services = chooseServices(load(), settings.only, settings.allowPlainHttp);
+  if (settings.authOff) return { settings, services, keys: 'off' as const };
+  if (settings.keysFile === '') {
+    throw new Error(
+      'RELAY_KEYS_FILE fehlt (ohne Schlüsseldatei startet das Relay nicht; nur für die lokale Entwicklung: RELAY_AUTH=off)',
+    );
+  }
+  return { settings, services, keys: readKeys(settings.keysFile) };
+}
+
+/** The start line: port, services and whether requests are authenticated. No key data. */
+export function startEvent(
+  port: number,
+  services: readonly { id: string }[],
+  keys: readonly RelayKey[] | 'off',
+) {
   return {
-    settings,
-    services: chooseServices(load(), settings.only, settings.allowPlainHttp),
+    event: 'start',
+    port,
+    services: services.map((s) => s.id),
+    auth: keys === 'off' ? 'off' : 'on',
   };
 }
 
-if (import.meta.main) {
+function main(): void {
   let config: ReturnType<typeof readConfig>;
   try {
     config = readConfig(process.env);
   } catch (e) {
     console.error(JSON.stringify({ event: 'config-error', message: (e as Error).message }));
-    process.exit(1);
+    process.exitCode = 1; // no server was started: the process ends by itself
+    return;
   }
-  const { settings, services } = config;
+  const { settings, services, keys } = config;
   const { server, relay } = createRelayServer({
     services,
     origins: settings.origins,
@@ -79,11 +119,10 @@ if (import.meta.main) {
     upstream: networkUpstream,
     random: (n) => new Uint8Array(randomBytes(n)),
     now: () => Date.now(),
+    keys,
   });
   server.listen(settings.port, () => {
-    console.log(
-      JSON.stringify({ event: 'start', port: settings.port, services: services.map((s) => s.id) }),
-    );
+    console.log(JSON.stringify(startEvent(settings.port, services, keys)));
   });
   setInterval(
     () => console.log(JSON.stringify({ event: 'counts', ...relay.stats() })),
@@ -91,3 +130,5 @@ if (import.meta.main) {
   ).unref();
   process.on('SIGTERM', () => server.close(() => process.exit(0)));
 }
+
+if (import.meta.main) main();

@@ -133,15 +133,37 @@ export function nameToString(name: Uint8Array): string {
 
 const same = (a: Uint8Array, b: Uint8Array) => equalBytes(a, b);
 
+const dedupe = (certs: readonly Certificate[]): Certificate[] =>
+  certs.filter((c, i) => certs.findIndex((d) => same(d.raw, c.raw)) === i);
+
 const isValidDate = (d: unknown): d is Date =>
   Object.prototype.toString.call(d) === '[object Date]' && Number.isFinite((d as Date).getTime());
 
+const NONCE_BYTES = { min: 1, max: 16 } as const;
+
 /** A given option must be usable: no silent skipping of a check because of a bad value. */
-function checkOptions(options: VerifyOptions): void {
-  if (options.now !== undefined && !isValidDate(options.now)) throw new ReaderError('bad-options');
-  if (options.at !== undefined && !isValidDate(options.at)) throw new ReaderError('bad-options');
-  const skew = options.maxSkewMs;
+function checkOptions(options: unknown): asserts options is VerifyOptions {
+  if (options === undefined) return;
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new ReaderError('bad-options');
+  }
+  const o = options as Record<string, unknown>;
+  if (o.now !== undefined && !isValidDate(o.now)) throw new ReaderError('bad-options');
+  if (o.at !== undefined && !isValidDate(o.at)) throw new ReaderError('bad-options');
+  const skew = o.maxSkewMs;
   if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
+    throw new ReaderError('bad-options');
+  }
+  const nonce = o.expectedNonce;
+  if (
+    nonce !== undefined &&
+    (!(nonce instanceof Uint8Array) ||
+      nonce.length < NONCE_BYTES.min ||
+      nonce.length > NONCE_BYTES.max)
+  ) {
+    throw new ReaderError('bad-options');
+  }
+  if (o.requireCriticalEku !== undefined && typeof o.requireCriticalEku !== 'boolean') {
     throw new ReaderError('bad-options');
   }
 }
@@ -170,24 +192,84 @@ function validAt(cert: Certificate, at: number): boolean {
   return cert.notBefore <= at && at <= cert.notAfter;
 }
 
-/** Looks for the issuer of `cert` among `pool` whose key verifies `cert`'s signature. */
-async function findIssuer(
-  cert: Certificate,
-  pool: readonly Certificate[],
-): Promise<Certificate | null> {
-  for (const candidate of pool) {
-    if (!same(candidate.subject, cert.issuer)) continue;
-    const alg = SIGNATURES[cert.signatureOid];
-    if (!alg?.hash) continue;
-    try {
-      if (await verifyWithKey(candidate, cert.signatureOid, null, cert.tbs, cert.signature)) {
-        return candidate;
-      }
-    } catch {
-      /* an unsupported key or signature: try the next candidate */
-    }
+const MAX_CANDIDATES = 8; // signature-valid issuer candidates tried per certificate
+const MAX_SIGNATURE_CHECKS = 64; // signature verifications for the whole chain search
+
+/** Why a candidate issuer is unusable at time `at`, or null when it is fine. */
+function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: number) {
+  if (issuer.isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
+    return 'not-a-ca' as const;
+  }
+  if (!validAt(issuer, at)) return 'certificate-not-valid-at-time' as const;
+  if (issuer.unknownCritical && !anchors.some((a) => same(a.raw, issuer.raw))) {
+    return 'bad-certificate' as const; // a trust anchor is the caller's decision, not checked
   }
   return null;
+}
+
+/**
+ * Builds the chain from `signer` up to a trust anchor. Every signature-valid candidate issuer is tried
+ * (depth, candidates per step and signature checks are bounded), so a look-alike certificate with the
+ * same name cannot hide the real intermediate; each candidate must pass the same checks as before.
+ * Returns the number of certificates (anchor included) or throws the reason of the first failed branch.
+ */
+async function buildChain(
+  signer: Certificate,
+  anchors: readonly Certificate[],
+  pool: readonly Certificate[],
+  at: number,
+): Promise<number> {
+  let checks = 0;
+  let firstFailure: ReaderError | null = null;
+  const remember = (reason: ConstructorParameters<typeof ReaderError>[0]) => {
+    firstFailure ??= new ReaderError(reason);
+  };
+  const walk = async (
+    current: Certificate,
+    length: number,
+    path: readonly Certificate[],
+  ): Promise<number | null> => {
+    if (anchors.some((a) => same(a.raw, current.raw))) return length;
+    if (length > MAX_CHAIN) {
+      remember('chain-too-long');
+      return null;
+    }
+    const alg = SIGNATURES[current.signatureOid];
+    let found = 0;
+    for (const candidate of pool) {
+      if (!same(candidate.subject, current.issuer)) continue;
+      if (path.some((p) => same(p.raw, candidate.raw))) continue; // self-signed or a loop
+      if (!alg?.hash) continue;
+      if (checks >= MAX_SIGNATURE_CHECKS || found >= MAX_CANDIDATES) break;
+      checks += 1;
+      let valid = false;
+      try {
+        valid = await verifyWithKey(
+          candidate,
+          current.signatureOid,
+          null,
+          current.tbs,
+          current.signature,
+        );
+      } catch {
+        /* an unsupported key or signature: try the next candidate */
+      }
+      if (!valid) continue;
+      found += 1;
+      const flaw = issuerFlaw(candidate, anchors, at);
+      if (flaw) {
+        remember(flaw);
+        continue;
+      }
+      const result = await walk(candidate, length + 1, [...path, candidate]);
+      if (result !== null) return result;
+    }
+    if (found === 0) remember('untrusted-chain');
+    return null;
+  };
+  const length = await walk(signer, 1, [signer]);
+  if (length !== null) return length;
+  throw firstFailure ?? new ReaderError('untrusted-chain');
 }
 
 /**
@@ -214,7 +296,7 @@ export async function verifyTimestampToken(
     const info: TstInfo = token.info;
     if (info.hashName !== 'SHA-256') throw new ReaderError('unsupported-hash');
     if (!same(info.imprint, expectedSha256)) throw new ReaderError('imprint-mismatch');
-    if (options.expectedNonce) {
+    if (options.expectedNonce !== undefined) {
       const want = trimZeros(options.expectedNonce);
       if (!info.nonce || !same(info.nonce, want)) throw new ReaderError('nonce-mismatch');
     }
@@ -271,27 +353,8 @@ export async function verifyTimestampToken(
     if (!validAt(signer, at)) throw new ReaderError('certificate-not-valid-at-time');
 
     // chain to a trust anchor
-    let current = signer;
-    let length = 1;
-    const pool = [...anchors, ...token.certificates]; // anchors first: a cross-signed twin of an anchor must not win
-    for (;;) {
-      const anchor = anchors.find((a) => same(a.raw, current.raw));
-      if (anchor) break;
-      if (length > MAX_CHAIN) throw new ReaderError('chain-too-long');
-      const issuer = await findIssuer(current, pool);
-      if (!issuer) throw new ReaderError('untrusted-chain');
-      if (issuer.isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
-        throw new ReaderError('not-a-ca');
-      }
-      if (!validAt(issuer, at)) throw new ReaderError('certificate-not-valid-at-time');
-      if (issuer.unknownCritical && !anchors.some((a) => same(a.raw, issuer.raw))) {
-        throw new ReaderError('bad-certificate'); // a trust anchor is the caller's decision, not checked
-      }
-      length += 1;
-      if (same(issuer.raw, current.raw)) throw new ReaderError('untrusted-chain'); // self-signed, not an anchor
-      current = issuer;
-      if (anchors.some((a) => same(a.raw, current.raw))) break;
-    }
+    const pool = dedupe([...anchors, ...token.certificates]); // anchors first: a cross-signed twin of an anchor must not win
+    const length = await buildChain(signer, anchors, pool, at);
     return ok({
       genTime: new Date(info.genTime).toISOString(),
       accuracyMs: info.accuracyMs,

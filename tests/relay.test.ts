@@ -1,6 +1,14 @@
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { toBase64Url, verifyTimestampToken, fromBase64Url } from '../src/index.ts';
+import net, { type AddressInfo } from 'node:net';
+import {
+  toBase64Url,
+  verifyTimestampToken,
+  fromBase64Url,
+  deriveVerifier,
+  signRelayRequest,
+} from '../src/index.ts';
+import type { RelayKey } from '../relay/keys.ts';
 import { loadServices } from '../relay/load.ts';
 import { readConfig } from '../relay/main.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
@@ -18,8 +26,37 @@ const RECORDED = fixture('freetsa.tsr');
 const ORIGIN = 'https://app.example';
 const NOW = Date.parse('2026-11-23T13:10:00Z');
 
+// Random per run: the repo holds no key material.
+const KEY_A = new Uint8Array(randomBytes(32));
+const KEY_B = new Uint8Array(randomBytes(32));
+const verifierOf = (k: Uint8Array) => new Uint8Array(createHash('sha256').update(k).digest());
+const KEYS: RelayKey[] = [
+  { id: 'app-a', verifier: verifierOf(KEY_A) },
+  { id: 'app-b', verifier: verifierOf(KEY_B) },
+];
+
+/** The header value, computed independently of the library (node:crypto, the format of the spec). */
+function authHeader(
+  key: Uint8Array,
+  kid: string,
+  method: string,
+  path: string,
+  ts: number,
+  body: Uint8Array,
+): string {
+  const msg = `zeitstempel-auth-v1\n${method}\n${path}\n${ts}\n${createHash('sha256').update(body).digest('hex')}`;
+  const mac = createHmac('sha256', verifierOf(key)).update(msg).digest('base64url');
+  return `v1.${kid}.${ts}.${mac}`;
+}
+
 interface Harness {
   base: string;
+  /** Header value for a request made now (offset in seconds), signed with key A unless told otherwise. */
+  sign: (
+    path: string,
+    body: Uint8Array,
+    over?: { ts?: number; key?: Uint8Array; kid?: string },
+  ) => string;
   close: () => Promise<void>;
   calls: Uint8Array[];
   stats: () => { stamped: number; refused: Record<string, number> };
@@ -32,6 +69,8 @@ async function start(
     allowPlainHttp?: boolean;
     services?: typeof SERVICES;
     random?: (n: number) => Uint8Array;
+    keys?: readonly RelayKey[] | 'off';
+    authReplayEntries?: number;
   } = {},
 ): Promise<Harness> {
   const calls: Uint8Array[] = [];
@@ -47,10 +86,23 @@ async function start(
     upstream: over.upstream ?? stand,
     random: over.random ?? (() => FREETSA_NONCE),
     now: () => clock.now,
+    keys: over.keys ?? KEYS,
+    ...(over.authReplayEntries === undefined ? {} : { authReplayEntries: over.authReplayEntries }),
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as AddressInfo).port;
+  let n = 0;
   return {
+    sign: (path, body, o = {}) =>
+      authHeader(
+        o.key ?? KEY_A,
+        o.kid ?? 'app-a',
+        'POST',
+        path,
+        // Every call gets its own second inside the window, so equal requests are no replays.
+        o.ts ?? Math.floor(clock.now / 1000) + ((n++ % 100) - 50),
+        body,
+      ),
     base: `http://127.0.0.1:${port}`,
     close: () => new Promise((r) => (server.closeAllConnections(), server.close(() => r()))),
     calls,
@@ -59,13 +111,28 @@ async function start(
   };
 }
 
+const bytesOf = (body: string | Buffer): Uint8Array =>
+  typeof body === 'string' ? new TextEncoder().encode(body) : new Uint8Array(body);
+
+/** POST, signed for the harness key unless the call brings its own `X-Zeitstempel-Auth`. */
 const post = (
   h: Harness,
   path: string,
-  body: BodyInit,
+  body: string | Buffer,
   type: string,
   headers: Record<string, string> = {},
-) => fetch(h.base + path, { method: 'POST', body, headers: { 'Content-Type': type, ...headers } });
+) =>
+  fetch(h.base + path, {
+    method: 'POST',
+    body: typeof body === 'string' ? body : new Uint8Array(body),
+    headers: {
+      'Content-Type': type,
+      ...('X-Zeitstempel-Auth' in headers
+        ? {}
+        : { 'X-Zeitstempel-Auth': h.sign(path.split('?')[0]!, bytesOf(body)) }),
+      ...headers,
+    },
+  });
 const hashJson = (h: Uint8Array) => JSON.stringify({ hash: toBase64Url(h) });
 
 /** Sends the request target as given (fetch would normalise `//` and friends). */
@@ -257,33 +324,106 @@ describe('relay: input', () => {
 });
 
 describe('relay: start configuration', () => {
+  const OFF = { RELAY_AUTH: 'off' };
   it('names an unknown service id in RELAY_SERVICES and refuses to start', () => {
-    expect(() => readConfig({ RELAY_SERVICES: 'freetsa,nope' }, () => SERVICES)).toThrow(/nope/);
-    expect(() => readConfig({ RELAY_SERVICES: 'nope' }, () => SERVICES)).toThrow(/nicht angeboten/);
+    expect(() => readConfig({ ...OFF, RELAY_SERVICES: 'freetsa,nope' }, () => SERVICES)).toThrow(
+      /nope/,
+    );
+    expect(() => readConfig({ ...OFF, RELAY_SERVICES: 'nope' }, () => SERVICES)).toThrow(
+      /nicht angeboten/,
+    );
   });
   it('refuses an id the relay would not offer (http-only without RELAY_ALLOW_PLAIN_HTTP)', () => {
-    expect(() => readConfig({ RELAY_SERVICES: 'digicert' }, () => SERVICES)).toThrow(/digicert/);
+    expect(() => readConfig({ ...OFF, RELAY_SERVICES: 'digicert' }, () => SERVICES)).toThrow(
+      /digicert/,
+    );
     expect(
       readConfig(
-        { RELAY_SERVICES: 'digicert', RELAY_ALLOW_PLAIN_HTTP: '1' },
+        { ...OFF, RELAY_SERVICES: 'digicert', RELAY_ALLOW_PLAIN_HTTP: '1' },
         () => SERVICES,
       ).services.map((s) => s.id),
     ).toEqual(['digicert']);
   });
   it('refuses to start with no services at all', () => {
-    expect(() => readConfig({}, () => [])).toThrow(/keine Dienste/);
-    expect(() => readConfig({ RELAY_SERVICES: 'freetsa' }, () => [])).toThrow(/nicht angeboten/);
+    expect(() => readConfig(OFF, () => [])).toThrow(/keine Dienste/);
+    expect(() => readConfig({ ...OFF, RELAY_SERVICES: 'freetsa' }, () => [])).toThrow(
+      /nicht angeboten/,
+    );
   });
   it('offers all loaded services, or the chosen ones', () => {
-    expect(readConfig({}, () => SERVICES).services.map((s) => s.id)).toEqual([
+    expect(readConfig(OFF, () => SERVICES).services.map((s) => s.id)).toEqual([
       'freetsa',
       'sectigo',
     ]);
     expect(
-      readConfig({ RELAY_SERVICES: ' sectigo ' }, () => SERVICES).services.map((s) => s.id),
+      readConfig({ ...OFF, RELAY_SERVICES: ' sectigo ' }, () => SERVICES).services.map((s) => s.id),
     ).toEqual(['sectigo']);
   });
-  it('limits the open connections of the server', async () => {
+  it('limits the open connections: the third socket is closed, the first two stay', async () => {
+    const { server } = createRelayServer(
+      {
+        services: SERVICES,
+        origins: [ORIGIN],
+        allowPlainHttp: false,
+        upstream: networkUpstream,
+        random: () => FREETSA_NONCE,
+        now: () => NOW,
+        keys: 'off',
+      },
+      { maxConnections: 2 },
+    );
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const sockets: net.Socket[] = [];
+    const closed: boolean[] = [];
+    const open = (i: number) =>
+      new Promise<void>((resolve) => {
+        const s = net.connect(port, '127.0.0.1', () => resolve());
+        s.on('error', () => undefined);
+        s.on('close', () => (closed[i] = true));
+        sockets.push(s);
+      });
+    try {
+      await open(0);
+      await open(1);
+      await open(2);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(closed[2]).toBe(true);
+      expect(closed[0]).toBeFalsy();
+      expect(closed[1]).toBeFalsy();
+    } finally {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
+    }
+  });
+  it('answers 408 and closes when a request does not arrive in time', async () => {
+    const { server } = createRelayServer(
+      {
+        services: SERVICES,
+        origins: [ORIGIN],
+        allowPlainHttp: false,
+        upstream: networkUpstream,
+        random: () => FREETSA_NONCE,
+        now: () => NOW,
+        keys: 'off',
+      },
+      { requestTimeoutMs: 300 },
+    );
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const text = await new Promise<string>((resolve) => {
+      const s = net.connect(port, '127.0.0.1', () =>
+        s.write('POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\n'),
+      );
+      let got = '';
+      s.on('data', (c) => (got += c.toString('utf8')));
+      s.on('error', () => undefined);
+      s.on('close', () => resolve(got));
+    });
+    expect(text).toMatch(/^HTTP\/1\.1 408 /);
+    await new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
+  });
+  it('configures the deadlines and the limit from the shared limits', () => {
     const { server } = createRelayServer({
       services: SERVICES,
       origins: [ORIGIN],
@@ -291,8 +431,10 @@ describe('relay: start configuration', () => {
       upstream: networkUpstream,
       random: () => FREETSA_NONCE,
       now: () => NOW,
+      keys: 'off',
     });
     expect(server.maxConnections).toBe(RELAY_LIMITS.maxConnections);
+    expect(server.requestTimeout).toBe(RELAY_LIMITS.requestTimeoutMs);
   });
 });
 
@@ -308,7 +450,7 @@ describe('relay: origins (CORS)', () => {
     });
     expect(ok.status).toBe(204);
     expect(ok.headers.get('access-control-allow-origin')).toBe(ORIGIN);
-    expect(ok.headers.get('access-control-allow-headers')).toBe('Content-Type');
+    expect(ok.headers.get('access-control-allow-headers')).toBe('Content-Type, X-Zeitstempel-Auth');
     const bad = await fetch(`${h.base}/v1/stamp/freetsa`, {
       method: 'OPTIONS',
       headers: { Origin: 'https://evil.example' },
@@ -382,7 +524,7 @@ describe('relay: limits and upstream failures', () => {
       id: `s${i}`,
       minIntervalMs: 1000,
     }));
-    const h = await start({ services: many });
+    const h = await start({ services: many, keys: 'off' });
     let limited = 0;
     for (let i = 0; i < 70; i += 1) {
       const r = await post(
@@ -541,5 +683,288 @@ describe('relay: the real way out against a local stand-in service', () => {
     await expect(
       networkUpstream({ url: 'http://127.0.0.1:1/' }, new Uint8Array(1)),
     ).rejects.toMatchObject({ kind: 'failed' });
+  });
+});
+
+describe('relay: authentication', () => {
+  const PATH = '/v1/stamp/freetsa';
+  const BODY = hashJson(sha256('probe'));
+  const secondsNow = () => Math.floor(NOW / 1000);
+  let h: Harness;
+  beforeEach(async () => (h = await start()));
+  afterEach(() => h.close());
+
+  const withHeader = (value: string | undefined, body = BODY, path = PATH) =>
+    fetch(h.base + path, {
+      method: 'POST',
+      body,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(value === undefined ? {} : { 'X-Zeitstempel-Auth': value }),
+      },
+    });
+  const unauthorized = async (res: Response) => {
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthorized' });
+    expect(h.calls).toHaveLength(0);
+  };
+
+  it('lets a correctly signed request through (header from the library, key never sent)', async () => {
+    const signed = await signRelayRequest({
+      key: KEY_A,
+      keyId: 'app-a',
+      method: 'POST',
+      path: PATH,
+      body: new TextEncoder().encode(BODY),
+      nowMs: NOW,
+    });
+    if (!signed.ok) throw new Error('sign');
+    const verifier = await deriveVerifier(KEY_A);
+    expect(verifier.ok).toBe(true);
+    expect(signed.value).not.toContain(toBase64Url(KEY_A));
+    // library and relay agree with the independent computation
+    expect(signed.value).toBe(
+      authHeader(KEY_A, 'app-a', 'POST', PATH, secondsNow(), new TextEncoder().encode(BODY)),
+    );
+    const res = await withHeader(signed.value);
+    expect(res.status).toBe(200);
+    expect(h.calls).toHaveLength(1);
+  });
+  it('accepts the second key as well', async () => {
+    const body = new TextEncoder().encode(BODY);
+    const res = await withHeader(h.sign(PATH, body, { key: KEY_B, kid: 'app-b' }));
+    expect(res.status).toBe(200);
+  });
+  it('refuses a request without the header', async () => {
+    await unauthorized(await withHeader(undefined));
+  });
+  it('refuses a header of the wrong form', async () => {
+    const good = h.sign(PATH, new TextEncoder().encode(BODY), { ts: secondsNow() });
+    const [v, kid, ts, mac] = good.split('.') as [string, string, string, string];
+    const forms = [
+      '',
+      'v1',
+      `v2.${kid}.${ts}.${mac}`,
+      `${v}.${kid.toUpperCase()}.${ts}.${mac}`,
+      `${v}.${kid}.0${ts}.${mac}`,
+      `${v}.${kid}.${ts}.${mac.slice(1)}`,
+      `${v}.${kid}.${ts}.${mac}x`,
+      `${v}.${kid}.${ts}.${mac}.extra`,
+      `${v}.${kid}.${ts}.${mac.slice(0, 42)}=`,
+      `${v}.${kid}.-${ts}.${mac}`,
+      `${v}.${kid}.${ts}.${mac.replace(/[A-Za-z0-9_-]$/, '*')}`,
+    ];
+    for (const form of forms) {
+      await unauthorized(await withHeader(form));
+    }
+  });
+  it('refuses a wrong MAC', async () => {
+    const good = h.sign(PATH, new TextEncoder().encode(BODY), { ts: secondsNow() });
+    const last = good.slice(-1);
+    await unauthorized(await withHeader(good.slice(0, -1) + (last === 'A' ? 'B' : 'A')));
+  });
+  it('refuses a MAC made for another path', async () => {
+    const other = h.sign('/v1/stamp/sectigo', new TextEncoder().encode(BODY));
+    await unauthorized(await withHeader(other));
+  });
+  it('refuses a MAC made for another body', async () => {
+    const header = h.sign(PATH, new TextEncoder().encode(hashJson(sha256('other'))));
+    await unauthorized(await withHeader(header));
+  });
+  it('refuses a time too old or too new, accepts the edge of the window', async () => {
+    const body = new TextEncoder().encode(BODY);
+    const w = RELAY_LIMITS.authWindowSeconds;
+    await unauthorized(await withHeader(h.sign(PATH, body, { ts: secondsNow() - w - 1 })));
+    await unauthorized(await withHeader(h.sign(PATH, body, { ts: secondsNow() + w + 1 })));
+    expect((await withHeader(h.sign(PATH, body, { ts: secondsNow() - w }))).status).toBe(200);
+    expect((await withHeader(h.sign(PATH, body, { ts: secondsNow() + w }))).status).toBe(200);
+  });
+  it('decides on the time before it reads the body', async () => {
+    const body = new TextEncoder().encode(BODY);
+    const stale = h.sign(PATH, body, { ts: secondsNow() - 600 });
+    // too large AND too old: the time check comes first, so this is 401 and not 413
+    const res = await withHeader(stale, 'x'.repeat(RELAY_LIMITS.bodyBytes + 1));
+    expect(res.status).toBe(401);
+  });
+  it('answers an unknown key id exactly like a wrong MAC', async () => {
+    const body = new TextEncoder().encode(BODY);
+    const wrongMac = h.sign(PATH, body, { key: new Uint8Array(randomBytes(32)) }); // known id, wrong key
+    const unknownKid = h.sign(PATH, body, { kid: 'nobody' });
+    const a = await withHeader(wrongMac);
+    const b = await withHeader(unknownKid);
+    expect(b.status).toBe(a.status);
+    expect(await b.text()).toBe(await a.text());
+    expect([...b.headers.entries()].filter(([k]) => k !== 'date')).toEqual(
+      [...a.headers.entries()].filter(([k]) => k !== 'date'),
+    );
+    expect(h.calls).toHaveLength(0);
+  });
+  it('refuses a replay of the same request', async () => {
+    const header = h.sign(PATH, new TextEncoder().encode(BODY));
+    expect((await withHeader(header)).status).toBe(200);
+    await unauthorized(
+      await (async () => {
+        h.calls.length = 0;
+        return withHeader(header);
+      })(),
+    );
+  });
+  it('lets a replayed request stay refused until its time leaves the window, then it is refused by the time', async () => {
+    const header = h.sign(PATH, new TextEncoder().encode(BODY), { ts: secondsNow() });
+    expect((await withHeader(header)).status).toBe(200);
+    h.clock.now += 30_000;
+    expect((await withHeader(header)).status).toBe(401);
+    h.clock.now += 40_000;
+    expect((await withHeader(header)).status).toBe(401);
+  });
+  it('answers 429 with Retry-After when the replay cache is full, and frees it as entries expire', async () => {
+    const small = await start({ authReplayEntries: 3 });
+    const body = new TextEncoder().encode(BODY);
+    const go = (ts: number) =>
+      fetch(small.base + PATH, {
+        method: 'POST',
+        body: BODY,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Zeitstempel-Auth': small.sign(PATH, body, { ts }),
+        },
+      });
+    const t = Math.floor(small.clock.now / 1000);
+    for (let i = 0; i < 3; i += 1) expect((await go(t - i)).status).toBe(200);
+    const full = await go(t - 3);
+    expect(full.status).toBe(429);
+    expect(await full.json()).toEqual({ error: 'rate-limited' });
+    expect(Number(full.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(small.calls).toHaveLength(3);
+    expect(full.headers.get('retry-after')).toBe('58'); // the oldest entry (second t-2) is out after 58 s
+    small.clock.now += 58_000;
+    expect((await go(Math.floor(small.clock.now / 1000))).status).toBe(429); // still full
+    small.clock.now += 1_000;
+    expect((await go(Math.floor(small.clock.now / 1000))).status).toBe(200); // the oldest is gone
+    await small.close();
+  });
+  it('does not let a forged request fill the replay cache', async () => {
+    const small = await start({ authReplayEntries: 2 });
+    const body = new TextEncoder().encode(BODY);
+    const t = Math.floor(small.clock.now / 1000);
+    for (let i = 0; i < 5; i += 1) {
+      const forged = small.sign(PATH, body, { ts: t - i, key: new Uint8Array(randomBytes(32)) });
+      const res = await fetch(small.base + PATH, {
+        method: 'POST',
+        body: BODY,
+        headers: { 'Content-Type': 'application/json', 'X-Zeitstempel-Auth': forged },
+      });
+      expect(res.status).toBe(401);
+    }
+    expect((await post(small, PATH, BODY, 'application/json')).status).toBe(200);
+    await small.close();
+  });
+  it('counts per key as well: one key cannot use up the budget of another', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      ...SERVICES[0]!,
+      id: `s${i}`,
+      minIntervalMs: 1000,
+    }));
+    const m = await start({ services: many });
+    const go = (i: number, key: Uint8Array, kid: string) => {
+      const path = `/v1/stamp/s${i % 20}`;
+      return fetch(m.base + path, {
+        method: 'POST',
+        body: BODY,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Zeitstempel-Auth': m.sign(path, new TextEncoder().encode(BODY), { key, kid }),
+        },
+      });
+    };
+    for (let i = 0; i < RELAY_LIMITS.perMinutePerKey; i += 1) {
+      expect((await go(i, KEY_A, 'app-a')).status, `a ${i}`).toBe(200);
+    }
+    const over = await go(RELAY_LIMITS.perMinutePerKey, KEY_A, 'app-a');
+    expect(over.status).toBe(429);
+    expect(Number(over.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect((await go(0, KEY_B, 'app-b')).status).toBe(200);
+    m.clock.now += RELAY_LIMITS.windowMs;
+    expect((await go(1, KEY_A, 'app-a')).status).toBe(200);
+    await m.close();
+  });
+  it('keeps the global limit on top of the per-key limit', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      ...SERVICES[0]!,
+      id: `s${i}`,
+      minIntervalMs: 1000,
+    }));
+    const m = await start({ services: many });
+    const statuses: number[] = [];
+    for (let i = 0; i < RELAY_LIMITS.perMinuteTotal + 4; i += 1) {
+      const key = i % 2 === 0 ? KEY_A : KEY_B;
+      const kid = i % 2 === 0 ? 'app-a' : 'app-b';
+      const path = `/v1/stamp/s${i % 20}`;
+      const res = await fetch(m.base + path, {
+        method: 'POST',
+        body: BODY,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Zeitstempel-Auth': m.sign(path, new TextEncoder().encode(BODY), { key, kid }),
+        },
+      });
+      statuses.push(res.status);
+    }
+    expect(statuses.filter((s) => s === 200)).toHaveLength(RELAY_LIMITS.perMinuteTotal);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(4);
+    await m.close();
+  });
+  it('answers the preflight without authentication and allows the header', async () => {
+    const res = await fetch(`${h.base}${PATH}`, { method: 'OPTIONS', headers: { Origin: ORIGIN } });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-headers')).toContain('X-Zeitstempel-Auth');
+    expect(res.headers.get('access-control-allow-headers')).toContain('Content-Type');
+  });
+  it('needs no authentication for /health and /v1/services (they stamp nothing)', async () => {
+    expect((await fetch(`${h.base}/health`)).status).toBe(200);
+    expect((await fetch(`${h.base}/v1/services`)).status).toBe(200);
+  });
+  it('answers an unauthorized call from a foreign origin with 403 first', async () => {
+    const res = await fetch(h.base + PATH, {
+      method: 'POST',
+      body: BODY,
+      headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+    });
+    expect(res.status).toBe(403);
+  });
+  it('counts failures as refused.unauthorized and keeps no key id, time or MAC', async () => {
+    const body = new TextEncoder().encode(BODY);
+    const header = h.sign(PATH, body, { kid: 'nobody-special' });
+    await withHeader(header);
+    await withHeader(undefined);
+    const stats = h.stats();
+    expect(stats).toEqual({ stamped: 0, refused: { unauthorized: 2 } });
+    const mac = header.split('.')[3]!;
+    expect(JSON.stringify(stats)).not.toContain('nobody-special');
+    expect(JSON.stringify(stats)).not.toContain(mac);
+  });
+  it('writes nothing about a failed or successful call to the console', async () => {
+    const spies = [vi.spyOn(console, 'log'), vi.spyOn(console, 'error'), vi.spyOn(console, 'warn')];
+    const out = vi.spyOn(process.stdout, 'write');
+    const err = vi.spyOn(process.stderr, 'write');
+    try {
+      await withHeader(undefined);
+      await withHeader(h.sign(PATH, new TextEncoder().encode(BODY)));
+      for (const s of spies) expect(s).not.toHaveBeenCalled();
+      const wrote = [...out.mock.calls, ...err.mock.calls].map((c) => String(c[0])).join('');
+      expect(wrote).not.toContain('app-a');
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+  it('is off only when expressly started without keys', async () => {
+    const open = await start({ keys: 'off' });
+    const res = await fetch(open.base + PATH, {
+      method: 'POST',
+      body: BODY,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(res.status).toBe(200);
+    await open.close();
   });
 });

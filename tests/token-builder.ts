@@ -30,6 +30,14 @@ export interface Opts {
   hash?: Uint8Array;
   tstSerialRaw?: Uint8Array; // TSTInfo serial INTEGER content
   tsaCertOverride?: Uint8Array; // certificate sent in the token instead of the signer's
+  caExts?: Uint8Array[]; // extra extensions of the root (trust anchor)
+  /** Puts an intermediate CA ("INT") between the root and the signer; the token carries it. */
+  intermediate?: { extraExts?: Uint8Array[] };
+  /**
+   * Look-alikes of the intermediate (same name and key, other serial, signed by the root), sent in the
+   * token before the real one. Needs `intermediate`.
+   */
+  twins?: { extraExts?: Uint8Array[]; validity?: [string, string]; noCa?: boolean }[];
 }
 export function build(o: Opts = {}) {
   const ca = generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -43,13 +51,14 @@ export function build(o: Opts = {}) {
     signKey: any,
     exts: Uint8Array[],
     serial: Uint8Array,
+    validityOverride?: Uint8Array,
   ) => {
     const tbs = seq(
       tlv(ctx(0), int(2)),
       tlv(2, serial),
       ecdsa256,
       name(issuer),
-      validity,
+      validityOverride ?? validity,
       name(subject),
       spki(k),
       tlv(ctx(3), seq(...exts)),
@@ -65,16 +74,44 @@ export function build(o: Opts = {}) {
     [
       ext('2.5.29.19', true, seq(tlv(1, Uint8Array.of(0xff)))),
       ext('2.5.29.15', true, tlv(3, Uint8Array.of(1, 0x04))),
+      ...(o.caExts ?? []),
     ],
     Uint8Array.of(1),
   );
+  const mid = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const caExts = (extra: Uint8Array[], isCa = true) => [
+    ext('2.5.29.19', true, isCa ? seq(tlv(1, Uint8Array.of(0xff))) : seq()),
+    ext('2.5.29.15', true, tlv(3, Uint8Array.of(1, 0x04))),
+    ...extra,
+  ];
+  const intCert = mkCert(
+    'INT',
+    'CA',
+    mid,
+    ca,
+    caExts(o.intermediate?.extraExts ?? []),
+    Uint8Array.of(2),
+  );
+  const twinCerts = (o.twins ?? []).map((t, i) =>
+    mkCert(
+      'INT',
+      'CA',
+      mid,
+      ca,
+      caExts(t.extraExts ?? [], !t.noCa),
+      Uint8Array.of(20 + i),
+      t.validity ? seq(gt(t.validity[0]), gt(t.validity[1])) : undefined,
+    ),
+  );
+  const tsaIssuer = o.intermediate ? 'INT' : 'CA';
+  const tsaIssuerKey = o.intermediate ? mid : ca;
   const ekus = o.ekuOids ?? ['1.3.6.1.5.5.7.3.8'];
   const tsaSerial = o.serialRaw ?? Uint8Array.of(7);
   const tsaCert = mkCert(
     'TSA',
-    'CA',
+    tsaIssuer,
     tsa,
-    ca,
+    tsaIssuerKey,
     [
       ext('2.5.29.15', true, tlv(3, Uint8Array.of(0, 0x80))),
       ext('2.5.29.37', o.ekuCritical ?? true, seq(...ekus.map(oidT))),
@@ -107,7 +144,7 @@ export function build(o: Opts = {}) {
   attrCtx[0] = 0xa0;
   const signerInfo = seq(
     int(1),
-    seq(name('CA'), tlv(2, o.signerSerialRaw ?? tsaSerial)),
+    seq(name(tsaIssuer), tlv(2, o.signerSerialRaw ?? tsaSerial)),
     seq(oidT('2.16.840.1.101.3.4.2.1')),
     attrCtx,
     ecdsa256,
@@ -117,13 +154,21 @@ export function build(o: Opts = {}) {
     int(3),
     set(seq(oidT('2.16.840.1.101.3.4.2.1'))),
     seq(oidT('1.2.840.113549.1.9.16.1.4'), tlv(ctx(0), octet(tst))),
-    tlv(ctx(0), o.tsaCertOverride ?? tsaCert),
+    tlv(ctx(0), o.tsaCertOverride ?? tsaCert, ...(o.intermediate ? [...twinCerts, intCert] : [])),
     ...(o.crl ? [tlv(ctx(1), o.crl)] : []),
     set(signerInfo),
   );
   const token = seq(oidT('1.2.840.113549.1.7.2'), tlv(ctx(0), sd));
   const pem = (c: Uint8Array) =>
     `-----BEGIN CERTIFICATE-----\n${Buffer.from(c).toString('base64')}\n-----END CERTIFICATE-----\n`;
-  return { token, caPem: pem(caCert), tsaPem: pem(tsaCert), imprint, tst, tsaCert };
+  return {
+    token,
+    caPem: pem(caCert),
+    intPem: pem(intCert),
+    tsaPem: pem(tsaCert),
+    imprint,
+    tst,
+    tsaCert,
+  };
 }
 export { seq, set, oidT, int, octet, tlv, ext };

@@ -40,10 +40,30 @@ Schnelltest (`npm run spike`).
 
 ## Verhalten bei Fehlern (fail-closed)
 
-Ein Wert, der nicht zu den Prüfoptionen passt (`now`, `at` kein gültiges Datum, `maxSkewMs` keine Zahl oder
-negativ), ergibt `bad-options` statt einer still übersprungenen Prüfung. Unerwartetes, das nicht eindeutig
-gelesen werden kann, wird abgelehnt und nie als gültig durchgelassen; die Prüfung beantwortet im Zweifel mit
-einem Fehlercode (L6: reines fail-closed, keine weitere Sonderbehandlung).
+Ein Wert, der nicht zu den Prüfoptionen passt, ergibt `bad-options` statt einer still übersprungenen Prüfung:
+`options` selbst muss weggelassen oder ein Objekt sein (nicht `null`, keine Zahl, kein Array); `expectedNonce`
+muss, wenn der Schlüssel vorhanden und nicht `undefined` ist, ein `Uint8Array` mit 1 bis 16 Byte sein (`null`,
+`0`, `""`, `NaN`, `false`, ein leeres Array oder leere Bytes sind also Fehler und keine „keine Nonce“);
+`requireCriticalEku` muss ein Wahrheitswert sein; `now` und `at` müssen gültige Daten sein; `maxSkewMs` muss
+eine Zahl ≥ 0 sein (`Infinity` erlaubt). Nur `undefined` zählt als „nicht angegeben“. Unbekannte Schlüssel in
+`options` werden nicht geprüft.
+
+Unerwartetes, das nicht eindeutig gelesen werden kann, wird abgelehnt und nie als gültig durchgelassen; die
+Prüfung beantwortet im Zweifel mit einem Fehlercode.
+
+Beim Aufbau der Kette werden alle Zertifikate mit passendem Namen und gültiger Signatur als Aussteller
+probiert (begrenzt: Tiefe 6, höchstens 8 Kandidaten je Schritt, höchstens 64 Signaturprüfungen). Ein
+namensgleiches Zertifikat mit unbekannter kritischer Erweiterung, abgelaufener Gültigkeit oder ohne CA-Recht
+macht ein sonst gültiges Token also nicht ungültig; es führt aber auch nie zu einer Annahme, die ohne es nicht
+gälte, denn jeder Kandidat muss dieselben Prüfungen bestehen. Sind alle Kandidaten unbrauchbar, wird der Grund
+des zuerst probierten gemeldet.
+
+## Bewusst streng
+
+- **Negative Seriennummer:** Ein Zertifikat mit negativer Seriennummer (auch ein mitgegebener Anker) wird nicht
+  gelesen. In einer Ankerliste macht das die ganze Liste ungültig (Grund `malformed`), in einem
+  Token das Token (ebenfalls `malformed`; ein sonst kaputtes Zertifikat ergibt `bad-certificate`). Das ist gewollt (RFC 5280 verlangt positive Seriennummern) und wird
+  nicht aufgeweicht; ein solcher Anker muss vom Aufrufer ausgetauscht werden.
 
 ## Was ein bestandener Test aussagt
 

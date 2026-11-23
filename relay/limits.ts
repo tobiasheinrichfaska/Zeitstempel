@@ -10,6 +10,12 @@ export const RELAY_LIMITS = {
   requestTimeoutMs: 10_000,
   /** Requests per minute over all services and clients: nothing is counted per client. */
   perMinuteTotal: 60,
+  /** Requests per minute for one key id (on top of the total). */
+  perMinutePerKey: 30,
+  /** Allowed difference (seconds) between the time in a signed request and the relay's clock. */
+  authWindowSeconds: 60,
+  /** Signed requests remembered against replay; when full, new ones wait (429). */
+  authReplayEntries: 4096,
   /** Window of the counters. */
   windowMs: 60_000,
   /** Allowed difference between a token's time and the relay's clock. */

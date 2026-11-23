@@ -5,6 +5,9 @@ export type Reason =
   | 'bad-nonce'
   | 'bad-options'
   | 'bad-services'
+  | 'bad-key'
+  | 'bad-key-id'
+  | 'bad-key-file'
   // DER / structure
   | 'too-large'
   | 'malformed'

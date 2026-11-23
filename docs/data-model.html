@@ -76,11 +76,11 @@
     <h3>VerifyOptions</h3>
     <table>
       <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
-      <tr><td>expectedNonce</td><td>Bytes, optional</td><td>Gesendete Nonce; wenn gegeben, muss das Token genau sie tragen</td></tr>
+      <tr><td>expectedNonce</td><td>Bytes, optional</td><td>Gesendete Nonce; wenn gegeben, muss das Token genau sie tragen. Typregel: <code>Uint8Array</code> mit 1 bis 16 Byte, sonst <code>bad-options</code> (auch <code>null</code>, <code>0</code>, <code>""</code>, <code>NaN</code>, <code>false</code>, leeres Array); nur <code>undefined</code> heißt „nicht angegeben“</td></tr>
       <tr><td>at</td><td>Date, optional</td><td>Zeitpunkt, zu dem die Zertifikate gültig sein müssen (Vorgabe: die Zeit des Tokens); ungültiges Datum: <code>bad-options</code></td></tr>
       <tr><td>now</td><td>Date, optional</td><td>Aktuelle Zeit; ein Token aus der Zukunft wird abgelehnt (Vorgabe: nicht geprüft); angegeben, aber kein gültiges Datum: <code>bad-options</code> (kein stilles Überspringen)</td></tr>
       <tr><td>maxSkewMs</td><td>Zahl, optional</td><td>Erlaubter Vorsprung gegenüber <code>now</code> (Vorgabe 300000; <code>Infinity</code> erlaubt, NaN, negativ oder kein Zahlentyp: <code>bad-options</code>)</td></tr>
-      <tr><td>requireCriticalEku</td><td>wahr/falsch, optional</td><td>Erweiterte Schlüsselverwendung muss kritisch sein (Vorgabe wahr)</td></tr>
+      <tr><td>requireCriticalEku</td><td>wahr/falsch, optional</td><td>Erweiterte Schlüsselverwendung muss kritisch sein (Vorgabe wahr); kein Wahrheitswert (außer <code>undefined</code>): <code>bad-options</code></td></tr>
     </table>
 
     <h2>2 Beziehungen</h2>
@@ -118,6 +118,8 @@
       <tr><td>parsePemCertificates, parseCertificate</td><td>(pem) → Certificate[] / (der) → Certificate</td><td>Zertifikate strikt lesen (wirft ReaderError)</td></tr>
       <tr><td>nameToString</td><td>(name: Uint8Array) → string</td><td>Lesbarer Name aus der DER-Form</td></tr>
       <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen</td></tr>
+      <tr><td>deriveVerifier</td><td>(key: Uint8Array) → Promise&lt;Result&lt;Uint8Array&gt;&gt;</td><td>V = SHA-256(K) für die Schlüsseldatei des Relays; K mindestens 16 Byte</td></tr>
+      <tr><td>signRelayRequest</td><td>({ key, keyId, method, path, body, nowMs }) → Promise&lt;Result&lt;string&gt;&gt;</td><td>Wert des Kopfes <code>X-Zeitstempel-Auth</code> (<code>v1.&lt;kid&gt;.&lt;ts&gt;.&lt;mac&gt;</code>); die Uhr ist der Parameter <code>nowMs</code>; K bleibt in der App und wird weder zurückgegeben noch abgelegt</td></tr>
       <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen; strenge Leser geben null bei ungültiger Eingabe</td></tr>
     </table>
 
@@ -126,8 +128,11 @@
       <tr><th>Code</th><th>Bedeutung</th></tr>
       <tr><td>bad-hash</td><td>Hash nicht 32 Byte</td></tr>
       <tr><td>bad-nonce</td><td>Nonce nicht 1 bis 16 Byte</td></tr>
-      <tr><td>bad-options</td><td>Prüfoption ungültig (<code>now</code>/<code>at</code> kein gültiges Datum, <code>maxSkewMs</code> keine Zahl &ge; 0)</td></tr>
+      <tr><td>bad-options</td><td>Option ungültig (<code>options</code> kein Objekt, <code>expectedNonce</code> kein <code>Uint8Array</code> mit 1 bis 16 Byte, <code>now</code>/<code>at</code> kein gültiges Datum, <code>maxSkewMs</code> keine Zahl &ge; 0, <code>requireCriticalEku</code> kein Wahrheitswert; beim Signieren: Methode, Pfad, Körper oder <code>nowMs</code> ungültig)</td></tr>
       <tr><td>bad-services</td><td>Dienstliste ungültig</td></tr>
+      <tr><td>bad-key</td><td>Zugangsschlüssel kein <code>Uint8Array</code> oder unter 16 Byte</td></tr>
+      <tr><td>bad-key-id</td><td>Schlüsselkennung nicht nach <code>[a-z][a-z0-9-]{0,31}</code></td></tr>
+      <tr><td>bad-key-file</td><td>Schlüsseldatei des Relays ungültig (Regelname in <code>detail</code>; Teil des Relays, nicht der Bibliothek)</td></tr>
       <tr><td>too-large</td><td>Eingabe über der Größengrenze</td></tr>
       <tr><td>malformed</td><td>Kein gültiges DER</td></tr>
       <tr><td>indefinite-length</td><td>BER mit unbestimmter Länge (nicht erlaubt)</td></tr>

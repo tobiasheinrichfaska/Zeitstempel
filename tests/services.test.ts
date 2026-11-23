@@ -82,8 +82,19 @@ describe('relay settings', () => {
       port: 9000,
       allowPlainHttp: true,
       only: [],
+      authOff: false,
+      keysFile: '',
     });
-    expect(readSettings({})).toEqual({ origins: [], port: 8080, allowPlainHttp: false, only: [] });
+    expect(readSettings({})).toEqual({
+      origins: [],
+      port: 8080,
+      allowPlainHttp: false,
+      only: [],
+      authOff: false,
+      keysFile: '',
+    });
+    expect(readSettings({ RELAY_AUTH: 'off' }).authOff).toBe(true);
+    expect(readSettings({ RELAY_KEYS_FILE: '/x/k.json' }).keysFile).toBe('/x/k.json');
   });
   it('refuses origins that are not exact, plain-http origins other than localhost, and bad ports', () => {
     for (const o of [
