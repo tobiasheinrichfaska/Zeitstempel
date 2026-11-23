@@ -571,6 +571,41 @@ describe('relay: start configuration', () => {
     expect((await fetch(`${h.base}/health`)).status).toBe(200); // still running
     await h.close();
   });
+  it('counts a request the server ends for being too slow as request-timeout, not as client-aborted', async () => {
+    const { server, relay } = createRelayServer(
+      {
+        services: SERVICES,
+        origins: [ORIGIN],
+        allowPlainHttp: false,
+        upstream: networkUpstream,
+        random: () => FREETSA_NONCE,
+        now: () => NOW,
+        keys: 'off',
+      },
+      { requestTimeoutMs: 300 },
+    );
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    // headers complete, body never finished: the relay is already reading the body when Node gives up
+    const text = await new Promise<string>((resolve) => {
+      const s = net.connect(port, '127.0.0.1', () =>
+        s.write(
+          'POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 60\r\n\r\n{"ha',
+        ),
+      );
+      let got = '';
+      s.on('data', (c) => (got += c.toString('utf8')));
+      s.on('error', () => undefined);
+      s.on('close', () => resolve(got));
+    });
+    expect(text).toMatch(/^HTTP\/1\.1 408 /);
+    await new Promise((r) => setTimeout(r, 100)); // the broken read has been seen by now
+    const { refused } = relay.stats();
+    expect(refused['request-timeout']).toBe(1);
+    expect(refused['client-aborted'] ?? 0).toBe(0);
+    expect(refused['internal'] ?? 0).toBe(0);
+    await new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
+  });
   it('configures the deadlines and the limit from the shared limits', () => {
     const { server } = createRelayServer({
       services: SERVICES,
@@ -724,6 +759,23 @@ describe('relay: limits and upstream failures', () => {
       );
       m.clock.now += RELAY_LIMITS.windowMs;
       expect((await go()).status).not.toBe(429);
+      await m.close();
+    });
+    it('one service: after a jump back the service window frees within one window (limit 6 at 10 s)', async () => {
+      const slow = [{ ...SERVICES[0]!, id: 'slow', minIntervalMs: 10_000 }];
+      const m = await start({ services: slow, keys: 'off' }); // no key limit: only the service window counts
+      const go = () => post(m, '/v1/stamp/slow', hashJson(sha256('probe')), 'application/json');
+      const limit = RELAY_LIMITS.windowMs / 10_000;
+      expect(limit).toBe(6);
+      for (let i = 0; i < limit; i += 1) expect((await go()).status).toBe(200);
+      m.clock.now -= 3_600_000;
+      const limited = await go();
+      expect(limited.status).toBe(429);
+      const wait = Number(limited.headers.get('retry-after'));
+      expect(wait).toBeGreaterThan(0);
+      expect(wait).toBeLessThanOrEqual(RELAY_LIMITS.windowMs / 1000);
+      m.clock.now += RELAY_LIMITS.windowMs;
+      expect((await go()).status).not.toBe(429); // (502: the recorded token is an hour off that clock)
       await m.close();
     });
     it('replay cache: a full cache frees itself within its own lifetime after a jump back', async () => {

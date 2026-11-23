@@ -1,8 +1,14 @@
 // Runs the library and the relay's browser interface in a real (headless) Chromium.
 // By hand, no network needed: the relay gets a recorded answer instead of a real service.
 //   node scripts/browser-check.mjs
-// Needs Playwright with an installed Chromium (not a dependency of this project; found through
-// NODE_PATH or node_modules) and builds the bundle with the vite that vitest brings along.
+// Prerequisites:
+//   - Node 24 and `npm install` (vite, which builds the bundle, comes along as a dependency of vitest).
+//   - Playwright (1.5x or newer; tested with 1.63) with an installed Chromium (`npx playwright install
+//     chromium`). Playwright is NOT a dependency of this project: install it where `require('playwright')`
+//     finds it (node_modules next to this project, or NODE_PATH).
+//   - No relay key: the relay inside this script runs with authentication off (`keys: 'off'`, the
+//     equivalent of RELAY_AUTH=off, on 127.0.0.1 only), so this check does NOT cover `signRelayRequest`
+//     or the signed header in a browser.
 import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
@@ -45,6 +51,7 @@ const { server: relay } = createRelayServer({
   services: loadServices(),
   origins: [pageOrigin],
   allowPlainHttp: false,
+  keys: 'off', // local, loopback only: the check calls the relay without a signature
   upstream: async () => ({
     status: 200,
     contentType: 'application/timestamp-reply',

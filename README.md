@@ -62,6 +62,27 @@ dokumentiert). Bytes aus einem anderen Realm (iframe, Worker) bitte als `new Uin
 [`docs/grenzen.md`](docs/grenzen.md) (was nicht geprüft wird), [`docs/dienste.md`](docs/dienste.md)
 (Dienste, Messung, Bedingungen) und [`docs/relay.md`](docs/relay.md).
 
+## Installieren
+
+Nicht auf npm. Es gibt noch **keinen Git-Tag**; sobald einer existiert, wird die Bibliothek so eingebunden (Tag
+und Adresse des Repositories sind dann einzusetzen):
+
+```bash
+npm install git+https://<adresse-des-repositories>#<tag>
+```
+
+Beim Installieren aus Git führt npm das Skript `prepare` aus (`npm run build`, braucht das mitinstallierte
+`typescript`), so dass `dist/` entsteht. Das Paket ist ESM-only (`import`), Node 24 oder ein Browser-Bündler.
+
+Außer dem Einstieg (`import … from 'zeitstempel'`) liefert das Paket die Daten für die Anwendung über `exports`:
+
+- `zeitstempel/services.json`: die Dienstliste (JSON; mit `readServices` lesen). Zum Beispiel
+  `import services from 'zeitstempel/services.json' with { type: 'json' }` oder mit dem Bündler.
+- `zeitstempel/anchors/<name>.pem`: die Vertrauensanker (PEM-Text, Namen in `services.json` unter `anchors`). Eine
+  `.pem`-Datei ist kein JavaScript-Modul: als Text laden (Bündler: `?raw`; Node: Pfad mit
+  `createRequire(import.meta.url).resolve('zeitstempel/anchors/freetsa-root.pem')` auflösen und lesen). Welchen Anker
+  die App vertraut, entscheidet sie selbst (siehe `docs/dienste.md`).
+
 ## Entwickeln
 
 ```bash

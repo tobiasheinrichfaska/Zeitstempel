@@ -5,6 +5,7 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 import {
   buildTimestampRequest,
   fromBase64Url,
@@ -64,6 +65,11 @@ const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
 
 export interface Relay {
   handle: (req: IncomingMessage, res: ServerResponse) => void;
+  /**
+   * The server ended this connection because the request did not arrive in time (Node's 408): counted as
+   * `request-timeout`, and the request in flight on it is then not counted as `client-aborted`.
+   */
+  requestTimedOut: (socket: Duplex) => void;
   stats: () => RelayStats;
 }
 
@@ -73,6 +79,7 @@ export function createRelay(options: RelayOptions): Relay {
   );
   const byId = new Map(usable.map((s) => [s.id, s]));
   const stats: RelayStats = { stamped: 0, refused: {} };
+  const timedOut = new WeakSet<Duplex>(); // connections the server itself ended for being too slow
   const windows = new Map<string, number[]>(); // service id → request times in the window
   const keyWindows = new Map<string, number[]>(); // key id → request times in the window (memory only)
   let total: number[] = [];
@@ -288,10 +295,9 @@ export function createRelay(options: RelayOptions): Relay {
       }
     } catch (e) {
       // the connection broke or the client aborted (ECONNRESET, 'aborted'): not an error of the relay
-      if (req.destroyed || req.aborted || req.socket.destroyed) throw new ClientAborted();
+      if (req.destroyed || req.socket.destroyed) throw new ClientAborted();
       throw e;
     }
-    if (req.aborted) throw new ClientAborted();
     return new Uint8Array(Buffer.concat(chunks));
   }
 
@@ -400,8 +406,11 @@ export function createRelay(options: RelayOptions): Relay {
   }
 
   /** The connection is gone: counted, not answered (there is nobody to answer), and not an `internal`. */
-  function countAborted(res: ServerResponse): void {
-    stats.refused['client-aborted'] = (stats.refused['client-aborted'] ?? 0) + 1;
+  function countAborted(req: IncomingMessage, res: ServerResponse): void {
+    // the server ended it for being too slow: already counted as `request-timeout`, not a client's doing
+    if (!timedOut.has(req.socket)) {
+      stats.refused['client-aborted'] = (stats.refused['client-aborted'] ?? 0) + 1;
+    }
     try {
       res.destroy();
     } catch {
@@ -489,7 +498,7 @@ export function createRelay(options: RelayOptions): Relay {
       if (!service) return send(res, 404, { error: 'unknown-service' }, echo);
       const auth = authRequired ? parseAuth(req) : null;
       stamp(req, res, service, echo, auth, url.pathname).catch((e: unknown) => {
-        if (e instanceof ClientAborted) return countAborted(res);
+        if (e instanceof ClientAborted) return countAborted(req, res);
         answerInternal(res, echo);
       });
       return;
@@ -497,5 +506,14 @@ export function createRelay(options: RelayOptions): Relay {
     return send(res, 404, { error: 'not-found' }, echo);
   }
 
-  return { handle, stats: () => ({ stamped: stats.stamped, refused: { ...stats.refused } }) };
+  function requestTimedOut(socket: Duplex): void {
+    timedOut.add(socket);
+    stats.refused['request-timeout'] = (stats.refused['request-timeout'] ?? 0) + 1;
+  }
+
+  return {
+    handle,
+    requestTimedOut,
+    stats: () => ({ stamped: stats.stamped, refused: { ...stats.refused } }),
+  };
 }

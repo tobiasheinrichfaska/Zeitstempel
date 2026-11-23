@@ -12,6 +12,19 @@ export function createRelayServer(
   // connectionsCheckingInterval: how often the server looks for connections past their deadline
   const server = http.createServer({ connectionsCheckingInterval: 1_000 }, relay.handle);
   const timeout = limits.requestTimeoutMs ?? RELAY_LIMITS.requestTimeoutMs;
+  // Node's own answers to a broken or slow client (408, 431, 400), now with the 408 counted apart from
+  // a client that went away. Nothing of the request is looked at or logged.
+  server.on('clientError', (err: NodeJS.ErrnoException, socket) => {
+    if (socket.destroyed || !socket.writable) return void socket.destroy();
+    let status = '400 Bad Request';
+    if (err.code === 'ERR_HTTP_REQUEST_TIMEOUT') {
+      relay.requestTimedOut(socket);
+      status = '408 Request Timeout';
+    } else if (err.code === 'HPE_HEADER_OVERFLOW') {
+      status = '431 Request Header Fields Too Large';
+    }
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`, () => socket.destroy());
+  });
   server.requestTimeout = timeout;
   server.headersTimeout = timeout;
   server.keepAliveTimeout = 5_000;

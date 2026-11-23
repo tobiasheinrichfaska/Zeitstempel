@@ -199,3 +199,37 @@ describe('key files stay out of the repository', () => {
     expect(model).not.toContain('deriveVerifier');
   });
 });
+
+describe('the package: what it ships can be reached', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    files: string[];
+    exports: Record<string, string | Record<string, string>>;
+    scripts: Record<string, string>;
+  };
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const targets = Object.values(pkg.exports).flatMap((v) =>
+    typeof v === 'string' ? [v] : Object.values(v),
+  );
+  it('every entry of `files` is reached through `exports` (and exports stays closed)', () => {
+    expect(pkg.files.length).toBeGreaterThan(0);
+    for (const entry of pkg.files) {
+      expect(
+        targets.some((t) => t === `./${entry}` || t.startsWith(`./${entry}/`)),
+        entry,
+      ).toBe(true);
+    }
+    // every key is a path inside the package (no bare directory export that would open everything)
+    for (const key of Object.keys(pkg.exports)) expect(key, key).not.toBe('./*');
+  });
+  it('the services file and the anchors can be taken through exports, and the README says how', () => {
+    expect(pkg.exports['./services.json']).toBe('./services.json');
+    expect(pkg.exports['./anchors/*.pem']).toBe('./anchors/*.pem');
+    expect(readme).toContain('zeitstempel/services.json');
+    expect(readme).toContain('zeitstempel/anchors/');
+  });
+  it('a Git install builds: `prepare` runs the build, and the build starts from an empty dist', () => {
+    expect(pkg.scripts['prepare']).toBe('npm run build');
+    expect(pkg.scripts['build']).toMatch(/^node scripts\/clean-dist\.mjs && tsc /);
+    expect(readme).toContain('## Installieren');
+  });
+});

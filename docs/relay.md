@@ -111,7 +111,7 @@ min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging d
    also nicht und verbrauchen kein Budget.
    Der Speicher ist auf `authReplayEntries` Einträge begrenzt, davon darf eine Kennung höchstens den Anteil
    `authReplayKeyShare` halten (eine Kennung kann die anderen nicht aussperren). Ein Eintrag bleibt bis
-   `ts + authWindowSeconds + requestTimeoutMs`, also höchstens 125 s. Weil nur zugelassene Anfragen eingetragen
+   `ts + authWindowSeconds + requestTimeoutMs`, also höchstens 125 s (bei richtiger Uhr). Weil nur zugelassene Anfragen eingetragen
    werden und höchstens `perMinuteTotal` je Minute zugelassen werden, gibt es **höchstens 180 Einträge zugleich**
    (60 × ⌈125 / 60⌉), gleich wie viele Schlüssel es gibt; `authReplayEntries` (512) ist eine **Obergrenze** mit
    Spielraum, die im Betrieb nicht erreicht wird, kein Wert, den man erwartet. Wäre er doch voll (oder der Anteil
@@ -146,6 +146,11 @@ Das Relay schreibt weder Kennung noch Zeit noch Signatur ins Protokoll; die Zäh
 **Abgebrochene Anfragen:** Bricht der Client die Verbindung ab, während der Körper noch kommt (`ECONNRESET`,
 `aborted`), wird das **nicht beantwortet** (die Verbindung ist weg) und nicht als `internal` gezählt, sondern in
 `refused` unter `client-aborted`. `internal` zählt nur echte Ausnahmen im Relay.
+
+**Zu langsame Anfragen:** Kommt eine Anfrage nicht innerhalb von `requestTimeoutMs` vollständig an (Kopfzeilen oder
+Körper tröpfeln), beendet **der Server** die Verbindung und antwortet `408`. Das zählt unter `refused` als
+`request-timeout` (einmal je Verbindung), **nicht** als `client-aborted`: dieses zählt nur Clients, die von sich aus
+abbrechen. Die Zähler `unauthorized`, `rate-limited` usw. bleiben davon unberührt.
 
 **Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`.
 `publicKey` ist der **unkomprimierte Punkt** (65 Byte: `04 || X || Y`) als base64url ohne `=`. Streng gelesen: genau
@@ -224,8 +229,8 @@ Dienste ergeben zusammen 16 (4 je Dienst bei 15 s).
    haben (sonst `bad-key`/`bad-options`). **Realm:** ein `Uint8Array` aus einem anderen Realm (iframe, Worker, `vm`)
    wird abgewiesen; `privateKey` und `body` als `new Uint8Array(x)` übergeben.
 
-   Keine Cookies, kein `mode`-Zusatz nötig. Für jeden Versuch (auch nach `429`/`401`) neu signieren. Die Frist der App sollte **länger als 12 s** sein (das Relay wartet bis zu 10 s auf
-   den Dienst).
+   Keine Cookies, kein `mode`-Zusatz nötig. Für jeden Versuch (auch nach `429`/`401`) neu signieren. Die Frist der App sollte **rund 17 s ab Sendebeginn** betragen: bis zu 5 bis 6 s für den Körper
+   (`requestTimeoutMs`), bis zu 10 s für den Dienst (`upstreamTimeoutMs`) und die Prüfung des Tokens.
 
 2. Bei `200`: `fromBase64Url(body.token)` und `verifyTimestampToken(token, hash, [ankerPem…], {now})`
    **ohne** `expectedNonce` (die Nonce wählt das Relay, die App kennt sie nicht; die Bindung an den Hash
@@ -307,7 +312,10 @@ Aufrufer ist Aufgabe der Infrastruktur davor.
 **Uhr zurückgestellt:** Die Zähler der Fenster (gesamt, je Dienst, je Kennung) und die Restzeit der Einträge des
 Wiederholungsspeichers rechnen Zeitpunkte in der Zukunft beim Lesen als „jetzt“. Ein Rückwärtssprung der Uhr sperrt
 das Budget also nicht für die Länge des Sprungs: nach höchstens einem Fenster (60 s) ist es wieder frei, und
-`Retry-After` nennt nie mehr als ein Fenster (beim Wiederholungsspeicher nie mehr als die Lebensdauer eines Eintrags).
+`Retry-After` nennt nie mehr als ein Fenster (beim Wiederholungsspeicher nie mehr als die Lebensdauer eines Eintrags). Die Zusage „höchstens 125 s“ gilt für den
+genannten `Retry-After`-Wert, nicht für den Speicher selbst: seine Einträge bleiben nach einem Rücksprung bis zu
+ihrem **echten** Ablauf erhalten (der Wiederholungsschutz bleibt also bestehen); nur die Wartezeit, die das Relay
+nennt, wird begrenzt.
 
 **Verbindungen und Betrieb:** Das Relay kennt keine Adressen und führt keinen Zähler je Adresse (es protokolliert
 auch keine). Ein einzelner Client kann daher bis zu 256 Verbindungen (`maxConnections`) für etwa 5 bis 6 s belegen
