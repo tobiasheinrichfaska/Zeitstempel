@@ -51,9 +51,11 @@ spätestens zur angegebenen Zeit.“ Mehr nicht.
 - Mehrere Dienste für denselben Hash zu stempeln erhöht die Sicherheit gegen den Ausfall oder das Fehlverhalten
   eines Dienstes, wird hier aber nicht automatisch gemacht.
 
-## Nicht in einem Browser geprüft
+## Browser
 
 Die Bibliothek verwendet nur Standard-Schnittstellen (WebCrypto, `Uint8Array`, `TextDecoder`), und ein
-Wächter-Test sorgt dafür, dass im Kern keine Node-Importe stehen. **Gelaufen ist sie aber nur unter Node 24.**
-Dass sie in einem echten Browser dasselbe Ergebnis liefert (insbesondere ECDSA P-384 und RSA-4096 in
-WebCrypto), ist nicht geprüft.
+Wächter-Test sorgt dafür, dass im Kern keine Node-Importe stehen. Am 2026-11-23 lief sie zusätzlich in
+**Headless-Chromium 157** (`node scripts/browser-check.mjs`): die vier aufgezeichneten Token wurden akzeptiert
+(Signierer ECDSA P-384 bei FreeTSA, RSA-4096 bei den anderen), ein falscher Hash, ein falscher Anker und
+veränderte Bytes wurden abgelehnt. **Nicht geprüft:** Firefox, Safari, mobile Browser. Auf einer Seite über
+einfaches `http` (nicht `localhost`) fehlt `crypto.subtle`; die Prüfung antwortet dann `unsupported-signature`.

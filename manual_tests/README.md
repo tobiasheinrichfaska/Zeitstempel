@@ -15,3 +15,6 @@ Dienste** brauchen und deshalb nicht in die automatische Prüfung gehören (die 
 | Datei           | Inhalt                                                                   |
 | --------------- | ------------------------------------------------------------------------ |
 | `01_dienste.md` | Dienste erreichbar und Antworten gültig; Relay gegen einen echten Dienst |
+
+Ohne Netz: `node scripts/browser-check.mjs` prüft Bibliothek und Relay-Schnittstelle in Headless-Chromium
+(braucht Playwright mit installiertem Chromium; erwartet sechs Zeilen `OK`).
