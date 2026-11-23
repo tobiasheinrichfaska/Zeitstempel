@@ -31,7 +31,8 @@ security-reviewed by a human; library tested under Node only, never in a browser
 - **The relay is not an open proxy:** a client names a service id and a hash, nothing else; the relay builds the
   request, calls only the address in `services.json`, follows no redirect, and checks the answer.
 - **The relay is authenticated:** per request an HMAC over method, path, time and body hash (key `K` stays in
-  the app, the relay knows only `V = SHA-256(K)` and a key id); it starts only with `RELAY_KEYS_FILE` or an
+  the app and is never sent; the relay holds `V = SHA-256(K)`, which is itself the HMAC key, so the key file is
+  a secret: mode 0600, start warns otherwise); it starts only with `RELAY_KEYS_FILE` or an
   explicit `RELAY_AUTH=off`. The key file never goes into the repo (`.gitignore`).
 - **Never log what a request carries** (no address, hash, token, key id, MAC). Counters only.
 - Nothing is published to npm, tagged, rolled out or deployed without Tobias' OK. No qualified service
@@ -61,7 +62,7 @@ security-reviewed by a human; library tested under Node only, never in a browser
 | `src/lib/verify.ts`                                                                          | `verifyTimestampToken`: imprint, nonce, signature, certificates, chain                                                                                                                                         |
 | `src/lib/services.ts`                                                                        | `readServices`: strict reader of `services.json`                                                                                                                                                               |
 | `src/lib/auth.ts`                                                                            | `deriveVerifier`, `signRelayRequest`: the client side of the relay authentication (WebCrypto only)                                                                                                             |
-| `relay/keys.ts`                                                                              | Strict reader of the key file (key ids and verifiers, never a key)                                                                                                                                             |
+| `relay/keys.ts`                                                                              | Strict reader of the key file (key ids and verifiers; the file is a secret)                                                                                                                                    |
 | `src/lib/bytes.ts`, `src/lib/result.ts`                                                      | Byte/base64 helpers; `Result`, `Reason` codes, `ReaderError`                                                                                                                                                   |
 | `services.json`, `anchors/`                                                                  | The services as data and their trust anchors (PEM)                                                                                                                                                             |
 | `relay/relay.ts`                                                                             | The relay rules (`createRelay`), no I/O of its own                                                                                                                                                             |
@@ -124,8 +125,8 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   authentication towards a paid (qualified) service.
 - **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
   2026-11-23 ran without it; `scripts/browser-check.mjs` needs a key or `RELAY_AUTH=off`). `K` in a web app is
-  readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. Replay list
-  and counters live in memory only (empty after a restart); client and relay clocks must agree within ±60 s.
+  readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. A later asymmetric scheme (relay holds only a public key) is open. Replay list
+  (per-key share) and counters live in memory only (empty after a restart); client and relay clocks must agree within ±60 s.
 - Fixtures are real tokens of 2026-11-23; if a service rotates its certificates, new fixtures must be recorded
   with `scripts/make-request.ts` (the old ones stay valid for the tests).
 - Not on npm; consumers take it by Git tag (none yet).

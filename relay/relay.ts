@@ -73,11 +73,19 @@ export function createRelay(options: RelayOptions): Relay {
   const keyById = new Map(
     options.keys === 'off' ? [] : options.keys.map((k) => [k.id, k.verifier]),
   );
-  // A key nobody holds: unknown ids still get the same HMAC work, so the answer tells nothing.
-  const dummyVerifier = new Uint8Array(32);
-  const replay = new Map<string, number>(); // mac → time (ms) after which a replay is out of the window
+  // A key nobody holds: unknown ids still get the same HMAC work, so the answer tells nothing. It is
+  // random per process (nobody can sign with it); `macMatches` also insists on a known id.
+  let dummyVerifier: Uint8Array | undefined; // made on first use
+  const authRequired = options.keys !== 'off';
+  // mac → the time (ms) until which a replay could still pass the window, and the key id it belongs to
+  const replay = new Map<string, { until: number; kid: string }>();
   const replayMax = options.authReplayEntries ?? RELAY_LIMITS.authReplayEntries;
+  const replayMaxPerKey = Math.max(1, Math.ceil(replayMax * RELAY_LIMITS.authReplayKeyShare));
   const windowMs = RELAY_LIMITS.authWindowSeconds * 1000;
+  // A replay can arrive with its head at the edge of the window and its body up to the request
+  // timeout later: an entry must outlive `ts + window` by that much.
+  const keepMs = windowMs + RELAY_LIMITS.requestTimeoutMs;
+  const inWindow = (ts: number): boolean => Math.abs(options.now() - ts * 1000) <= windowMs;
 
   function send(
     res: ServerResponse,
@@ -149,7 +157,7 @@ export function createRelay(options: RelayOptions): Relay {
     const mac = fromBase64Url(m[3]!);
     if (!mac || mac.length !== 32) return null;
     const ts = Number(m[2]);
-    if (Math.abs(options.now() - ts * 1000) > windowMs) return null;
+    if (!inWindow(ts)) return null;
     return { kid: m[1]!, ts, mac, macText: m[3]! };
   }
 
@@ -157,23 +165,43 @@ export function createRelay(options: RelayOptions): Relay {
   function macMatches(auth: Auth, method: string, path: string, body: Uint8Array): boolean {
     const verifier = keyById.get(auth.kid);
     const message = `${AUTH_PREFIX}\n${method}\n${path}\n${auth.ts}\n${createHash('sha256').update(body).digest('hex')}`;
+    dummyVerifier ??= new Uint8Array(options.random(32));
     const expected = createHmac('sha256', verifier ?? dummyVerifier)
       .update(message)
       .digest();
     return timingSafeEqual(expected, auth.mac) && verifier !== undefined;
   }
 
-  /** Remembers a valid MAC; 'replay' if seen, or the seconds to wait when the cache is full. */
+  /** Read only: has this MAC been accepted before (and not yet expired)? */
+  function seen(auth: Auth): boolean {
+    const entry = replay.get(auth.macText);
+    return entry !== undefined && entry.until >= options.now();
+  }
+
+  /**
+   * Remembers a MAC that passed every check and was admitted; 'replay' if seen, or the seconds to wait
+   * when the cache is full or this key holds its share already (one key cannot lock out the others).
+   */
   function remember(auth: Auth): 'new' | 'replay' | number {
     const now = options.now();
     let soonest = Infinity;
-    for (const [mac, until] of replay) {
-      if (until < now) replay.delete(mac);
-      else soonest = Math.min(soonest, until);
+    let soonestOwn = Infinity;
+    let own = 0;
+    for (const [mac, entry] of replay) {
+      if (entry.until < now) {
+        replay.delete(mac);
+        continue;
+      }
+      soonest = Math.min(soonest, entry.until);
+      if (entry.kid === auth.kid) {
+        own += 1;
+        soonestOwn = Math.min(soonestOwn, entry.until);
+      }
     }
     if (replay.has(auth.macText)) return 'replay';
+    if (own >= replayMaxPerKey) return Math.max(1, Math.ceil((soonestOwn - now) / 1000));
     if (replay.size >= replayMax) return Math.max(1, Math.ceil((soonest - now) / 1000));
-    replay.set(auth.macText, auth.ts * 1000 + windowMs);
+    replay.set(auth.macText, { until: auth.ts * 1000 + keepMs, kid: auth.kid });
     return 'new';
   }
 
@@ -219,16 +247,18 @@ export function createRelay(options: RelayOptions): Relay {
       .split(';')[0]!
       .trim()
       .toLowerCase();
+    // No header, no stamp: decided here, in the one place that stamps, whatever the route did before.
+    if (authRequired && !auth) return unauthorized(res, origin);
     const body = await readBody(req);
     if (!body) return send(res, 413, { error: 'too-large' }, origin, { Connection: 'close' });
     if (auth) {
+      // The window again: a slow body must not carry a head that was fresh when it arrived.
+      if (!inWindow(auth.ts)) return unauthorized(res, origin);
       if (!macMatches(auth, req.method ?? '', path, body)) return unauthorized(res, origin);
-      const seen = remember(auth);
-      if (seen === 'replay') return unauthorized(res, origin);
-      if (seen !== 'new') {
-        return send(res, 429, { error: 'rate-limited' }, origin, { 'Retry-After': String(seen) });
-      }
+      if (seen(auth)) return unauthorized(res, origin);
     }
+    // The Content-Type is deliberately not part of the MAC (the body is): it only selects how the
+    // already authenticated bytes are read.
     const hash = hashFrom(type, body);
     if (hash === 'unsupported') return send(res, 415, { error: 'unsupported-media-type' }, origin);
     if (hash === 'bad') return send(res, 400, { error: 'bad-hash' }, origin);
@@ -236,6 +266,14 @@ export function createRelay(options: RelayOptions): Relay {
     const wait = admit(service.id, service.minIntervalMs, auth?.kid ?? null);
     if (wait !== null)
       return send(res, 429, { error: 'rate-limited' }, origin, { 'Retry-After': String(wait) });
+    // Only now, for a request that is going to be served, is the MAC written down.
+    if (auth) {
+      const noted = remember(auth);
+      if (noted === 'replay') return unauthorized(res, origin);
+      if (noted !== 'new') {
+        return send(res, 429, { error: 'rate-limited' }, origin, { 'Retry-After': String(noted) });
+      }
+    }
 
     const nonce = options.random(8);
     const request = buildTimestampRequest(hash, nonce);
@@ -352,10 +390,10 @@ export function createRelay(options: RelayOptions): Relay {
     if (m) {
       if (req.method !== 'POST')
         return send(res, 405, { error: 'method-not-allowed' }, echo, { Allow: 'POST' });
-      const auth = options.keys === 'off' ? null : parseAuth(req);
-      if (options.keys !== 'off' && !auth) return unauthorized(res, echo);
+      // 404 and 405 can come before the MAC check; they tell only public things (which services exist).
       const service = byId.get(m[1]!);
       if (!service) return send(res, 404, { error: 'unknown-service' }, echo);
+      const auth = authRequired ? parseAuth(req) : null;
       stamp(req, res, service, echo, auth, url.pathname).catch(() => answerInternal(res, echo));
       return;
     }

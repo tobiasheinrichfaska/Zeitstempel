@@ -3,10 +3,11 @@
 //   RELAY_ORIGINS            comma-separated browser origins that may call (default: none)
 //   RELAY_ALLOW_PLAIN_HTTP   "1" to use services that only answer over http (default: off)
 //   RELAY_SERVICES           comma-separated service ids to offer (default: all that fit)
-//   RELAY_KEYS_FILE          path of the key file (ids and verifiers; never in the repo); required
+//   RELAY_KEYS_FILE          path of the key file (ids and secrets V; never in the repo, mode 0600); required
 //   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { loadServices } from './load.ts';
 import { loadKeys, type RelayKey } from './keys.ts';
 import type { RelayService } from './relay.ts';
@@ -71,21 +72,45 @@ export function chooseServices<T extends { id: string; url: string }>(
   return chosen;
 }
 
+/**
+ * A warning text when the key file can be read by its group or by others (POSIX); null otherwise,
+ * also under Windows (no such modes) and when the file cannot be examined. Never names content.
+ */
+export function keyFilePermissionWarning(
+  path: string,
+  stat: (path: string) => { mode: number } = statSync,
+  platform: string = process.platform,
+): string | null {
+  if (platform === 'win32') return null;
+  let mode: number;
+  try {
+    mode = stat(path).mode;
+  } catch {
+    return null;
+  }
+  if ((mode & 0o077) === 0) return null;
+  return `${path}: Die Schlüsseldatei ist für Gruppe oder Andere lesbar (Modus ${(mode & 0o777).toString(8)}); sie enthält gleichwertige Geheimnisse, Rechte 0600 setzen (chmod 600)`;
+}
+
 /** Settings, the services to offer and the keys (or `'off'`), or a throw that names the problem. */
 export function readConfig(
   env: NodeJS.ProcessEnv,
   load: () => RelayService[] = loadServices,
   readKeys: (path: string) => RelayKey[] = loadKeys,
+  checkPermissions: (path: string) => string | null = keyFilePermissionWarning,
 ) {
   const settings = readSettings(env);
   const services = chooseServices(load(), settings.only, settings.allowPlainHttp);
-  if (settings.authOff) return { settings, services, keys: 'off' as const };
+  if (settings.authOff)
+    return { settings, services, keys: 'off' as const, warnings: [] as string[] };
   if (settings.keysFile === '') {
     throw new Error(
       'RELAY_KEYS_FILE fehlt (ohne Schlüsseldatei startet das Relay nicht; nur für die lokale Entwicklung: RELAY_AUTH=off)',
     );
   }
-  return { settings, services, keys: readKeys(settings.keysFile) };
+  const keys = readKeys(settings.keysFile);
+  const warning = checkPermissions(settings.keysFile);
+  return { settings, services, keys, warnings: warning === null ? [] : [warning] };
 }
 
 /** The start line: port, services and whether requests are authenticated. No key data. */
@@ -111,7 +136,8 @@ function main(): void {
     process.exitCode = 1; // no server was started: the process ends by itself
     return;
   }
-  const { settings, services, keys } = config;
+  const { settings, services, keys, warnings } = config;
+  for (const message of warnings) console.error(JSON.stringify({ event: 'warning', message }));
   const { server, relay } = createRelayServer({
     services,
     origins: settings.origins,

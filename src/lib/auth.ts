@@ -3,8 +3,10 @@ import { fail, ok, type Result } from './result.ts';
 
 /**
  * Authentication towards a relay (docs/relay.md). The app holds a permission key K (at least 16
- * bytes). The relay knows only V = SHA-256(K) and a key id. Each request carries an HMAC made with V;
- * K and V are never sent. Only standard APIs (WebCrypto), so this runs in a browser.
+ * bytes). The relay is given V = SHA-256(K) and a key id; V is the HMAC key, so the relay's key file
+ * holds secrets as good as K for signing (it is no mere check value). K stays in the app and is never
+ * transmitted, nor is V: each request carries only an HMAC made with V. Only standard APIs (WebCrypto),
+ * so this runs in a browser.
  */
 
 const MIN_KEY_BYTES = 16;
@@ -32,7 +34,7 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', data as BufferSource));
 }
 
-/** V = SHA-256(K): what the relay stores. A key under 16 bytes is refused. */
+/** V = SHA-256(K): the HMAC key, and what the relay stores (a secret). A key under 16 bytes is refused. */
 export async function deriveVerifier(key: Uint8Array): Promise<Result<Uint8Array>> {
   if (!(key instanceof Uint8Array) || key.length < MIN_KEY_BYTES) return fail('bad-key');
   try {

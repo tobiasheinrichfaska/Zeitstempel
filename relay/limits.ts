@@ -16,6 +16,8 @@ export const RELAY_LIMITS = {
   authWindowSeconds: 60,
   /** Signed requests remembered against replay; when full, new ones wait (429). */
   authReplayEntries: 4096,
+  /** Share of the replay cache one key id may hold (a key that fills its share waits, the others do not). */
+  authReplayKeyShare: 0.5,
   /** Window of the counters. */
   windowMs: 60_000,
   /** Allowed difference between a token's time and the relay's clock. */

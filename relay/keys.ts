@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { fail, fromBase64Url, ok, type Result } from '../src/index.ts';
 
-/** A key the relay accepts: its id and V = SHA-256(K). The key K itself is never known here. */
+/**
+ * A key the relay accepts: its id and V = SHA-256(K). V is the HMAC key of the request signature, so
+ * whoever has V (this file) can sign requests: the file holds secrets of the same worth as K. K itself
+ * stays in the app and is never transmitted; the relay never needs it.
+ */
 export interface RelayKey {
   id: string;
   verifier: Uint8Array;
@@ -14,6 +18,7 @@ export const MAX_KEYS = 64;
  * Strict reader of the key file: `{"version": 1, "keys": [{"id", "verifier"}]}` with 1 to 64 keys,
  * ids of the form `[a-z][a-z0-9-]{0,31}`, verifiers of exactly 32 bytes (base64url, unpadded), no
  * duplicate id, no duplicate verifier, no other fields. The failure carries a rule name, never content.
+ * Keep the file out of the repo and readable by the relay only (mode 0600).
  */
 export function readKeyFile(data: unknown): Result<RelayKey[]> {
   const bad = (rule: string) => fail('bad-key-file', rule);

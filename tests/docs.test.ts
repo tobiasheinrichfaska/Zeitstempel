@@ -102,3 +102,19 @@ describe('docs against the code', () => {
     for (const s of file.services) expect(doc, s.id).toContain(s.url);
   });
 });
+
+describe('key files stay out of the repository', () => {
+  it('.gitignore names the relay key file patterns', () => {
+    const lines = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8')
+      .split('\n')
+      .map((l) => l.trim());
+    expect(lines).toContain('relay-keys*.json');
+    expect(lines).toContain('*.keys.json');
+  });
+  it('relay.md says the key file holds secrets, wants mode 0600 and names the open Content-Type', () => {
+    expect(relayDoc).toContain('gleichwertige Geheimnisse');
+    expect(relayDoc).toContain('0600');
+    expect(relayDoc).not.toContain('Prüfwert **V');
+    expect(relayDoc).toContain('bewusst nicht');
+  });
+});
