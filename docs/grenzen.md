@@ -41,22 +41,49 @@ Schnelltest (`npm run spike`).
 ## Verhalten bei Fehlern (fail-closed)
 
 Ein Wert, der nicht zu den Prüfoptionen passt, ergibt `bad-options` statt einer still übersprungenen Prüfung:
-`options` selbst muss weggelassen oder ein Objekt sein (nicht `null`, keine Zahl, kein Array); `expectedNonce`
+`options` selbst muss weggelassen oder ein Objekt sein (nicht `null`, keine Zahl, keine Funktion, kein Array); `expectedNonce`
 muss, wenn der Schlüssel vorhanden und nicht `undefined` ist, ein `Uint8Array` mit 1 bis 16 Byte sein (`null`,
 `0`, `""`, `NaN`, `false`, ein leeres Array oder leere Bytes sind also Fehler und keine „keine Nonce“);
 `requireCriticalEku` muss ein Wahrheitswert sein; `now` und `at` müssen gültige Daten sein; `maxSkewMs` muss
 eine Zahl ≥ 0 sein (`Infinity` erlaubt). Nur `undefined` zählt als „nicht angegeben“. Unbekannte Schlüssel in
 `options` werden nicht geprüft.
 
+Die Optionen werden **einmal** gelesen und als eingefrorener Schnappschuss benutzt (`now` und `at` als
+Millisekunden, die Nonce als Kopie): Ein Getter, der beim zweiten Lesen etwas anderes antwortet, kann keine
+Prüfung ausschalten; ein Getter oder Proxy, der wirft, ergibt `bad-options`. Es zählen nur **eigene**
+Eigenschaften; was über `Object.prototype` vererbt wurde (auch durch Prototype Pollution), wird ignoriert.
+
+**Bytes aus einem anderen Realm** (iframe, Worker, `vm`): Ein `Uint8Array` von dort besteht den
+`instanceof`-Test nicht und ergibt `bad-hash` bzw. `bad-options`. Der Aufrufer übergibt dann eine Kopie im
+eigenen Realm: `new Uint8Array(x)`.
+
 Unerwartetes, das nicht eindeutig gelesen werden kann, wird abgelehnt und nie als gültig durchgelassen; die
 Prüfung beantwortet im Zweifel mit einem Fehlercode.
 
-Beim Aufbau der Kette werden alle Zertifikate mit passendem Namen und gültiger Signatur als Aussteller
-probiert (begrenzt: Tiefe 6, höchstens 8 Kandidaten je Schritt, höchstens 64 Signaturprüfungen). Ein
-namensgleiches Zertifikat mit unbekannter kritischer Erweiterung, abgelaufener Gültigkeit oder ohne CA-Recht
-macht ein sonst gültiges Token also nicht ungültig; es führt aber auch nie zu einer Annahme, die ohne es nicht
-gälte, denn jeder Kandidat muss dieselben Prüfungen bestehen. Sind alle Kandidaten unbrauchbar, wird der Grund
-des zuerst probierten gemeldet.
+Beim Aufbau der Kette werden alle brauchbaren Zertifikate mit passendem Namen und gültiger Signatur als
+Aussteller probiert (begrenzt: Tiefe 6, höchstens 8 brauchbare Kandidaten je Schritt, höchstens 64
+Signaturprüfungen für die ganze Suche, dazu die eine Prüfung der Signatur des Zeitstempel-Zertifikats). Die
+billigen Prüfungen kommen vor der Signaturprüfung: Ein namensgleiches Zertifikat mit unbekannter kritischer
+Erweiterung, abgelaufener Gültigkeit oder ohne CA-Recht (kein `keyCertSign`) zählt **weder** gegen die 8
+Kandidaten **noch** gegen die 64 Signaturprüfungen. Ein Token mit dem echten Zwischenzertifikat und beliebig
+vielen solchen Zwillingen (bis zur Grenze von 16 Zertifikaten im Token) bleibt also gültig. Es führt auch nie zu
+einer Annahme, die ohne es nicht gälte, denn jeder Kandidat muss dieselben Prüfungen bestehen. Sind alle
+Kandidaten unbrauchbar, wird der Grund des **zuerst probierten** gemeldet (Reihenfolge: Anker, dann die
+Zertifikate im Token); ein brauchbarer Kandidat, dessen Weiterführung scheitert, hat Vorrang. Ist die Suche
+am Budget gescheitert, lautet der Grund `untrusted-chain`, nicht ein genauerer.
+
+**Restproblem (Verfügbarkeit, nicht Sicherheit):** Das Feld `certificates` im Token ist nicht signiert. Wer
+das Token verändern kann, darf Zertifikate hinzufügen, die gültig aussehen (CA, `keyCertSign`, gültig, gleicher
+Name und Schlüssel wie das echte Zwischenzertifikat), aber nicht vom echten Aussteller signiert sind. Sie
+werden nie angenommen, belegen aber Kandidatenplätze: 8 solche Zertifikate vor dem echten Zwischenzertifikat
+verstecken es (`untrusted-chain`), und ein verzweigtes Geflecht aus ihnen (höchstens 16 Zertifikate im Token)
+verbraucht die 64 Signaturprüfungen. Ein gültiges Token kann so unprüfbar gemacht werden, aber nie ein
+ungültiges gültig. Wer das Token vor Veränderung schützt oder die Zwischenzertifikate selbst als Anker
+übergibt, ist davon nicht betroffen.
+
+**Selbstsigniertes Zeitstempel-Zertifikat:** Ist das Zertifikat des Signierers selbstsigniert und nicht selbst
+einer der übergebenen Anker, ergibt das `untrusted-chain` (früher `not-a-ca`). Ist es als Anker übergeben,
+gilt es.
 
 ## Bewusst streng
 

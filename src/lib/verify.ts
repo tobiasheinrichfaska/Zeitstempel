@@ -141,30 +141,55 @@ const isValidDate = (d: unknown): d is Date =>
 
 const NONCE_BYTES = { min: 1, max: 16 } as const;
 
-/** A given option must be usable: no silent skipping of a check because of a bad value. */
-function checkOptions(options: unknown): asserts options is VerifyOptions {
-  if (options === undefined) return;
-  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
-    throw new ReaderError('bad-options');
-  }
+/** The options as read once and checked; the rest of the verification uses only this. */
+interface OptionSnapshot {
+  readonly now: number | undefined;
+  readonly at: number | undefined;
+  readonly maxSkewMs: number;
+  readonly expectedNonce: Uint8Array | undefined;
+  readonly requireCriticalEku: boolean;
+}
+
+/**
+ * Reads every option exactly once into a frozen snapshot and checks it: a given option must be usable (no
+ * silent skipping of a check because of a bad value). Only own properties count (nothing inherited from
+ * `Object.prototype`); a getter is read once and one that throws gives `bad-options`; arrays and
+ * functions are refused; `Date` values become milliseconds and the nonce is copied.
+ */
+function checkOptions(options: unknown): OptionSnapshot {
+  const bad = () => new ReaderError('bad-options');
+  const snapshot = (read: (key: string) => unknown): OptionSnapshot => {
+    const now = read('now');
+    const at = read('at');
+    const skew = read('maxSkewMs');
+    const nonce = read('expectedNonce');
+    const critical = read('requireCriticalEku');
+    if (now !== undefined && !isValidDate(now)) throw bad();
+    if (at !== undefined && !isValidDate(at)) throw bad();
+    if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
+      throw bad();
+    }
+    if (nonce !== undefined && !(nonce instanceof Uint8Array)) throw bad();
+    const nonceCopy = nonce === undefined ? undefined : Uint8Array.from(nonce as Uint8Array);
+    if (nonceCopy && (nonceCopy.length < NONCE_BYTES.min || nonceCopy.length > NONCE_BYTES.max)) {
+      throw bad();
+    }
+    if (critical !== undefined && typeof critical !== 'boolean') throw bad();
+    return Object.freeze({
+      now: (now as Date | undefined)?.getTime(),
+      at: (at as Date | undefined)?.getTime(),
+      maxSkewMs: skew ?? DEFAULT_SKEW_MS,
+      expectedNonce: nonceCopy,
+      requireCriticalEku: critical ?? true,
+    });
+  };
+  if (options === undefined) return snapshot(() => undefined);
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) throw bad();
   const o = options as Record<string, unknown>;
-  if (o.now !== undefined && !isValidDate(o.now)) throw new ReaderError('bad-options');
-  if (o.at !== undefined && !isValidDate(o.at)) throw new ReaderError('bad-options');
-  const skew = o.maxSkewMs;
-  if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
-    throw new ReaderError('bad-options');
-  }
-  const nonce = o.expectedNonce;
-  if (
-    nonce !== undefined &&
-    (!(nonce instanceof Uint8Array) ||
-      nonce.length < NONCE_BYTES.min ||
-      nonce.length > NONCE_BYTES.max)
-  ) {
-    throw new ReaderError('bad-options');
-  }
-  if (o.requireCriticalEku !== undefined && typeof o.requireCriticalEku !== 'boolean') {
-    throw new ReaderError('bad-options');
+  try {
+    return snapshot((key) => (Object.hasOwn(o, key) ? o[key] : undefined));
+  } catch (e) {
+    throw e instanceof ReaderError ? e : bad(); // a getter or proxy trap that throws
   }
 }
 
@@ -192,7 +217,7 @@ function validAt(cert: Certificate, at: number): boolean {
   return cert.notBefore <= at && at <= cert.notAfter;
 }
 
-const MAX_CANDIDATES = 8; // signature-valid issuer candidates tried per certificate
+const MAX_CANDIDATES = 8; // usable, signature-valid issuer candidates tried per certificate
 const MAX_SIGNATURE_CHECKS = 64; // signature verifications for the whole chain search
 
 /** Why a candidate issuer is unusable at time `at`, or null when it is fine. */
@@ -208,9 +233,11 @@ function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: nu
 }
 
 /**
- * Builds the chain from `signer` up to a trust anchor. Every signature-valid candidate issuer is tried
- * (depth, candidates per step and signature checks are bounded), so a look-alike certificate with the
- * same name cannot hide the real intermediate; each candidate must pass the same checks as before.
+ * Builds the chain from `signer` up to a trust anchor. Every usable, signature-valid candidate issuer is
+ * tried (depth, usable candidates per step and signature checks are bounded), so a look-alike certificate
+ * with the same name cannot hide the real intermediate. The cheap checks (`issuerFlaw`) come before the
+ * signature check: an unusable look-alike costs no signature check and does not count against
+ * MAX_CANDIDATES; it is only verified (once per step) when no usable candidate exists, to report why.
  * Returns the number of certificates (anchor included) or throws the reason of the first failed branch.
  */
 async function buildChain(
@@ -234,17 +261,10 @@ async function buildChain(
       remember('chain-too-long');
       return null;
     }
-    const alg = SIGNATURES[current.signatureOid];
-    let found = 0;
-    for (const candidate of pool) {
-      if (!same(candidate.subject, current.issuer)) continue;
-      if (path.some((p) => same(p.raw, candidate.raw))) continue; // self-signed or a loop
-      if (!alg?.hash) continue;
-      if (checks >= MAX_SIGNATURE_CHECKS || found >= MAX_CANDIDATES) break;
+    const verifies = async (candidate: Certificate): Promise<boolean> => {
       checks += 1;
-      let valid = false;
       try {
-        valid = await verifyWithKey(
+        return await verifyWithKey(
           candidate,
           current.signatureOid,
           null,
@@ -252,17 +272,40 @@ async function buildChain(
           current.signature,
         );
       } catch {
-        /* an unsupported key or signature: try the next candidate */
+        return false; // an unsupported key or signature: try the next candidate
       }
-      if (!valid) continue;
-      found += 1;
+    };
+    const named = SIGNATURES[current.signatureOid]?.hash
+      ? pool.filter(
+          (c) => same(c.subject, current.issuer) && !path.some((p) => same(p.raw, c.raw)), // not self-signed, no loop
+        )
+      : [];
+    const usable: Certificate[] = [];
+    const flawed: { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> }[] =
+      [];
+    for (const candidate of named) {
       const flaw = issuerFlaw(candidate, anchors, at);
-      if (flaw) {
-        remember(flaw);
-        continue;
-      }
+      if (flaw) flawed.push({ candidate, flaw });
+      else usable.push(candidate);
+    }
+    let found = 0;
+    for (const candidate of usable) {
+      if (checks >= MAX_SIGNATURE_CHECKS || found >= MAX_CANDIDATES) break;
+      if (!(await verifies(candidate))) continue;
+      found += 1;
       const result = await walk(candidate, length + 1, [...path, candidate]);
       if (result !== null) return result;
+    }
+    if (found === 0) {
+      // nothing usable signed it: report why the first look-alike that did sign it is unusable
+      for (const { candidate, flaw } of flawed) {
+        if (checks >= MAX_SIGNATURE_CHECKS) break;
+        if (await verifies(candidate)) {
+          remember(flaw);
+          found += 1;
+          break;
+        }
+      }
     }
     if (found === 0) remember('untrusted-chain');
     return null;
@@ -291,22 +334,19 @@ export async function verifyTimestampToken(
   if (!anchorsRead.ok) return anchorsRead;
   const anchors = anchorsRead.value;
   try {
-    checkOptions(options);
+    const opts = checkOptions(options);
     const token = readToken(tokenBytes);
     const info: TstInfo = token.info;
     if (info.hashName !== 'SHA-256') throw new ReaderError('unsupported-hash');
     if (!same(info.imprint, expectedSha256)) throw new ReaderError('imprint-mismatch');
-    if (options.expectedNonce !== undefined) {
-      const want = trimZeros(options.expectedNonce);
+    if (opts.expectedNonce !== undefined) {
+      const want = trimZeros(opts.expectedNonce);
       if (!info.nonce || !same(info.nonce, want)) throw new ReaderError('nonce-mismatch');
     }
-    if (
-      options.now !== undefined &&
-      info.genTime > options.now.getTime() + (options.maxSkewMs ?? DEFAULT_SKEW_MS)
-    ) {
+    if (opts.now !== undefined && info.genTime > opts.now + opts.maxSkewMs) {
       throw new ReaderError('time-in-future');
     }
-    const at = (options.at ?? new Date(info.genTime)).getTime();
+    const at = opts.at ?? info.genTime;
 
     // signed attributes: content type, message digest, signing certificate
     const attrs = token.signer.attributes;
@@ -341,7 +381,7 @@ export async function verifyTimestampToken(
       !eku ||
       eku.oids.length !== 1 || // RFC 3161 § 2.3: exactly one purpose, id-kp-timeStamping
       eku.oids[0] !== OID.ekuTimeStamping ||
-      ((options.requireCriticalEku ?? true) && !eku.critical)
+      (opts.requireCriticalEku && !eku.critical)
     ) {
       throw new ReaderError('bad-eku');
     }

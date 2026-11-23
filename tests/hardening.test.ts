@@ -287,7 +287,8 @@ describe('N7: chain building tries every signature-valid issuer candidate', () =
     expect(await reason({ ...flawed, twins: [{ extraExts: [unknownCrit] }] })).toBe(
       'bad-certificate',
     );
-    expect(await reason({ ...flawed, twins: [{ noCa: true }] })).not.toBe('ok');
+    // the first candidate that was probed and unusable gives the reason: the twin comes before the real one
+    expect(await reason({ ...flawed, twins: [{ noCa: true }] })).toBe('not-a-ca');
   });
   it('reports the first failure when every candidate is unusable', async () => {
     expect(
@@ -322,5 +323,169 @@ describe('N3: the intermediate certificate and trust anchors', () => {
     const t = build({ intermediate: { extraExts: [unknownCrit] } });
     const r = await verifyTimestampToken(t.token, t.imprint, [t.intPem]);
     expect(r.ok).toBe(true);
+  });
+});
+
+/** Runs `f` and counts the signature verifications done through `crypto.subtle.verify`. */
+async function countVerifies<T>(f: () => Promise<T>): Promise<{ value: T; count: number }> {
+  const spy = vi.spyOn(crypto.subtle, 'verify');
+  try {
+    const value = await f();
+    return { value, count: spy.mock.calls.length };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+describe('C1: unusable twins cost neither candidate slots nor signature checks', () => {
+  const unknownCrit = ext('1.2.3.4.5.6', true, octet(new Uint8Array(0)));
+  const unusable = (n: number) =>
+    Array.from({ length: n }, (_, i) => {
+      const kind = i % 3;
+      return kind === 0
+        ? { noCa: true }
+        : kind === 1
+          ? { extraExts: [unknownCrit] }
+          : { validity: ['20100101000000Z', '20150101000000Z'] as [string, string] };
+    });
+  it('keeps a token valid with the real intermediate and 14 unusable twins (the limit of 16 certificates)', async () => {
+    expect(await reason({ intermediate: {}, twins: unusable(14) })).toBe('ok');
+  });
+  it('spends no signature checks on them', async () => {
+    const t = build({ intermediate: {}, twins: unusable(14) });
+    const { value, count } = await countVerifies(() =>
+      verifyTimestampToken(t.token, t.imprint, [t.caPem]),
+    );
+    expect(value.ok).toBe(true);
+    expect(count).toBeLessThanOrEqual(4); // signer, signer by INT, INT by root
+  });
+  it('still reports why when every candidate is unusable (one signature check per step for it)', async () => {
+    const t = build({ intermediate: { noKeyCertSign: true }, twins: unusable(14) });
+    const { value, count } = await countVerifies(() =>
+      verifyTimestampToken(t.token, t.imprint, [t.caPem]),
+    );
+    expect(value).toEqual({ ok: false, reason: 'not-a-ca' });
+    expect(count).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('C1/C5/C9: usable-looking fakes are a bounded availability problem', () => {
+  // The `certificates` field is not signed: whoever can change the token can add certificates that look
+  // usable (CA, keyCertSign, valid) and that are not signed by the real issuer. They are never accepted,
+  // but 8 of them in front of the real intermediate use up the candidates of that step.
+  it('7 forged look-alikes in front of the real intermediate do not hide it', async () => {
+    const twins = Array.from({ length: 7 }, () => ({ forged: true }));
+    expect(await reason({ intermediate: {}, twins })).toBe('ok');
+  });
+  it('8 forged look-alikes in front of it hide it: untrusted-chain, never ok (candidate limit)', async () => {
+    const twins = Array.from({ length: 8 }, () => ({ forged: true }));
+    expect(await reason({ intermediate: {}, twins })).toBe('untrusted-chain');
+  });
+  it('a maze of look-alikes ends after at most 64 signature checks (+1 for the signer)', async () => {
+    const t = build({ ladder: { levels: 5, width: 3 } }); // 16 certificates, the limit of the token
+    const { value, count } = await countVerifies(() =>
+      verifyTimestampToken(t.token, t.imprint, [t.caPem]),
+    );
+    expect(value).toEqual({ ok: false, reason: 'untrusted-chain' }); // budget used up
+    expect(count).toBeGreaterThan(60);
+    expect(count).toBeLessThanOrEqual(65);
+  });
+});
+
+describe('C4: chain rules, one test each', () => {
+  const unknownCrit = ext('1.2.3.4.5.6', true, octet(new Uint8Array(0)));
+  const OLD: [string, string] = ['20100101000000Z', '20150101000000Z'];
+  it('a chain with 5 intermediates is accepted, with 6 it is too long', async () => {
+    expect(await reason({ deepChain: 5 })).toBe('ok');
+    expect(await reason({ deepChain: 6 })).toBe('chain-too-long');
+  });
+  it('an expired only intermediate: certificate-not-valid-at-time', async () => {
+    expect(await reason({ intermediate: { validity: OLD } })).toBe('certificate-not-valid-at-time');
+  });
+  it('an intermediate without keyCertSign: not-a-ca', async () => {
+    expect(await reason({ intermediate: { noKeyCertSign: true } })).toBe('not-a-ca');
+  });
+  it('an expired trust anchor still fails (direct issuer and behind an intermediate)', async () => {
+    expect(await reason({ caValidity: OLD })).toBe('certificate-not-valid-at-time');
+    expect(await reason({ caValidity: OLD, intermediate: {} })).toBe(
+      'certificate-not-valid-at-time',
+    );
+  });
+  it('the anchor exemption for critical unknown extensions needs the same bytes, not the same subject', async () => {
+    const t = build({ intermediate: { extraExts: [unknownCrit] } });
+    const sameName = build({ intermediate: {} }); // other key, same subject "INT"
+    expect(await verifyTimestampToken(t.token, t.imprint, [sameName.intPem])).toEqual({
+      ok: false,
+      reason: 'bad-certificate',
+    });
+    const exact = await verifyTimestampToken(t.token, t.imprint, [t.intPem]);
+    expect(exact.ok).toBe(true);
+  });
+});
+
+describe('C2: a self-signed signer certificate that is no anchor', () => {
+  it('gives untrusted-chain (not not-a-ca)', async () => {
+    expect(await reason({ selfSignedSigner: true })).toBe('untrusted-chain');
+  });
+  it('is fine when the caller trusts exactly that certificate', async () => {
+    const t = build({ selfSignedSigner: true });
+    const r = await verifyTimestampToken(t.token, t.imprint, [t.tsaPem]);
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('C6/C7: options are read once, own properties only', () => {
+  const noCritical = { ekuCritical: false };
+  it('a getter that answers differently the second time cannot switch a check off', async () => {
+    let reads = 0;
+    const options = {
+      get requireCriticalEku() {
+        reads += 1;
+        return reads === 1;
+      },
+    };
+    expect(await reason(noCritical, options)).toBe('bad-eku');
+    expect(reads).toBe(1);
+  });
+  it('a getter that throws gives bad-options', async () => {
+    const options = {
+      get now(): Date {
+        throw new Error('boom');
+      },
+    };
+    expect(await reason({}, options)).toBe('bad-options');
+  });
+  it('a proxy that throws gives bad-options', async () => {
+    const options = new Proxy(
+      {},
+      {
+        has() {
+          throw new Error('boom');
+        },
+        getOwnPropertyDescriptor() {
+          throw new Error('boom');
+        },
+      },
+    );
+    expect(await reason({}, options)).toBe('bad-options');
+  });
+  it('properties inherited from Object.prototype do not count', async () => {
+    const proto = Object.prototype as Record<string, unknown>;
+    try {
+      proto.requireCriticalEku = false;
+      expect(await reason(noCritical, {})).toBe('bad-eku');
+      proto.expectedNonce = Uint8Array.of(1);
+      expect(await reason({}, {})).toBe('ok');
+      proto.now = new Date(0);
+      expect(await reason({}, {})).toBe('ok');
+    } finally {
+      delete proto.requireCriticalEku;
+      delete proto.expectedNonce;
+      delete proto.now;
+    }
+  });
+  it('refuses a function and an array with properties', async () => {
+    expect(await reason({}, () => undefined)).toBe('bad-options');
+    expect(await reason({}, Object.assign([], { requireCriticalEku: false }))).toBe('bad-options');
   });
 });
