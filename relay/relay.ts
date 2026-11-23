@@ -190,7 +190,9 @@ export function createRelay(options: RelayOptions): Relay {
     if (!signature || signature.length !== 64) return null;
     const ts = Number(m[2]);
     if (!inWindow(ts)) return null;
-    if (ts * 1000 < startMs - 1000) return null; // signed before this process started
+    // Signed before this process started. `min(startMs, now)`: a start clock that ran ahead and was
+    // corrected later must not shut the relay down until real time catches up with it.
+    if (ts * 1000 < Math.min(startMs, options.now()) - 1000) return null;
     return { kid: m[1]!, ts, signature };
   }
 

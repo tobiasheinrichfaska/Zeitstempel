@@ -125,6 +125,78 @@ describe('signRelayRequest', () => {
       reason: 'bad-options',
     });
   });
+  it('never throws or rejects for hostile Proxies: input, privateKey and body', async () => {
+    const boom = () => {
+      throw new Error('hostile');
+    };
+    const hostile = (target: object) =>
+      new Proxy(target, { getPrototypeOf: boom, get: boom, has: boom, ownKeys: boom });
+    const getTrap = (target: object) => new Proxy(target, { get: boom });
+    const protoTrap = (target: object) => new Proxy(target, { getPrototypeOf: boom });
+    const cases: [string, unknown, string | null][] = [
+      ['input, get', getTrap(input()), 'bad-options'],
+      ['input, getPrototypeOf', protoTrap(input()), null], // not needed to read the fields: a code or a header
+      ['input, all traps', hostile(input()), 'bad-options'],
+      ['privateKey, getPrototypeOf', input({ privateKey: protoTrap(KEY.privateKey) }), 'bad-key'],
+      ['privateKey, get', input({ privateKey: getTrap(KEY.privateKey) }), 'bad-key'],
+      ['privateKey, all traps', input({ privateKey: hostile(KEY.privateKey) }), 'bad-key'],
+      ['body, getPrototypeOf', input({ body: protoTrap(BODY) }), 'bad-options'],
+      ['body, get', input({ body: getTrap(BODY) }), 'bad-options'],
+      ['body, all traps', input({ body: hostile(BODY) }), 'bad-options'],
+    ];
+    for (const [name, value, reason] of cases) {
+      const r = await signRelayRequest(value as never); // a rejection fails the test here
+      if (reason !== null) expect(r, name).toMatchObject({ ok: false, reason });
+    }
+  });
+  it('reads each input once and never iterates the bytes', async () => {
+    const reads: Record<string, number> = {};
+    const counted = new Proxy(input(), {
+      get(target, key, receiver) {
+        reads[String(key)] = (reads[String(key)] ?? 0) + 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    expect(await signRelayRequest(counted as never)).toMatchObject({ ok: true });
+    expect(Object.values(reads).every((n) => n === 1)).toBe(true);
+    // an iterator that is hostile or answers differently is never called
+    const evil = new Uint8Array(BODY);
+    Object.defineProperty(evil, Symbol.iterator, {
+      value: () => {
+        throw new Error('iterated');
+      },
+    });
+    const withEvilKey = new Uint8Array(KEY.privateKey);
+    Object.defineProperty(withEvilKey, Symbol.iterator, {
+      value: () => {
+        throw new Error('iterated');
+      },
+    });
+    expect(await signRelayRequest(input({ body: evil, privateKey: withEvilKey }))).toMatchObject({
+      ok: true,
+    });
+  });
+  it('uses the built-in length, not an own one, and copies before signing', async () => {
+    const lying = new Uint8Array(BODY);
+    Object.defineProperty(lying, 'length', { value: 1 });
+    const r = await signRelayRequest(input({ body: lying }));
+    if (!r.ok) throw new Error(r.reason);
+    expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY)).toBe(true); // the real bytes were signed
+  });
+  it('has an upper limit for privateKey (256 bytes) and body (512 bytes)', async () => {
+    expect(await signRelayRequest(input({ privateKey: new Uint8Array(257) }))).toMatchObject({
+      ok: false,
+      reason: 'bad-key',
+    });
+    expect(await signRelayRequest(input({ body: new Uint8Array(513) }))).toMatchObject({
+      ok: false,
+      reason: 'bad-options',
+    });
+    expect(await signRelayRequest(input({ body: new Uint8Array(512) }))).toMatchObject({
+      ok: true,
+    });
+    expect(await signRelayRequest(input({ body: new Uint8Array(0) }))).toMatchObject({ ok: true });
+  });
   it('answers unsupported-signature without WebCrypto (insecure page)', async () => {
     vi.stubGlobal('crypto', {});
     try {

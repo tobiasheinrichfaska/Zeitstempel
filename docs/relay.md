@@ -21,8 +21,7 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 | `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt                                         | alle passenden |
 | `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`         | keine          |
 | `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                  | aus            |
-
-| `RELAY_HOST` | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt | alle (auth an) |
+| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt      | alle (auth an) |
 
 `RELAY_AUTH=off` lauscht **nur auf `127.0.0.1`** (Vorgabe, auch ohne `RELAY_HOST`; eine andere Adresse als
 `127.0.0.1`, `::1` oder `localhost` wird abgelehnt) und schreibt beim Start `{"event":"warning","message":"auth off,
@@ -77,18 +76,20 @@ hex(SHA-256(Körper))`. `PFAD` ist der Pfad ohne Abfrage (`/v1/stamp/freetsa`), 
 
 **Was das Relay prüft** (jeder Fehler der Anmeldung ist ein einheitliches `401 {"error":"unauthorized"}`; die
 Antwort verrät nicht, ob Kennung, Zeit oder Signatur falsch war. Die Reihenfolge der Prüfungen: `403`
-(Herkunft), `405` (Methode), `400` (Abfragezeichenfolge, Anfrageziel), `404` (Dienst), dann `401` (Anmeldung),
+(Herkunft), `400` (Anfrageziel, Abfragezeichenfolge), `405` (Methode), `404` (Dienst), dann `401` (Anmeldung),
 `413` beim Lesen des Körpers, und erst nach der Anmeldung `415`/`400` (Hash) und `429`. Alles vor der
 Anmeldung verrät nur Öffentliches (welche Dienste es gibt, das Größenlimit, die Form des Ziels) und ist kein
 Orakel für Kennung oder Signatur. Ohne Kopf gibt es für einen bekannten Dienst mit erlaubter Herkunft, Methode
 POST und kanonischem Ziel nie etwas anderes als `401`):
 
 1. Form des Kopfes und `ts` innerhalb von ±`authWindowSeconds` (60 s) der Uhr des Relays, **vor** dem Lesen des
-   Körpers; zusätzlich darf `ts` nicht vor dem Start des Prozesses liegen (`ts` · 1000 ≥ Startzeit − 1000 ms). Der
+   Körpers; zusätzlich darf `ts` nicht vor dem Start des Prozesses liegen (`ts` · 1000 ≥ min(Startzeit, jetzt) − 1000 ms;
+   gerechnet wird bei jeder Prüfung mit dem kleineren von Startzeit und aktueller Uhr, damit eine beim Start
+   vorgehende Uhr, die später korrigiert wird, das Relay nicht bis zum Einholen der echten Zeit stilllegt). Der
    Wiederholungsspeicher liegt nur im Speicher und ist nach einem Neustart leer; ohne diese Regel ließe sich ein
    mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: **nach einem
    Neustart sind Köpfe aus der Zeit davor ungültig** (die App signiert ohnehin jeden Versuch neu). **Widerruf
-   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen und das Relay neu starten. Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. Das Fenster wird **nach** dem Lesen
+   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen und das Relay neu starten. **Grenze:** geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur Korrektur der Uhr geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. Das Fenster wird **nach** dem Lesen
    des Körpers noch einmal geprüft (ein langsamer Körper rettet keinen veralteten Kopf).
 2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Das Relay führt **für jeden wohlgeformten
    Kopf genau eine** Prüfung aus, auch bei unbekannter Kennung (gegen einen je Prozess zufällig erzeugten
@@ -211,6 +212,12 @@ Dienste ergeben zusammen 16 (4 je Dienst bei 15 s).
      body: text,
    });
    ```
+
+   `signRelayRequest` wirft nie und weist nie ab: auch für feindliche Proxys als Eingabe, als `privateKey` oder als
+   `body` (werfendes `getPrototypeOf`/`get`) gibt es einen Code (`bad-options`/`bad-key`). Jede Eingabe wird einmal
+   gelesen und kopiert, nie über einen Iterator; `privateKey` darf höchstens 256 Byte, `body` höchstens 512 Byte
+   haben (sonst `bad-key`/`bad-options`). **Realm:** ein `Uint8Array` aus einem anderen Realm (iframe, Worker, `vm`)
+   wird abgewiesen; `privateKey` und `body` als `new Uint8Array(x)` übergeben.
 
    Keine Cookies, kein `mode`-Zusatz nötig. Für jeden Versuch (auch nach `429`/`401`) neu signieren. Die Frist der App sollte **länger als 12 s** sein (das Relay wartet bis zu 10 s auf
    den Dienst).

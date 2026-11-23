@@ -1,5 +1,5 @@
 import { verify, verify as nodeVerify } from 'node:crypto';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net, { type AddressInfo } from 'node:net';
 import {
@@ -1391,12 +1391,15 @@ describe('relay: authentication', () => {
     expect((await go(second)).status).toBe(200); // not a replay: the refused try wrote nothing down
     await m.close();
   });
-  it('rechecks the window after the body: a head at +59.9 s with a body at +61 s is refused', async () => {
+  it('rechecks the window after the body: a head that passes at the start is refused when the body arrives at +61 s', async () => {
+    // The process started long before (so the start rule cannot be what refuses), the head is fresh at the
+    // head and stale at the body: only the second window check can refuse it.
+    const late = await start({ clockStart: NOW - 120_000 });
+    late.clock.now = NOW;
     const body = bytesOf(BODY);
     const t = Math.floor(NOW / 1000);
-    const header = h.sign(PATH, body, { ts: t - 60 }); // edge of the window at NOW
-    h.clock.now = NOW - 100 + 0; // 59.9 s after the stamped second: the head passes
-    const port = Number(new URL(h.base).port);
+    const header = late.sign(PATH, body, { ts: t - 60 }); // exactly at the edge of the window at NOW
+    const port = Number(new URL(late.base).port);
     const status = await new Promise<number>((resolve, reject) => {
       const req = http.request(
         {
@@ -1418,12 +1421,35 @@ describe('relay: authentication', () => {
       req.on('error', reject);
       req.flushHeaders();
       setTimeout(() => {
-        h.clock.now = NOW + 1_000; // the body arrives 61 s after the stamped second
+        late.clock.now = NOW + 1_000; // the body arrives 61 s after the stamped second
         req.end(Buffer.from(body));
       }, 100);
     });
     expect(status).toBe(401);
-    expect(h.calls).toHaveLength(0);
+    expect(late.calls).toHaveLength(0);
+    // control: the same head with the clock left alone is accepted (so only the late check refused it)
+    const fresh = await start({ clockStart: NOW - 120_000 });
+    fresh.clock.now = NOW;
+    const ok = await post(fresh, PATH, BODY, 'application/json', {
+      'X-Zeitstempel-Auth': fresh.sign(PATH, body, { ts: t - 60 }),
+    });
+    expect(ok.status).toBe(200);
+    await late.close();
+    await fresh.close();
+  });
+  it('does not shut the relay down when the start clock ran ahead and was corrected later', async () => {
+    const ahead = await start({ clockStart: NOW + 3_600_000 }); // started with a clock one hour too fast
+    ahead.clock.now = NOW; // corrected
+    const body = bytesOf(BODY);
+    const t = Math.floor(NOW / 1000);
+    const go = (ts: number) =>
+      post(ahead, PATH, BODY, 'application/json', {
+        'X-Zeitstempel-Auth': ahead.sign(PATH, body, { ts }),
+      });
+    expect((await go(t)).status).toBe(200);
+    // the rule still holds against the corrected clock: more than a second before "now" is refused
+    expect((await go(t - 2)).status).toBe(401);
+    await ahead.close();
   });
   it('keeps an entry until ts + window + request timeout, not only until the window ends', async () => {
     const small = await start({ authReplayEntries: 1 });
@@ -1561,6 +1587,17 @@ describe('relay: authentication', () => {
   it('throws at the start when two keys share an id', async () => {
     const dup: RelayKey[] = [KEYS[0]!, { id: KEYS[0]!.id, publicKey: KEYS[1]!.publicKey }];
     await expect(start({ keys: dup })).rejects.toThrow(/unique/);
+  });
+  it('docs/relay.md: the settings table has no blank line and lists every setting the code reads', () => {
+    const lines = readFileSync(new URL('../docs/relay.md', import.meta.url), 'utf8').split('\n');
+    const head = lines.findIndex((l) => l.startsWith('| Einstellung'));
+    expect(head).toBeGreaterThan(-1);
+    let end = head;
+    while (lines[end]?.startsWith('|')) end += 1; // the table ends at the first line that is no row
+    const table = lines.slice(head, end).join('\n');
+    for (const name of ['PORT', 'RELAY_ORIGINS', 'RELAY_KEYS_FILE', 'RELAY_AUTH', 'RELAY_HOST']) {
+      expect(table, name).toContain('`' + name + '`');
+    }
   });
   it('is off only when expressly started without keys', async () => {
     const open = await start({ keys: 'off' });
