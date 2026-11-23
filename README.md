@@ -9,12 +9,12 @@ Node 24 getestet, **nicht in einem Browser**.
 
 ## Bausteine
 
-| Baustein                                      | Was er tut                                                                                                                                                                               |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Bibliothek** (`src/`)                       | Anfrage bauen, Antwort strikt lesen, Token prüfen (Abdruck, Nonce, Signatur, Zertifikatskette gegen übergebene Anker). Läuft in Browser und Node, ohne Netzzugriff, ohne Abhängigkeiten. |
-| **Dienstliste** (`services.json`, `anchors/`) | Vier freie Dienste als Daten, mit Vertrauensankern, Bedingungen und Messung (`docs/dienste.md`). Ein qualifizierter Dienst ist eine Vorlage ohne Zugangsdaten.                           |
-| **Relay** (`relay/`)                          | Kleiner Server, der nur Hashes an feste Dienste weiterreicht, weil Browser die Dienste wegen CORS nicht direkt erreichen. Nicht ausgerollt.                                              |
-| **Werkzeuge** (`scripts/`)                    | `npm run spike` (eine Anfrage je Dienst, Prüfung doppelt), `npm run probe` (eine Anfrage über das Relay).                                                                                |
+| Baustein                                      | Was er tut                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Bibliothek** (`src/`)                       | Anfrage bauen, Antwort strikt lesen, Token prüfen (Abdruck, Nonce, Signatur, Zertifikatskette gegen übergebene Anker). Läuft in Browser und Node, ohne Netzzugriff, ohne Abhängigkeiten.                                                                                                                   |
+| **Dienstliste** (`services.json`, `anchors/`) | Vier freie Dienste als Daten, mit Vertrauensankern, Bedingungen und Messung (`docs/dienste.md`). Ein qualifizierter Dienst ist eine Vorlage ohne Zugangsdaten.                                                                                                                                             |
+| **Relay** (`relay/`)                          | Kleiner Server, der nur Hashes an feste Dienste weiterreicht, weil Browser die Dienste wegen CORS nicht direkt erreichen. Jede Anfrage ist mit ECDSA P-256 signiert (Kopf `X-Zeitstempel-Auth`, in der App mit `signRelayRequest` berechnet; das Relay kennt nur öffentliche Schlüssel). Nicht ausgerollt. |
+| **Werkzeuge** (`scripts/`)                    | `npm run spike` (eine Anfrage je Dienst, Prüfung doppelt), `npm run probe` (eine Anfrage über das Relay), `scripts/make-key.ts` (neues Schlüsselpaar für das Relay, nur auf dem Terminal).                                                                                                                 |
 
 ## Benutzen
 
@@ -27,7 +27,37 @@ const verified = await verifyTimestampToken(token, sha256, [anchorPem], { expect
 // { ok: true, value: { genTime: '2026-11-23T13:05:56.000Z', signer, chainLength, … } }
 ```
 
-Die Funktionen werfen nie; Fehler sind Codes (`{ ok: false, reason }`). Alles Weitere steht in
+Über das Relay (Browser): die Anfrage wird mit dem privaten Schlüssel der App signiert; das Token prüft die App selbst.
+
+```ts
+import { signRelayRequest, toBase64Url } from 'zeitstempel';
+
+const path = '/v1/stamp/freetsa';
+const body = new TextEncoder().encode(JSON.stringify({ hash: toBase64Url(sha256) }));
+const auth = await signRelayRequest({
+  privateKey,
+  keyId: 'app-1',
+  method: 'POST',
+  path,
+  body,
+  nowMs: Date.now(),
+});
+if (!auth.ok) throw new Error(auth.reason);
+const res = await fetch(relayUrl + path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Zeitstempel-Auth': auth.value },
+  body,
+}); // 200 { service, genTime, accuracyMs, serial, token }; das Token danach mit verifyTimestampToken prüfen
+```
+
+Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt) gehört in die App; in einer Web-App ist er für die
+Besucher der Seite lesbar. Einzelheiten in [`docs/relay.md`](docs/relay.md).
+
+Die Kernfunktionen (`buildTimestampRequest`, `readTimestampResponse`, `verifyTimestampToken`, `readServices`,
+`signRelayRequest`) werfen bei keiner gewöhnlichen Eingabe (gegen feindliche `Proxy`-Objekte sind `buildTimestampRequest`, `verifyTimestampToken` und `equalBytes` abgesichert, `signRelayRequest` nicht); Fehler sind Codes (`{ ok: false, reason }`). Die Bausteine
+`readToken`, `parseCertificate` und `parsePemCertificates` werfen dagegen einen `ReaderError`, und die
+Byte-Helfer `toBase64`, `toBase64Url` und `toHex` einen `TypeError` bei falschem Typ (beides ist so
+dokumentiert). Bytes aus einem anderen Realm (iframe, Worker) bitte als `new Uint8Array(x)` übergeben. Alles Weitere steht in
 [`docs/data-model.html`](docs/data-model.html) (Funktionen, Strukturen, Fehlercodes),
 [`docs/grenzen.md`](docs/grenzen.md) (was nicht geprüft wird), [`docs/dienste.md`](docs/dienste.md)
 (Dienste, Messung, Bedingungen) und [`docs/relay.md`](docs/relay.md).

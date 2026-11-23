@@ -1,4 +1,6 @@
 import {
+  buildTimestampRequest,
+  equalBytes,
   parseCertificate,
   parsePemCertificates,
   readToken,
@@ -628,5 +630,142 @@ describe('E6: option edges', () => {
   it('one millisecond beyond the extremes is an Invalid Date: bad-options', async () => {
     expect(await reason({}, { now: new Date(MAX + 1) })).toBe('bad-options');
     expect(await reason({}, { at: new Date(-MAX - 1) })).toBe('bad-options');
+  });
+});
+
+// A proxy around real bytes whose traps throw: the core functions answer with a code and never throw.
+const hostile = (target: object, trap: 'getPrototypeOf' | 'get'): Uint8Array =>
+  new Proxy(target, {
+    [trap]() {
+      throw new Error(`trap ${trap}`);
+    },
+  }) as Uint8Array;
+const TRAPS = ['getPrototypeOf', 'get'] as const;
+
+describe('G2: the core functions survive hostile proxies', () => {
+  for (const trap of TRAPS) {
+    it(`buildTimestampRequest: a proxy with a throwing ${trap} trap gives a code`, () => {
+      const ok32 = new Uint8Array(32).fill(1);
+      expect(buildTimestampRequest(hostile(ok32, trap), Uint8Array.of(1))).toEqual({
+        ok: false,
+        reason: 'bad-hash',
+      });
+      expect(buildTimestampRequest(ok32, hostile(Uint8Array.of(1), trap))).toEqual({
+        ok: false,
+        reason: 'bad-nonce',
+      });
+    });
+    it(`equalBytes: a proxy with a throwing ${trap} trap is false`, () => {
+      const a = Uint8Array.of(1, 2);
+      expect(equalBytes(hostile(a, trap), a)).toBe(false);
+      expect(equalBytes(a, hostile(a, trap))).toBe(false);
+    });
+    it(`verifyTimestampToken: a proxy with a throwing ${trap} trap resolves to a code`, async () => {
+      const t = build();
+      const run = (...a: Parameters<typeof verifyTimestampToken>) => verifyTimestampToken(...a);
+      expect(await run(t.token, hostile(t.imprint, trap), [t.caPem])).toEqual({
+        ok: false,
+        reason: 'bad-hash',
+      });
+      const token = await run(hostile(t.token, trap), t.imprint, [t.caPem]);
+      expect(token.ok).toBe(false);
+      expect(
+        await run(t.token, t.imprint, [t.caPem], {
+          expectedNonce: hostile(Uint8Array.of(1), trap),
+        }),
+      ).toEqual({ ok: false, reason: 'bad-options' });
+    });
+  }
+});
+
+describe('G3: trust must be an array', () => {
+  it('a proxy of an array whose get trap throws gives bad-options, not a rejection', async () => {
+    const t = build();
+    expect(
+      await verifyTimestampToken(t.token, t.imprint, hostile([t.caPem], 'get') as never),
+    ).toEqual({
+      ok: false,
+      reason: 'bad-options',
+    });
+  });
+  const t = build();
+  const cases: [string, unknown][] = [
+    ['undefined', undefined],
+    ['null', null],
+    ['a string (the PEM itself)', t.caPem],
+    ['an object', { 0: t.caPem, length: 1 }],
+    ['a Set', new Set([t.caPem])],
+    ['a number', 1],
+  ];
+  for (const [name, trust] of cases) {
+    it(`refuses ${name} with bad-options`, async () => {
+      expect(await verifyTimestampToken(t.token, t.imprint, trust as never)).toEqual({
+        ok: false,
+        reason: 'bad-options',
+      });
+    });
+  }
+  it('still accepts an array, also an empty one (then untrusted-chain)', async () => {
+    expect((await verifyTimestampToken(t.token, t.imprint, [t.caPem])).ok).toBe(true);
+    expect(await verifyTimestampToken(t.token, t.imprint, [])).toEqual({
+      ok: false,
+      reason: 'untrusted-chain',
+    });
+  });
+});
+
+describe('G4: mutation guards', () => {
+  const KU = (...bytes: number[]) => Uint8Array.of(...bytes);
+  it('the signer key usage must allow signing: digitalSignature or nonRepudiation', async () => {
+    expect(await reason({ tsaKeyUsage: KU(0, 0x80) })).toBe('ok'); // digitalSignature
+    expect(await reason({ tsaKeyUsage: KU(6, 0x40) })).toBe('ok'); // nonRepudiation alone
+    expect(await reason({ tsaKeyUsage: KU(5, 0xc0) })).toBe('ok');
+  });
+  it('refuses a signer whose key usage allows neither (keyEncipherment, keyCertSign, none)', async () => {
+    expect(await reason({ tsaKeyUsage: KU(5, 0x20) })).toBe('bad-eku'); // keyEncipherment
+    expect(await reason({ tsaKeyUsage: KU(2, 0x04) })).toBe('bad-eku'); // keyCertSign
+    expect(await reason({ tsaKeyUsage: KU(7, 0x00) })).toBe('bad-eku'); // no bit
+    expect(await reason({ tsaKeyUsage: KU(5, 0x3f) })).toBe('bad-eku'); // everything but the two
+  });
+  it('anchors come first in the pool: cross-signed twins of the anchor do not hide it', async () => {
+    expect(await reason({ anchorTwins: 8 })).toBe('ok');
+    expect(await reason({ anchorTwins: 14 })).toBe('ok');
+  });
+  it('the reason is the one of the FIRST failed branch, not of the last', async () => {
+    // branch 1: a forged look-alike of INT (verifies the signer, no anchor above it): untrusted-chain;
+    // branch 2: the real INT, whose issuer, the anchor, is expired: certificate-not-valid-at-time
+    const expired: [string, string] = ['20100101000000Z', '20150101000000Z'];
+    expect(await reason({ intermediate: {}, twins: [{ forged: true }], caValidity: expired })).toBe(
+      'untrusted-chain',
+    );
+    // without the look-alike in front, the real INT is the first branch
+    expect(await reason({ intermediate: {}, caValidity: expired })).toBe(
+      'certificate-not-valid-at-time',
+    );
+  });
+  it('an expected nonce with leading zero bytes is the same number', async () => {
+    const five = { nonceBytes: Uint8Array.of(5) };
+    expect(await reason(five, { expectedNonce: Uint8Array.of(0, 0, 5) })).toBe('ok');
+    expect(await reason(five, { expectedNonce: Uint8Array.of(0, 5) })).toBe('ok');
+    expect(
+      await reason({ nonceBytes: Uint8Array.of(0) }, { expectedNonce: Uint8Array.of(0, 0) }),
+    ).toBe('ok');
+    expect(await reason(five, { expectedNonce: Uint8Array.of(0, 0, 6) })).toBe('nonce-mismatch');
+  });
+});
+
+describe('G9: a search cut short by a limit always says untrusted-chain', () => {
+  it('even when a flawed look-alike of the anchor signed one of the failed branches', async () => {
+    const t = build({ ladder: { levels: 5, width: 3, topTwin: true } });
+    const { value, count } = await countVerifies(() =>
+      verifyTimestampToken(t.token, t.imprint, [t.caPem]),
+    );
+    expect(value).toEqual({ ok: false, reason: 'untrusted-chain' });
+    expect(count).toBeGreaterThan(60);
+  });
+  it('and still names the exact reason when no limit was reached', async () => {
+    expect(await reason({ intermediate: { noKeyCertSign: true }, twins: [{ noCa: true }] })).toBe(
+      'not-a-ca',
+    );
   });
 });

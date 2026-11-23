@@ -9,13 +9,16 @@
 - [x] **Token prüfen** — vier aufgezeichnete Antworten echter Dienste werden akzeptiert, jede Veränderung abgelehnt (`tests/verify.test.ts`, `tests/services-fixtures.test.ts`)
 - [x] **Übereinstimmung mit openssl** — `tests/openssl.test.ts` (nur mit openssl auf dem Rechner)
 - [x] **Kern ohne Node-Importe** — Wächter-Test (`tests/coupling.test.ts`)
-- [x] **Läuft in einem Browser** — nur Headless-Chromium, von Hand (`node scripts/browser-check.mjs`); Firefox und Safari nicht geprüft
+- [x] **Läuft in einem Browser** — nur eingeschränkt: einmal in Headless-Chromium, von Hand (`node scripts/browser-check.mjs`), **ohne Anmeldung am Relay**; Firefox, Safari und die Anmeldung (`signRelayRequest`) im Browser nicht geprüft
 
 ## Relay
 
 - [x] **Hash stempeln** — JSON und Rohbytes, Antwort wird vor der Weitergabe geprüft (`tests/relay.test.ts`)
 - [x] **Kein offener Proxy** — nur Kennungen aus `services.json`, Anfrage vom Relay gebaut
 - [x] **Herkunft** — nur konfigurierte Browser-Herkünfte
+- [x] **Relay lehnt Anfragen ohne gültige Signatur ab** — einheitlich `401` (`tests/relay.test.ts`, `tests/auth.test.ts`)
+- [x] **Wiederholung wird abgelehnt** — Replay-Cache auf den Digest der signierten Nachricht (`tests/relay.test.ts`)
+- [x] **Schlüsseldatei streng gelesen** — nur öffentliche Schlüssel, jede Abweichung ein Fehler (`tests/relay-keys.test.ts`)
 - [x] **Grenzen** — Körpergröße, Zähler, Fristen, Größe der Antwort
 - [x] **Echte Dienste** — `npm run probe -- --service freetsa` und `npm run spike` (von Hand, Netz nötig)
 - [ ] **Betrieb** — nicht ausgerollt, kein Image

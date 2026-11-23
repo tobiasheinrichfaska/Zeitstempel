@@ -56,7 +56,19 @@ export interface Opts {
    * An unsolvable maze: `width` look-alikes (same name and key, signed upwards by the next level) on each
    * of `levels` levels; the top level is signed by an unrelated key, so no path reaches the root.
    */
-  ladder?: { levels: number; width: number };
+  ladder?: {
+    levels: number;
+    width: number;
+    /** Replaces one top certificate by a look-alike of the anchor that is no CA (flawed, but signs). */
+    topTwin?: boolean;
+  };
+  /** Content of the signer's key usage BIT STRING (unused-bits byte, then the bits). Default: digitalSignature. */
+  tsaKeyUsage?: Uint8Array;
+  /**
+   * `n` cross-signed twins of the anchor (same name and key, other bytes, signed by an unrelated key), sent
+   * in the token. They look usable and never lead to an anchor.
+   */
+  anchorTwins?: number;
   caValidity?: [string, string]; // validity of the root
   selfSignedSigner?: boolean; // the signer certificate is its own issuer
 }
@@ -152,6 +164,10 @@ export function build(o: Opts = {}) {
     for (let lvl = 0; lvl < o.ladder.levels; lvl += 1) {
       const top = lvl === o.ladder.levels - 1;
       for (let w = 0; w < o.ladder.width; w += 1) {
+        if (o.ladder.topTwin && top && w === o.ladder.width - 1) {
+          more.push(mkCert('CA', 'CA', attacker, ca, caExts([], false), Uint8Array.of(99)));
+          continue;
+        }
         more.push(
           mkCert(
             `L${lvl + 1}`,
@@ -167,6 +183,9 @@ export function build(o: Opts = {}) {
     tsaIssuer = 'L1';
     tsaIssuerKey = keys[0]!;
   }
+  for (let i = 0; i < (o.anchorTwins ?? 0); i += 1) {
+    more.push(mkCert('CA', 'CA', ca, attacker, caExts([]), Uint8Array.of(100 + i)));
+  }
   if (o.selfSignedSigner) {
     tsaIssuer = 'TSA';
     tsaIssuerKey = tsa;
@@ -179,7 +198,7 @@ export function build(o: Opts = {}) {
     tsa,
     tsaIssuerKey,
     [
-      ext('2.5.29.15', true, tlv(3, Uint8Array.of(0, 0x80))),
+      ext('2.5.29.15', true, tlv(3, o.tsaKeyUsage ?? Uint8Array.of(0, 0x80))),
       ext('2.5.29.37', o.ekuCritical ?? true, seq(...ekus.map(oidT))),
       ...(o.extraTsaExts ?? []),
     ],

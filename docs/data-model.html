@@ -109,7 +109,7 @@
     </table>
 
     <h2>3 Funktionen (Bibliothek, <code>src/lib/</code>)</h2>
-    <p class="note">Alle laufen in Browser und Node (nur Standard-APIs). Keine wirft: Fehler sind <code>{ ok: false, reason }</code>.</p>
+    <p class="note">Alle laufen in Browser und Node (nur Standard-APIs). Die Kernfunktionen (<code>buildTimestampRequest</code>, <code>readTimestampResponse</code>, <code>verifyTimestampToken</code>, <code>readServices</code>, <code>signRelayRequest</code>) werfen bei keiner gewöhnlichen Eingabe: Fehler sind <code>{ ok: false, reason }</code>. Anders die Bausteine: <code>readToken</code>, <code>parseCertificate</code> und <code>parsePemCertificates</code> werfen <code>ReaderError</code>, und <code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code> werfen <code>TypeError</code>. Gegen einen feindlichen <code>Proxy</code> (werfende Fallen) abgesichert und getestet sind <code>buildTimestampRequest</code>, <code>verifyTimestampToken</code> und <code>equalBytes</code>; bei <code>signRelayRequest</code> ist das nicht abgedeckt.</p>
     <table>
       <tr><th>Funktion</th><th>Signatur</th><th>Zweck</th></tr>
       <tr><td>buildTimestampRequest</td><td>(sha256: Uint8Array, nonce: Uint8Array) → Result&lt;Uint8Array&gt;</td><td>RFC-3161-Anfrage (DER) mit <code>certReq = TRUE</code>; Nonce 1 bis 16 Byte</td></tr>
@@ -120,7 +120,7 @@
       <tr><td>nameToString</td><td>(name: Uint8Array) → string</td><td>Lesbarer Name aus der DER-Form</td></tr>
       <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen; wirft nie (ein werfender Getter oder Proxy ergibt <code>bad-services</code>)</td></tr>
       <tr><td>signRelayRequest</td><td>({ privateKey, keyId, method, path, body, nowMs }) &rarr; Promise&lt;Result&lt;string&gt;&gt;</td><td>Wert des Kopfes <code>X-Zeitstempel-Auth</code> (<code>v2.&lt;kid&gt;.&lt;ts&gt;.&lt;sig&gt;</code>): ECDSA P-256 / SHA-256 (r&#8214;s, 64 Byte) über Methode, Pfad, Zeit und Hash des Körpers; <code>privateKey</code> sind PKCS#8-Bytes, sie werden nicht extrahierbar importiert und weder zurückgegeben noch abgelegt; die Uhr ist der Parameter <code>nowMs</code>. Ein Schlüsselpaar zu erzeugen ist Sache von <code>scripts/make-key.ts</code>, nicht der Bibliothek</td></tr>
-      <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen. Strenge Leser (<code>fromBase64</code>, <code>fromBase64Url</code>) geben <code>null</code> bei ungültiger Eingabe und bei allem außer Text; <code>equalBytes</code> gibt <code>false</code>, wenn ein Argument kein <code>Uint8Array</code> ist; die Schreiber (<code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code>) werfen bei allem außer <code>Uint8Array</code> einen <code>TypeError</code> (ein Text oder Array würde sonst still als Bytes kodiert)</td></tr>
+      <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen. Strenge Leser (<code>fromBase64</code>, <code>fromBase64Url</code>) geben <code>null</code> bei ungültiger Eingabe und bei allem außer Text; <code>equalBytes</code> gibt <code>false</code>, wenn ein Argument kein <code>Uint8Array</code> ist; die Schreiber (<code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code>) werfen bei allem außer <code>Uint8Array</code> einen <code>TypeError</code> (ein Text oder Array würde sonst still als Bytes kodiert). Ein <code>Uint8Array</code> aus einem anderen Realm (iframe, Worker, <code>vm</code>) zählt nicht als eines: als <code>new Uint8Array(x)</code> übergeben</td></tr>
     </table>
 
     <h2>4 Fehlercodes</h2>
@@ -128,7 +128,7 @@
       <tr><th>Code</th><th>Bedeutung</th></tr>
       <tr><td>bad-hash</td><td>Hash nicht 32 Byte</td></tr>
       <tr><td>bad-nonce</td><td>Nonce nicht 1 bis 16 Byte</td></tr>
-      <tr><td>bad-options</td><td>Option ungültig (<code>options</code> kein einfaches Objekt, <code>expectedNonce</code> kein <code>Uint8Array</code> mit 1 bis 16 Byte, <code>now</code>/<code>at</code> kein echtes, gültiges <code>Date</code>, <code>maxSkewMs</code> keine Zahl &ge; 0, <code>requireCriticalEku</code> kein Wahrheitswert; beim Signieren: Methode, Pfad, Körper oder <code>nowMs</code> ungültig)</td></tr>
+      <tr><td>bad-options</td><td>Option ungültig (<code>trust</code> kein Array, <code>options</code> kein einfaches Objekt, <code>expectedNonce</code> kein <code>Uint8Array</code> mit 1 bis 16 Byte, <code>now</code>/<code>at</code> kein echtes, gültiges <code>Date</code>, <code>maxSkewMs</code> keine Zahl &ge; 0, <code>requireCriticalEku</code> kein Wahrheitswert; beim Signieren: Methode, Pfad, Körper oder <code>nowMs</code> ungültig)</td></tr>
       <tr><td>bad-services</td><td>Dienstliste ungültig</td></tr>
       <tr><td>bad-key</td><td>Privater Schlüssel kein <code>Uint8Array</code> oder kein gültiger PKCS#8-Schlüssel für ECDSA P-256</td></tr>
       <tr><td>bad-key-id</td><td>Schlüsselkennung nicht nach <code>[a-z][a-z0-9-]{0,31}</code></td></tr>

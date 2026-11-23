@@ -2,9 +2,10 @@
  * Small byte helpers that work in browsers and Node (no Node-only types).
  *
  * Wrong types never pass silently: the strict readers (`fromBase64`, `fromBase64Url`) give `null` for
- * anything but a string and `equalBytes` gives `false` for anything but two `Uint8Array`; the writers
- * (`toBase64`, `toBase64Url`, `toHex`) throw a `TypeError` for anything but a `Uint8Array` (a string or an
- * array would otherwise be encoded as if it were bytes).
+ * anything but a string and `equalBytes` gives `false` for anything but two `Uint8Array` (also for a hostile
+ * proxy whose traps throw); the writers (`toBase64`, `toBase64Url`, `toHex`) throw a `TypeError` for
+ * anything but a `Uint8Array` (a string or an array would otherwise be encoded as if it were bytes). A
+ * `Uint8Array` of another realm (iframe, worker, `vm`) is none here: pass `new Uint8Array(x)`.
  */
 
 const needBytes = (bytes: unknown): Uint8Array => {
@@ -64,12 +65,32 @@ export function toHex(input: Uint8Array): string {
   return Array.from(needBytes(input), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Never throws: anything but two equal `Uint8Array` (a proxy whose traps throw included) gives `false`. */
 export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a[i]! ^ b[i]!;
-  return diff === 0;
+  try {
+    if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i += 1) diff |= a[i]! ^ b[i]!;
+    return diff === 0;
+  } catch {
+    return false; // a hostile proxy: its traps throw
+  }
+}
+
+/**
+ * A copy of `value` when it is a `Uint8Array` of `min` to `max` bytes, else `null`; never throws (a proxy whose
+ * `getPrototypeOf` or `get` traps throw gives `null`). The caller works with the copy only, so a value that
+ * answers differently the second time cannot change anything.
+ */
+export function copyBytes(value: unknown, min: number, max: number): Uint8Array | null {
+  try {
+    if (!(value instanceof Uint8Array)) return null;
+    const copy = Uint8Array.from(value);
+    return copy.length >= min && copy.length <= max ? copy : null;
+  } catch {
+    return null;
+  }
 }
 
 export function concat(...parts: Uint8Array[]): Uint8Array {

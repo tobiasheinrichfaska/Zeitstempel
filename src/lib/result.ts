@@ -58,7 +58,13 @@ export const ok = <T>(value: T): Result<T> => ({ ok: true, value });
 export const fail = (reason: Reason, detail?: string): Failure =>
   detail === undefined ? { ok: false, reason } : { ok: false, reason, detail };
 
-/** Thrown inside the readers, caught at every public function: the API itself never throws. */
+/**
+ * Thrown inside the readers and caught in the core functions (`buildTimestampRequest`,
+ * `readTimestampResponse`, `verifyTimestampToken`, `readServices`, `signRelayRequest`): those never throw,
+ * whatever they are given. Not caught, by design: the building blocks `readToken`, `parseCertificate` and
+ * `parsePemCertificates` throw `ReaderError`, and the byte writers `toBase64`, `toBase64Url` and `toHex`
+ * throw `TypeError` for anything but a `Uint8Array`.
+ */
 export class ReaderError extends Error {
   readonly reason: Reason;
   constructor(reason: Reason) {

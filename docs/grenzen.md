@@ -35,13 +35,14 @@ Schnelltest (`npm run spike`).
   Hashverfahren als SHA-256 für den Abdruck, Token ohne `certReq` (das Zeitstempel-Zertifikat muss im Token
   liegen). Das sind abgelehnte Fälle, keine stillen Annahmen.
 - **Die Anker selbst:** Wem man vertraut, entscheidet der Aufrufer. Die mitgelieferten Anker stammen aus
-  einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke sind in `docs/dienste.md`
-  aufgeführt, aber nicht mit den Betreibern abgeglichen.
+  einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke (`docs/dienste.md`) wurden am
+  2026-11-23 mit öffentlichen Betreiberseiten und dem System-Trust-Store abgeglichen (Netzabgleich, keine
+  Rückfrage bei den Betreibern, keine menschliche Prüfung).
 
 ## Verhalten bei Fehlern (fail-closed)
 
 Ein Wert, der nicht zu den Prüfoptionen passt, ergibt `bad-options` statt einer still übersprungenen Prüfung:
-`options` selbst muss weggelassen oder ein **einfaches Objekt** sein (Prototyp `Object.prototype` oder `null`;
+`trust` muss ein Array sein (kein Text, kein `Set`, kein Objekt, nicht `undefined`); `options` selbst muss weggelassen oder ein **einfaches Objekt** sein (Prototyp `Object.prototype` oder `null`;
 nicht `null`, keine Zahl, kein Text, keine Funktion, kein Array, keine Klasseninstanz, keine `Map`, kein `Date`,
 kein `String`-Objekt). Eine Klasseninstanz oder eine `Map` wird also nie als „leere Optionen“ angenommen: die
 Folge „Prüfung still aus“ ist ausdrücklich ausgeschlossen. `expectedNonce`
@@ -58,6 +59,13 @@ Millisekunden, die Nonce als Kopie): Ein Getter, der beim zweiten Lesen etwas an
 Prüfung ausschalten; ein `Date` wird genau einmal mit dem eingebauten `Date.prototype.getTime` gelesen, eine
 überschriebene Methode `getTime` am Objekt wird nie aufgerufen; ein Getter oder Proxy, der wirft, ergibt `bad-options`. Es zählen nur **eigene**
 Eigenschaften; was über `Object.prototype` vererbt wurde (auch durch Prototype Pollution), wird ignoriert.
+
+**Feindliche Proxys:** `buildTimestampRequest`, `verifyTimestampToken` und `equalBytes` lesen ihre Eingaben
+höchstens einmal und fangen jeden Wurf ab (ein `Proxy`, dessen `getPrototypeOf`- oder `get`-Falle wirft): Ergebnis ist ein Code
+(`bad-hash`, `bad-nonce`, `bad-options`, `malformed`) bzw. `false`, nie eine Ausnahme oder ein abgelehntes
+Versprechen. Für `signRelayRequest` ist das nicht abgedeckt; die Bausteine `readToken`, `parseCertificate` und
+`parsePemCertificates` werfen einen `ReaderError`, die Byte-Schreiber (`toBase64`, `toBase64Url`, `toHex`) einen
+`TypeError`.
 
 **Bytes aus einem anderen Realm** (iframe, Worker, `vm`): Ein `Uint8Array` von dort besteht den
 `instanceof`-Test nicht und ergibt `bad-hash` bzw. `bad-options`. Der Aufrufer übergibt dann eine Kopie im
@@ -81,8 +89,10 @@ einer Annahme, die ohne es nicht gälte, denn jeder Kandidat muss dieselben Prü
 also nichts weg. Gemeldet wird der Grund des **ersten** gescheiterten Zweigs (Reihenfolge: Anker, dann die
 Zertifikate im Token): bei lauter unbrauchbaren Kandidaten der Grund des ersten unter den ersten 4, der den
 Schritt tatsächlich signiert hat; ein brauchbarer Kandidat, dessen Weiterführung scheitert, hat Vorrang. Ist die
-Suche am Budget gescheitert oder trägt keiner der geprüften unbrauchbaren Kandidaten die Signatur, lautet der
-Grund `untrusted-chain`, nicht ein genauerer.
+Suche an einer Grenze gescheitert (ein brauchbarer Kandidat blieb wegen der 8 Kandidaten oder der 64
+Signaturprüfungen ungeprüft, in **irgendeinem** Zweig, auch wenn ein anderer Zweig einen genaueren Grund hätte) oder
+trägt keiner der geprüften unbrauchbaren Kandidaten die Signatur, lautet der Grund `untrusted-chain`, nicht ein
+genauerer.
 
 **Restproblem (Verfügbarkeit, nicht Sicherheit):** Das Feld `certificates` im Token ist nicht signiert. Wer
 das Token verändern kann, darf Zertifikate hinzufügen, die gültig aussehen (CA, `keyCertSign`, gültig, gleicher

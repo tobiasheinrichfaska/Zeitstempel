@@ -1,4 +1,4 @@
-import { equalBytes, trimZeros } from './bytes.ts';
+import { copyBytes, equalBytes, trimZeros } from './bytes.ts';
 import { TAG, children, expect, integerBytes, octets, oid, parseDer } from './der.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
@@ -281,6 +281,7 @@ async function buildChain(
   type Flawed = { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> };
   type Failure = ReaderError | { current: Certificate; flawed: Flawed[] };
   let checks = 0;
+  let exhausted = false; // a usable candidate was left untried because a limit was reached
   let firstFailure: Failure | null = null;
   const remember = (failure: Failure) => {
     firstFailure ??= failure;
@@ -322,7 +323,10 @@ async function buildChain(
     }
     let found = 0;
     for (const candidate of usable) {
-      if (checks >= MAX_SIGNATURE_CHECKS || found >= MAX_CANDIDATES) break;
+      if (checks >= MAX_SIGNATURE_CHECKS || found >= MAX_CANDIDATES) {
+        exhausted = true;
+        break;
+      }
       checks += 1;
       if (!(await verifies(current, candidate))) continue;
       found += 1;
@@ -334,6 +338,7 @@ async function buildChain(
   };
   const length = await walk(signer, 1, [signer]);
   if (length !== null) return length;
+  if (exhausted) throw new ReaderError('untrusted-chain'); // the search was cut short: no more exact reason
   const failure = firstFailure as Failure | null;
   if (failure instanceof ReaderError) throw failure;
   if (failure) {
@@ -353,7 +358,7 @@ async function buildChain(
  * imprint, nonce (when given), the CMS signature, the signing-certificate attribute, the key usage of
  * the signer, the validity of every certificate at the stamped time, and a chain that ends in one
  * of the given trust anchors. Revocation is NOT checked; name constraints and path length are not
- * evaluated (see docs/grenzen.md). Never throws.
+ * evaluated (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
  */
 export async function verifyTimestampToken(
   tokenBytes: Uint8Array,
@@ -361,9 +366,29 @@ export async function verifyTimestampToken(
   trust: TrustAnchors,
   options: VerifyOptions = {},
 ): Promise<Result<VerifiedTimestamp>> {
-  if (!(expectedSha256 instanceof Uint8Array) || expectedSha256.length !== 32)
-    return fail('bad-hash');
-  const anchorsRead = guard(() => trust.flatMap((pem) => parsePemCertificates(pem)));
+  try {
+    return await verifyChecked(tokenBytes, expectedSha256, trust, options);
+  } catch {
+    return fail('malformed'); // not reachable by design: the last net under the promise "never throws"
+  }
+}
+
+async function verifyChecked(
+  tokenBytes: Uint8Array,
+  expectedSha256: unknown,
+  trust: unknown,
+  options: unknown,
+): Promise<Result<VerifiedTimestamp>> {
+  const wanted = copyBytes(expectedSha256, 32, 32);
+  if (!wanted) return fail('bad-hash');
+  let trustList: unknown[];
+  try {
+    if (!Array.isArray(trust)) return fail('bad-options');
+    trustList = Array.from(trust as unknown[]); // read once; a proxy whose traps throw is no list
+  } catch {
+    return fail('bad-options');
+  }
+  const anchorsRead = guard(() => trustList.flatMap((pem) => parsePemCertificates(pem as string)));
   if (!anchorsRead.ok) return anchorsRead;
   const anchors = anchorsRead.value;
   try {
@@ -371,7 +396,7 @@ export async function verifyTimestampToken(
     const token = readToken(tokenBytes);
     const info: TstInfo = token.info;
     if (info.hashName !== 'SHA-256') throw new ReaderError('unsupported-hash');
-    if (!same(info.imprint, expectedSha256)) throw new ReaderError('imprint-mismatch');
+    if (!same(info.imprint, wanted)) throw new ReaderError('imprint-mismatch');
     if (opts.expectedNonce !== undefined) {
       const want = trimZeros(opts.expectedNonce);
       if (!info.nonce || !same(info.nonce, want)) throw new ReaderError('nonce-mismatch');
