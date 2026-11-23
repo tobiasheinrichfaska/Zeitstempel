@@ -253,6 +253,33 @@ describe('L7: ECDSA signature structure', () => {
   });
 });
 
+describe('R2: certificate times carry no fraction (RFC 5280), genTime keeps up to 9 digits', () => {
+  const FRAC: [string, string] = ['20200101000000.5Z', '20400101000000Z'];
+  const FRAC_END: [string, string] = ['20200101000000Z', '20400101000000.5Z'];
+  it('refuses a fraction in notBefore or notAfter of the signer chain (intermediate)', async () => {
+    expect(await reason({ intermediate: { validity: FRAC } })).toBe('bad-time');
+    expect(await reason({ intermediate: { validity: FRAC_END } })).toBe('bad-time');
+  });
+  it('refuses a fraction in the validity of a trust anchor and of a bare certificate', async () => {
+    expect(await reason({ caValidity: FRAC })).toBe('bad-time');
+    expect(await reason({ caValidity: FRAC_END })).toBe('bad-time');
+    const t = build({ caValidity: FRAC });
+    expect(() => parsePemCertificates(t.caPem)).toThrow(
+      expect.objectContaining({ reason: 'bad-time' }),
+    );
+  });
+  it('whole seconds in the same places stay fine', async () => {
+    expect(
+      await reason({ intermediate: { validity: ['20200101000000Z', '20400101000000Z'] } }),
+    ).toBe('ok');
+  });
+  it('genTime of the TSTInfo keeps its fraction', async () => {
+    expect(await reason({ genTime: '20260101000000.5Z' })).toBe('ok');
+    expect(await reason({ genTime: '20260101000000.123456789Z' })).toBe('ok');
+    expect(await reason({ genTime: '20260101000000.50Z' })).toBe('bad-time'); // trailing zero stays refused
+  });
+});
+
 describe('N7: chain building tries every signature-valid issuer candidate', () => {
   const unknownCrit = ext('1.2.3.4.5.6', true, octet(new Uint8Array(0)));
   const base = { intermediate: {} };

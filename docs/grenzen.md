@@ -46,6 +46,11 @@ Schnelltest (`npm run spike`).
   `accuracy` (Sekunden, Milli-, Mikrosekunden) wird nicht auf die Grenzen aus RFC 3161 geprüft; die Parameter der
   `AlgorithmIdentifier` werden nicht ausgewertet (die OID legt das Verfahren fest). Das RSA-Padding prüft nicht
   diese Bibliothek, sondern WebCrypto der Plattform (unter Node getestet, im Browser nicht).
+- **Zeiten:** `genTime` wird auf Millisekunden **abgeschnitten** (nicht gerundet; gelesen werden bis zu 9
+  Nachkommastellen). Ein `genTime` bis knapp unter 1 ms nach `notAfter` gilt deshalb noch als gültig, und das
+  `genTime` als ISO-Text kann bis knapp unter 1 ms früher sein als im Token. Die Gültigkeit von Zertifikaten
+  (`notBefore`, `notAfter`) wird dagegen **ohne Nachkommastellen** gelesen (RFC 5280 verbietet sie): ein Zertifikat mit
+  Bruchteil in der Gültigkeit ist ungültig gelesen (`bad-time`), auch ein Anker.
 - **Die Anker selbst:** Wem man vertraut, entscheidet der Aufrufer. Die mitgelieferten Anker stammen aus
   einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke (`docs/dienste.md`) wurden am
   2026-11-23 mit öffentlichen Betreiberseiten und dem System-Trust-Store abgeglichen (Netzabgleich, keine

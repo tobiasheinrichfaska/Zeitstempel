@@ -189,8 +189,10 @@ export function bitStringBytes(node: Node): Uint8Array {
   return node.value.subarray(1);
 }
 
-/** UTCTime or GeneralizedTime (whole seconds, with an optional fraction of up to 9 digits for the latter, cut off to ms, never rounded) as ms. */
-export function time(node: Node): number {
+/** UTCTime or GeneralizedTime (whole seconds, with an optional fraction of up to 9 digits for the latter, cut off to ms, never rounded) as ms.
+ * `fraction: false` is the certificate form (RFC 5280 § 4.1.2.5.2: GeneralizedTime without fractional seconds);
+ * a time stamp's `genTime` (RFC 3161) keeps the fraction. */
+export function time(node: Node, fraction = true): number {
   const text = new TextDecoder('ascii').decode(node.value);
   let m: RegExpExecArray | null;
   let year: number;
@@ -204,6 +206,7 @@ export function time(node: Node): number {
     if (!m) throw new ReaderError('bad-time');
     year = Number(m[1]);
     frac = m[7] ?? '';
+    if (!fraction && frac !== '') throw new ReaderError('bad-time');
   } else {
     throw new ReaderError('bad-time');
   }

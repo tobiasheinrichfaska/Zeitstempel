@@ -183,6 +183,16 @@ describe('key files stay out of the repository', () => {
     expect(relayDoc).toContain('Obergrenze');
     expect(relayDoc).toContain('Drei');
   });
+  it('relay.md names client-aborted, the clock set back and the reverse proxy; grenzen.md the time rules', () => {
+    expect(relayDoc).toContain('client-aborted');
+    expect(relayDoc).toContain('Uhr zurückgestellt');
+    expect(relayDoc).toContain('Reverse-Proxy');
+    expect(relayDoc).toContain('Pflicht');
+    expect(relayDoc).toContain('256 Verbindungen');
+    expect(read('grenzen.md')).toContain('abgeschnitten');
+    expect(read('grenzen.md')).toContain('ohne Nachkommastellen');
+    expect(model).toContain('keine Nachkommastellen');
+  });
   it('data-model.html describes signRelayRequest with a private key and no deriveVerifier', () => {
     expect(model).toContain('privateKey');
     expect(model).toContain('v2.');

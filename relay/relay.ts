@@ -153,12 +153,13 @@ export function createRelay(options: RelayOptions): Relay {
     kid: string | null,
   ): { wait: number | null; spend: () => void } {
     const now = options.now();
-    total = total.filter((t) => now - t < RELAY_LIMITS.windowMs);
-    const own = (windows.get(serviceId) ?? []).filter((t) => now - t < RELAY_LIMITS.windowMs);
-    const mine =
-      kid === null
-        ? []
-        : (keyWindows.get(kid) ?? []).filter((t) => now - t < RELAY_LIMITS.windowMs);
+    // Times in the future (the clock was set back) count as `now`: a jump back must not lock the budget
+    // for the length of the jump, and the wait stays within one window.
+    const fresh = (times: number[]): number[] =>
+      times.filter((t) => now - t < RELAY_LIMITS.windowMs).map((t) => Math.min(t, now));
+    total = fresh(total);
+    const own = fresh(windows.get(serviceId) ?? []);
+    const mine = kid === null ? [] : fresh(keyWindows.get(kid) ?? []);
     windows.set(serviceId, own);
     if (kid !== null) keyWindows.set(kid, mine);
     const ownLimit = Math.max(1, Math.floor(RELAY_LIMITS.windowMs / minIntervalMs));
@@ -251,10 +252,13 @@ export function createRelay(options: RelayOptions): Relay {
         replay.delete(id);
         continue;
       }
-      soonest = Math.min(soonest, entry.until);
+      // An entry never lives longer than `keepMs` past the newest head the window lets in; a longer
+      // remainder means the clock was set back, and the wait stays within that bound.
+      const until = Math.min(entry.until, now + windowMs + keepMs);
+      soonest = Math.min(soonest, until);
       if (entry.kid === kid) {
         own += 1;
-        soonestOwn = Math.min(soonestOwn, entry.until);
+        soonestOwn = Math.min(soonestOwn, until);
       }
     }
     const waits: number[] = [];
@@ -268,16 +272,26 @@ export function createRelay(options: RelayOptions): Relay {
     replay.set(id, { until: auth.ts * 1000 + keepMs, kid: auth.kid });
   }
 
+  /** The client went away while its body was coming: nobody is left to answer. */
+  class ClientAborted extends Error {}
+
   async function readBody(req: IncomingMessage): Promise<Uint8Array | null> {
     const declared = req.headers['content-length'];
     if (declared !== undefined && Number(declared) > RELAY_LIMITS.bodyBytes) return null;
     const chunks: Buffer[] = [];
     let size = 0;
-    for await (const chunk of req) {
-      size += (chunk as Buffer).length;
-      if (size > RELAY_LIMITS.bodyBytes) return null;
-      chunks.push(chunk as Buffer);
+    try {
+      for await (const chunk of req) {
+        size += (chunk as Buffer).length;
+        if (size > RELAY_LIMITS.bodyBytes) return null;
+        chunks.push(chunk as Buffer);
+      }
+    } catch (e) {
+      // the connection broke or the client aborted (ECONNRESET, 'aborted'): not an error of the relay
+      if (req.destroyed || req.aborted || req.socket.destroyed) throw new ClientAborted();
+      throw e;
     }
+    if (req.aborted) throw new ClientAborted();
     return new Uint8Array(Buffer.concat(chunks));
   }
 
@@ -385,6 +399,16 @@ export function createRelay(options: RelayOptions): Relay {
     send(res, 401, { error: 'unauthorized' }, origin);
   }
 
+  /** The connection is gone: counted, not answered (there is nobody to answer), and not an `internal`. */
+  function countAborted(res: ServerResponse): void {
+    stats.refused['client-aborted'] = (stats.refused['client-aborted'] ?? 0) + 1;
+    try {
+      res.destroy();
+    } catch {
+      // nothing left to close
+    }
+  }
+
   /** Last resort: a 500 with a code and no details. Never throws, so it cannot end the process. */
   function answerInternal(res: ServerResponse, echo: string | null): void {
     try {
@@ -464,7 +488,10 @@ export function createRelay(options: RelayOptions): Relay {
       const service = byId.get(m[1]!);
       if (!service) return send(res, 404, { error: 'unknown-service' }, echo);
       const auth = authRequired ? parseAuth(req) : null;
-      stamp(req, res, service, echo, auth, url.pathname).catch(() => answerInternal(res, echo));
+      stamp(req, res, service, echo, auth, url.pathname).catch((e: unknown) => {
+        if (e instanceof ClientAborted) return countAborted(res);
+        answerInternal(res, echo);
+      });
       return;
     }
     return send(res, 404, { error: 'not-found' }, echo);

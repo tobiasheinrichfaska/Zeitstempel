@@ -70,6 +70,7 @@ export interface Opts {
    */
   anchorTwins?: number;
   caValidity?: [string, string]; // validity of the root
+  genTime?: string; // GeneralizedTime text of TSTInfo.genTime (default 20260101000000Z)
   selfSignedSigner?: boolean; // the signer certificate is its own issuer
 }
 export function build(o: Opts = {}) {
@@ -211,7 +212,7 @@ export function build(o: Opts = {}) {
     oidT('1.2.3.4'),
     seq(seq(oidT('2.16.840.1.101.3.4.2.1')), octet(imprint)),
     tlv(2, o.tstSerialRaw ?? Uint8Array.of(9)),
-    gt('20260101000000Z'),
+    gt(o.genTime ?? '20260101000000Z'),
     ...nonceField,
     ...(o.tstExtra ?? []),
   );

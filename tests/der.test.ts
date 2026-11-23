@@ -102,6 +102,18 @@ describe('DER reader', () => {
       expect(() => gt(bad), bad).toThrow();
     }
   });
+  it('the certificate form (fraction: false) refuses any fraction and keeps whole seconds', () => {
+    const gt = (s: string, fraction?: boolean) =>
+      time(
+        { tag: TAG.generalizedTime, raw: new Uint8Array(), value: new TextEncoder().encode(s) },
+        fraction,
+      );
+    expect(gt('20261123130556Z', false)).toBe(Date.UTC(2026, 10, 23, 13, 5, 56));
+    expect(() => gt('20261123130556.5Z', false)).toThrow();
+    expect(() => gt('20261123130556.123456789Z', false)).toThrow();
+    expect(gt('20261123130556.5Z', true)).toBe(Date.UTC(2026, 10, 23, 13, 5, 56) + 500);
+    expect(gt('20261123130556.5Z')).toBe(Date.UTC(2026, 10, 23, 13, 5, 56) + 500); // the default keeps it
+  });
   it('reads strict times only', () => {
     const gt = (s: string) =>
       time({ tag: TAG.generalizedTime, raw: new Uint8Array(), value: new TextEncoder().encode(s) });

@@ -32,55 +32,64 @@ export const makeNetworkUpstream =
   (timeoutMs: number = RELAY_LIMITS.upstreamTimeoutMs): Upstream =>
   (target, body) =>
     new Promise((resolve, rejectRaw) => {
+      // The request is made BEFORE the timer: a throw from `new URL` or `request` then leaves no timer
+      // behind that would later reach for a `req` that does not exist.
+      let req: http.ClientRequest;
+      try {
+        const url = new URL(target.url);
+        const lib = url.protocol === 'https:' ? https : http;
+        req = lib.request(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/timestamp-query',
+              Accept: 'application/timestamp-reply',
+              'Content-Length': String(body.length),
+              'User-Agent': 'zeitstempel-relay',
+            },
+            agent: false,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            res.on('data', (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > RELAY_LIMITS.upstreamBytes) {
+                req.destroy();
+                reject(new UpstreamError('too-large'));
+                return;
+              }
+              chunks.push(chunk);
+            });
+            res.on('end', () => {
+              clearTimeout(timer);
+              resolve({
+                status: res.statusCode ?? 0,
+                contentType: String(res.headers['content-type'] ?? '')
+                  .split(';')[0]!
+                  .trim()
+                  .toLowerCase(),
+                body: new Uint8Array(Buffer.concat(chunks)),
+              });
+            });
+            res.on('error', () => reject(new UpstreamError('failed')));
+          },
+        );
+      } catch {
+        // no usable address: nothing was started, nothing to clean up
+        rejectRaw(new UpstreamError('failed'));
+        return;
+      }
       // one hard deadline for the whole call (connect to last byte), not an idle timeout
       const timer = setTimeout(() => {
         req.destroy();
         reject(new UpstreamError('timeout'));
       }, timeoutMs);
-      const reject = (e: UpstreamError) => {
+      function reject(e: UpstreamError): void {
         clearTimeout(timer);
         rejectRaw(e);
-      };
-      const url = new URL(target.url);
-      const lib = url.protocol === 'https:' ? https : http;
-      const req = lib.request(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/timestamp-query',
-            Accept: 'application/timestamp-reply',
-            'Content-Length': String(body.length),
-            'User-Agent': 'zeitstempel-relay',
-          },
-          agent: false,
-        },
-        (res) => {
-          const chunks: Buffer[] = [];
-          let size = 0;
-          res.on('data', (chunk: Buffer) => {
-            size += chunk.length;
-            if (size > RELAY_LIMITS.upstreamBytes) {
-              req.destroy();
-              reject(new UpstreamError('too-large'));
-              return;
-            }
-            chunks.push(chunk);
-          });
-          res.on('end', () => {
-            clearTimeout(timer);
-            resolve({
-              status: res.statusCode ?? 0,
-              contentType: String(res.headers['content-type'] ?? '')
-                .split(';')[0]!
-                .trim()
-                .toLowerCase(),
-              body: new Uint8Array(Buffer.concat(chunks)),
-            });
-          });
-          res.on('error', () => reject(new UpstreamError('failed')));
-        },
-      );
+      }
       req.on('error', () => reject(new UpstreamError('failed')));
       req.end(body);
     });

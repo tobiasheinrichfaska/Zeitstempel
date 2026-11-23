@@ -547,6 +547,30 @@ describe('relay: start configuration', () => {
     expect(text).toMatch(/^HTTP\/1\.1 408 /);
     await new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
   });
+  it('counts clients that go away during the body as client-aborted, not as internal', async () => {
+    const h = await start({ keys: 'off' });
+    const port = Number(new URL(h.base).port);
+    for (let i = 0; i < 50; i += 1) {
+      await new Promise<void>((done) => {
+        const c = net.connect(port, '127.0.0.1', () => {
+          c.write(
+            'POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 60\r\n\r\n{"ha',
+          );
+          setTimeout(() => c.destroy(), 20);
+        });
+        c.on('error', () => undefined);
+        c.on('close', () => done());
+      });
+    }
+    for (let i = 0; i < 100 && (h.stats().refused['client-aborted'] ?? 0) < 50; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const { refused } = h.stats();
+    expect(refused['client-aborted']).toBe(50);
+    expect(refused['internal'] ?? 0).toBe(0);
+    expect((await fetch(`${h.base}/health`)).status).toBe(200); // still running
+    await h.close();
+  });
   it('configures the deadlines and the limit from the shared limits', () => {
     const { server } = createRelayServer({
       services: SERVICES,
@@ -559,6 +583,8 @@ describe('relay: start configuration', () => {
     });
     expect(server.maxConnections).toBe(RELAY_LIMITS.maxConnections);
     expect(server.requestTimeout).toBe(RELAY_LIMITS.requestTimeoutMs);
+    expect(server.headersTimeout).toBe(RELAY_LIMITS.requestTimeoutMs);
+    expect(RELAY_LIMITS.requestTimeoutMs).toBe(5_000);
   });
 });
 
@@ -662,6 +688,58 @@ describe('relay: limits and upstream failures', () => {
     expect(limited).toBe(70 - RELAY_LIMITS.perMinuteTotal);
     await h.close();
   });
+  describe('a clock set back does not lock the budget for the length of the jump', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      ...SERVICES[0]!,
+      id: `s${i}`,
+      minIntervalMs: 1000,
+    }));
+    const stamp = (m: Harness, i: number) =>
+      post(m, `/v1/stamp/s${i % 20}`, hashJson(sha256('probe')), 'application/json');
+    it('total budget: after a jump back of one hour a window later it is free again', async () => {
+      const m = await start({ services: many, keys: 'off' });
+      for (let i = 0; i < RELAY_LIMITS.perMinuteTotal; i += 1)
+        expect((await stamp(m, i)).status).not.toBe(429);
+      m.clock.now -= 3_600_000;
+      const limited = await stamp(m, 0);
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get('retry-after'))).toBeLessThanOrEqual(
+        RELAY_LIMITS.windowMs / 1000,
+      );
+      m.clock.now += RELAY_LIMITS.windowMs;
+      expect((await stamp(m, 0)).status).not.toBe(429);
+      await m.close();
+    });
+    it('budget of one key and of one service: the wait stays within one window', async () => {
+      const m = await start({ services: many });
+      const path = '/v1/stamp/s0';
+      const go = () => post(m, path, hashJson(sha256('probe')), 'application/json');
+      for (let i = 0; i < RELAY_LIMITS.perMinutePerKey; i += 1)
+        expect((await go()).status).not.toBe(429);
+      m.clock.now -= 3_600_000;
+      const limited = await go();
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get('retry-after'))).toBeLessThanOrEqual(
+        RELAY_LIMITS.windowMs / 1000,
+      );
+      m.clock.now += RELAY_LIMITS.windowMs;
+      expect((await go()).status).not.toBe(429);
+      await m.close();
+    });
+    it('replay cache: a full cache frees itself within its own lifetime after a jump back', async () => {
+      const m = await start({ services: many, authReplayEntries: 4 });
+      const go = () => post(m, '/v1/stamp/s0', hashJson(sha256('probe')), 'application/json');
+      expect((await go()).status).not.toBe(429);
+      expect((await go()).status).not.toBe(429);
+      m.clock.now -= 3_600_000;
+      const limited = await go();
+      expect(limited.status).toBe(429);
+      const lifetimeS =
+        (2 * RELAY_LIMITS.authWindowSeconds * 1000 + RELAY_LIMITS.requestTimeoutMs) / 1000;
+      expect(Number(limited.headers.get('retry-after'))).toBeLessThanOrEqual(lifetimeS);
+      await m.close();
+    });
+  });
   const failing =
     (e: unknown): Upstream =>
     async () => {
@@ -695,6 +773,20 @@ describe('relay: limits and upstream failures', () => {
       expect(res.status).toBe(status);
       expect(await res.json()).toEqual({ error });
       await h.close();
+    }
+  });
+  it('an address that is no URL rejects at once and leaves no timer behind', async () => {
+    const seen: unknown[] = [];
+    const onError = (e: unknown) => seen.push(e);
+    process.on('uncaughtException', onError);
+    try {
+      await expect(
+        makeNetworkUpstream(50)({ url: 'not a url' }, new Uint8Array(1)),
+      ).rejects.toThrow();
+      await new Promise((r) => setTimeout(r, 200)); // well past the deadline
+      expect(seen).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onError);
     }
   });
   it('refuses garbage from the service', async () => {
@@ -989,9 +1081,9 @@ describe('relay: authentication', () => {
     expect(await full.json()).toEqual({ error: 'rate-limited' });
     expect(Number(full.headers.get('retry-after'))).toBeGreaterThan(0);
     expect(small.calls).toHaveLength(3);
-    // the oldest entry (second t, kept for window + request timeout = 70 s) is out after 70 s
-    expect(full.headers.get('retry-after')).toBe('70');
-    small.clock.now += 70_000;
+    // the oldest entry (second t, kept for window + request timeout = 65 s) is out after 65 s
+    expect(full.headers.get('retry-after')).toBe('65');
+    small.clock.now += 65_000;
     expect((await go(Math.floor(small.clock.now / 1000), true)).status).toBe(429); // still full
     small.clock.now += 1_000;
     expect((await go(Math.floor(small.clock.now / 1000), true)).status).toBe(200); // the oldest is gone
@@ -1248,11 +1340,11 @@ describe('relay: authentication', () => {
           'X-Zeitstempel-Auth': m.sign(path, bytesOf(BODY), { ts }),
         },
       });
-    expect((await go(t + 50)).status).toBe(200); // its entry lives until t + 120 s
+    expect((await go(t + 50)).status).toBe(200); // its entry lives until t + 115 s
     m.clock.now += 10_000;
-    const res = await go(t + 60); // budget: 50 s more; cache: 110 s more
+    const res = await go(t + 60); // budget: 50 s more; cache: 105 s more
     expect(res.status).toBe(429);
-    expect(res.headers.get('retry-after')).toBe('110');
+    expect(res.headers.get('retry-after')).toBe('105');
     await m.close();
   });
   it('keeps the replay cache within the bound that the limits give, and the default is above it', async () => {
@@ -1261,7 +1353,7 @@ describe('relay: authentication', () => {
     expect(bound).toBe(180);
     expect(RELAY_LIMITS.authReplayEntries).toBeGreaterThanOrEqual(bound);
     // the worst case in practice: three batches of 60 stamped seconds ahead, at now = 0, 60 and 120 s;
-    // at 130 s the first entries are still alive. With room for exactly `bound` entries all are served,
+    // at 125 s the first entries are still alive. With room for exactly `bound` entries all are served,
     // with one entry less the last request of the third batch has to wait.
     const run = async (room: number): Promise<number[]> => {
       const keys = [KEY_A, KEY_B, makeTestKey('app-c')];
@@ -1549,9 +1641,9 @@ describe('relay: authentication', () => {
     small.clock.now += 61_000; // the window of the first one is over, its entry is not
     const res = await go(t + 61);
     expect(res.status).toBe(429);
-    expect(res.headers.get('retry-after')).toBe('9'); // 70 s after t
-    small.clock.now += 10_000; // the entry lives while `until >= now`, so one more second
-    expect((await go(t + 71)).status).toBe(200);
+    expect(res.headers.get('retry-after')).toBe('4'); // 65 s after t
+    small.clock.now += 5_000; // the entry lives while `until >= now`, so one more second
+    expect((await go(t + 66)).status).toBe(200);
     await small.close();
   });
   it('lets one key hold only its share of the replay cache', async () => {

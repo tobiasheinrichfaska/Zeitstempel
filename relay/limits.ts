@@ -6,8 +6,12 @@ export const RELAY_LIMITS = {
   upstreamBytes: 65_536,
   /** The whole upstream call, connect to last byte. */
   upstreamTimeoutMs: 10_000,
-  /** The whole incoming request, from the first byte. */
-  requestTimeoutMs: 10_000,
+  /**
+   * The whole incoming request, from the first byte (also the time for the headers). Short on purpose: a
+   * single client can hold `maxConnections` connections open this long (the relay knows no addresses, so
+   * a limit per address belongs to the reverse proxy in front).
+   */
+  requestTimeoutMs: 5_000,
   /** Requests per minute over all services and clients: nothing is counted per client. */
   perMinuteTotal: 60,
   /**
@@ -22,8 +26,8 @@ export const RELAY_LIMITS = {
   /**
    * Signed requests remembered against replay; when full, new ones wait (429, without costing budget).
    * An upper bound, not a typical size: an entry lives at most `2 * authWindowSeconds + requestTimeoutMs`
-   * (130 s) and only admitted requests are written, at most `perMinuteTotal` per minute, so at most
-   * 60 * ceil(130 / 60) = 180 entries exist at a time, whatever the number of keys. 512 leaves room
+   * (125 s) and only admitted requests are written, at most `perMinuteTotal` per minute, so at most
+   * 60 * ceil(125 / 60) = 180 entries exist at a time, whatever the number of keys. 512 leaves room
    * (a test ties this value to those limits).
    */
   authReplayEntries: 512,

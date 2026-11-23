@@ -97,7 +97,7 @@ min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging d
    Schein-Schlüssel; gleiche Arbeit, gleiche Antwort, kein Orakel); erst danach entscheidet die Kennung, und eine
    unbekannte Kennung wird in jedem Fall abgelehnt (ein Test zählt die Prüfungen). Diese Prüfung läuft also für
    jeden wohlgeformten Kopf mit frischer Zeit; begrenzt wird die Arbeit durch höchstens 256 Verbindungen, die
-   Frist von 10 s je Anfrage und das Zeitfenster. Es wird kein Geheimnis verglichen,
+   Frist von 5 s je Anfrage und das Zeitfenster. Es wird kein Geheimnis verglichen,
    ein Zeitangriff gibt also nichts preis.
 3. Eine Nachricht, die schon angenommen wurde, wird abgelehnt (Wiederholung): nach `200` und nach `502`/`504` (die Anfrage wurde
    angenommen) braucht jeder weitere Versuch einen frischen Kopf. Nach `429` (nichts wurde eingetragen) darf
@@ -111,9 +111,9 @@ min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging d
    also nicht und verbrauchen kein Budget.
    Der Speicher ist auf `authReplayEntries` Einträge begrenzt, davon darf eine Kennung höchstens den Anteil
    `authReplayKeyShare` halten (eine Kennung kann die anderen nicht aussperren). Ein Eintrag bleibt bis
-   `ts + authWindowSeconds + requestTimeoutMs`, also höchstens 130 s. Weil nur zugelassene Anfragen eingetragen
+   `ts + authWindowSeconds + requestTimeoutMs`, also höchstens 125 s. Weil nur zugelassene Anfragen eingetragen
    werden und höchstens `perMinuteTotal` je Minute zugelassen werden, gibt es **höchstens 180 Einträge zugleich**
-   (60 × ⌈130 / 60⌉), gleich wie viele Schlüssel es gibt; `authReplayEntries` (512) ist eine **Obergrenze** mit
+   (60 × ⌈125 / 60⌉), gleich wie viele Schlüssel es gibt; `authReplayEntries` (512) ist eine **Obergrenze** mit
    Spielraum, die im Betrieb nicht erreicht wird, kein Wert, den man erwartet. Wäre er doch voll (oder der Anteil
    der Kennung), antwortet das Relay `429` mit `Retry-After` (kein Eintrag wird verdrängt, das ließe eine
    Wiederholung zu), und auch diese Antwort kostet kein Budget.
@@ -129,7 +129,7 @@ Körpers. Der Typ bestimmt nur, wie die bereits geprüften Bytes gelesen werden 
 ungültigem Hash (`400`) zählt **nicht** gegen das Budget und wird **nicht** gemerkt; dieselbe signierte Anfrage lässt
 sich also innerhalb des Zeitfensters wiederholen und liefert wieder `400`/`415`. Das öffnet nichts: einen gültigen
 Kopf hat nur, wer den privaten Schlüssel hat (oder eine mitgeschnittene Anfrage), die Arbeit je Anfrage ist klein
-(eine Signaturprüfung, höchstens 512 Byte Körper) und ihre Zahl ist begrenzt durch die Frist von 10 s je Anfrage,
+(eine Signaturprüfung, höchstens 512 Byte Körper) und ihre Zahl ist begrenzt durch die Frist von 5 s je Anfrage,
 höchstens 256 gleichzeitige Verbindungen und das Zeitfenster von 60 s. Kein Dienst wird dadurch aufgerufen.
 
 **Kein Relay in der Nachricht:** Die signierte Nachricht enthält nichts, was ein einzelnes Relay bezeichnet. Wird
@@ -142,6 +142,10 @@ keine Absolutform `http://…`, kein leeres `?`); sonst `400 bad-request`. So bi
 was signiert wurde, ist das, was geroutet wird.
 
 Das Relay schreibt weder Kennung noch Zeit noch Signatur ins Protokoll; die Zähler kennen nur `unauthorized`.
+
+**Abgebrochene Anfragen:** Bricht der Client die Verbindung ab, während der Körper noch kommt (`ECONNRESET`,
+`aborted`), wird das **nicht beantwortet** (die Verbindung ist weg) und nicht als `internal` gezählt, sondern in
+`refused` unter `client-aborted`. `internal` zählt nur echte Ausnahmen im Relay.
 
 **Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`.
 `publicKey` ist der **unkomprimierte Punkt** (65 Byte: `04 || X || Y`) als base64url ohne `=`. Streng gelesen: genau
@@ -279,7 +283,7 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `bodyBytes`          | 512    | Größter Körper einer Anfrage                                       |
 | `upstreamBytes`      | 65536  | Größte Antwort eines Dienstes                                      |
 | `upstreamTimeoutMs`  | 10000  | Frist für den ganzen Aufruf beim Dienst                            |
-| `requestTimeoutMs`   | 10000  | Frist für die ganze eingehende Anfrage                             |
+| `requestTimeoutMs`   | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)       |
 | `perMinuteTotal`     | 60     | Anfragen je Minute über alle Dienste                               |
 | `windowMs`           | 60000  | Zeitfenster der Zähler                                             |
 | `perMinutePerKey`    | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)         |
@@ -299,3 +303,14 @@ zeitlich, sondern lässt in einem Fenster von einer Minute höchstens so viele d
 Netzadresse (das Relay kennt keine Adressen); je Aufrufer zählt nur die Schlüsselkennung. Wer einen gültigen
 Schlüssel hat, kann sein Budget und das gemeinsame Limit für alle ausschöpfen. Schutz vor Überlast durch viele
 Aufrufer ist Aufgabe der Infrastruktur davor.
+
+**Uhr zurückgestellt:** Die Zähler der Fenster (gesamt, je Dienst, je Kennung) und die Restzeit der Einträge des
+Wiederholungsspeichers rechnen Zeitpunkte in der Zukunft beim Lesen als „jetzt“. Ein Rückwärtssprung der Uhr sperrt
+das Budget also nicht für die Länge des Sprungs: nach höchstens einem Fenster (60 s) ist es wieder frei, und
+`Retry-After` nennt nie mehr als ein Fenster (beim Wiederholungsspeicher nie mehr als die Lebensdauer eines Eintrags).
+
+**Verbindungen und Betrieb:** Das Relay kennt keine Adressen und führt keinen Zähler je Adresse (es protokolliert
+auch keine). Ein einzelner Client kann daher bis zu 256 Verbindungen (`maxConnections`) für etwa 5 bis 6 s belegen
+(`requestTimeoutMs`, die Frist gilt auch für die Kopfzeilen; der Server prüft sie einmal je Sekunde) und damit andere
+Aufrufer aussperren. Ein **Reverse-Proxy mit Verbindungs- und Ratenlimit je Adresse vor dem Relay ist für den Betrieb
+Pflicht**; das Relay allein schützt davor nicht.
