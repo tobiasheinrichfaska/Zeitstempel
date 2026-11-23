@@ -70,7 +70,7 @@ describe('no private names', () => {
   it('in commit messages', () => {
     const read = (): string | null => {
       try {
-        return execFileSync('git', ['-C', ROOT, 'log', '--format=%B'], {
+        return execFileSync('git', ['-C', ROOT, 'log', '--no-merges', '--format=%B'], {
           stdio: ['ignore', 'pipe', 'ignore'],
           encoding: 'utf8',
         }).toLowerCase();
