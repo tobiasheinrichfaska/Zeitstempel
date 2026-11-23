@@ -1,28 +1,15 @@
-import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { deriveVerifier, signRelayRequest, toBase64Url } from '../src/index.ts';
+import { generateKeyPairSync, verify } from 'node:crypto';
+import { signRelayRequest, toBase64Url } from '../src/index.ts';
+import * as lib from '../src/index.ts';
+import { authMessage, makeTestKey } from './auth-helpers.ts';
 
-// Test keys are random per run: no key material is ever written down in the repo.
-const KEY = new Uint8Array(randomBytes(32));
+const KEY = makeTestKey('app-1');
 const BODY = new TextEncoder().encode('{"hash":"x"}');
 const NOW_MS = Date.parse('2026-11-23T13:10:00.900Z');
-
-/** Independent computation (node:crypto) of the header value the specification describes. */
-function expected(
-  key: Uint8Array,
-  kid: string,
-  method: string,
-  path: string,
-  ts: number,
-  body: Uint8Array,
-) {
-  const v = createHash('sha256').update(key).digest();
-  const bodyHex = createHash('sha256').update(body).digest('hex');
-  const msg = `zeitstempel-auth-v1\n${method}\n${path}\n${ts}\n${bodyHex}`;
-  return `v1.${kid}.${ts}.${createHmac('sha256', v).update(msg).digest('base64url')}`;
-}
+const TS = Math.floor(NOW_MS / 1000);
 
 const input = (over: Record<string, unknown> = {}) => ({
-  key: KEY,
+  privateKey: KEY.privateKey,
   keyId: 'app-1',
   method: 'POST',
   path: '/v1/stamp/freetsa',
@@ -31,72 +18,90 @@ const input = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-describe('deriveVerifier', () => {
-  it('is SHA-256 of the key', async () => {
-    const v = await deriveVerifier(KEY);
-    expect(v.ok && Buffer.from(v.value).equals(createHash('sha256').update(KEY).digest())).toBe(
-      true,
-    );
-  });
-  it('refuses a key under 16 bytes', async () => {
-    expect(await deriveVerifier(new Uint8Array(15))).toMatchObject({
-      ok: false,
-      reason: 'bad-key',
-    });
-    expect((await deriveVerifier(new Uint8Array(16))).ok).toBe(true);
-    expect(await deriveVerifier('text' as unknown as Uint8Array)).toMatchObject({
-      ok: false,
-      reason: 'bad-key',
-    });
-  });
-});
+/** Does node:crypto accept the header's signature for this message under the test key? */
+function accepts(header: string, method: string, path: string, ts: number, body: Uint8Array) {
+  const sig = Buffer.from(header.split('.')[3]!, 'base64url');
+  return verify(
+    'sha256',
+    Buffer.from(authMessage(method, path, ts, body)),
+    { key: KEY.object, dsaEncoding: 'ieee-p1363' },
+    sig,
+  );
+}
 
 describe('signRelayRequest', () => {
-  it('agrees with an independent HMAC computation', async () => {
-    const r = await signRelayRequest(input());
-    expect(r).toEqual({
-      ok: true,
-      value: expected(KEY, 'app-1', 'POST', '/v1/stamp/freetsa', Math.floor(NOW_MS / 1000), BODY),
-    });
+  it('has no deriveVerifier any more (v1 is gone)', () => {
+    expect('deriveVerifier' in lib).toBe(false);
+    expect('generateAuthKeyPair' in lib).toBe(false); // making a key pair is a tool, not the library
   });
-  it('takes the time from the parameter (seconds, rounded down) and is deterministic', async () => {
-    const a = await signRelayRequest(input());
-    const b = await signRelayRequest(input());
-    expect(a).toEqual(b);
+  it('makes a v2 header whose signature node:crypto verifies over the specified message', async () => {
+    const r = await signRelayRequest(input());
+    if (!r.ok) throw new Error(r.reason);
+    const [version, kid, ts, sig] = r.value.split('.');
+    expect([version, kid, ts]).toEqual(['v2', 'app-1', String(TS)]);
+    expect(sig).toMatch(/^[A-Za-z0-9_-]{86}$/); // 64 bytes, r || s
+    expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY)).toBe(true);
+  });
+  it('takes the time from the parameter (seconds, rounded down)', async () => {
     const later = await signRelayRequest(input({ nowMs: NOW_MS + 1000 }));
-    expect(later.ok && a.ok && later.value !== a.value).toBe(true);
+    if (!later.ok) throw new Error(later.reason);
+    expect(later.value.split('.')[2]).toBe(String(TS + 1));
+    expect(accepts(later.value, 'POST', '/v1/stamp/freetsa', TS + 1, BODY)).toBe(true);
   });
-  it('binds method, path and body', async () => {
-    const base = await signRelayRequest(input());
-    for (const over of [
-      { method: 'PUT' },
-      { path: '/v1/stamp/sectigo' },
-      { body: new TextEncoder().encode('{"hash":"y"}') },
-      { keyId: 'app-2' },
-    ]) {
-      const other = await signRelayRequest(input(over));
-      expect(
-        other.ok && base.ok && other.value !== base.value,
-        JSON.stringify(Object.keys(over)),
-      ).toBe(true);
-    }
-  });
-  it('never contains the key or its verifier', async () => {
+  it('binds method, path, time and body: the signature is not valid for any other message', async () => {
     const r = await signRelayRequest(input());
-    const v = await deriveVerifier(KEY);
-    if (!r.ok || !v.ok) throw new Error('unexpected');
+    if (!r.ok) throw new Error(r.reason);
+    const other = new TextEncoder().encode('{"hash":"y"}');
+    expect(accepts(r.value, 'PUT', '/v1/stamp/freetsa', TS, BODY)).toBe(false);
+    expect(accepts(r.value, 'POST', '/v1/stamp/sectigo', TS, BODY)).toBe(false);
+    expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS + 1, BODY)).toBe(false);
+    expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, other)).toBe(false);
+  });
+  it('is signed by the private key only: another key does not verify', async () => {
+    const r = await signRelayRequest(input());
+    if (!r.ok) throw new Error(r.reason);
+    const stranger = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey;
+    const sig = Buffer.from(r.value.split('.')[3]!, 'base64url');
+    const message = Buffer.from(authMessage('POST', '/v1/stamp/freetsa', TS, BODY));
+    expect(verify('sha256', message, { key: stranger, dsaEncoding: 'ieee-p1363' }, sig)).toBe(
+      false,
+    );
+  });
+  it('never contains the private key', async () => {
+    const r = await signRelayRequest(input());
+    if (!r.ok) throw new Error(r.reason);
     for (const secret of [
-      toBase64Url(KEY),
-      toBase64Url(v.value),
-      Buffer.from(KEY).toString('hex'),
+      toBase64Url(KEY.privateKey),
+      Buffer.from(KEY.privateKey).toString('hex'),
+      KEY.object.export({ format: 'jwk' }).d!, // the private scalar itself
     ]) {
       expect(r.value).not.toContain(secret);
     }
   });
+  it('imports the key as not extractable and gives nothing back but the header', async () => {
+    const spy = vi.spyOn(globalThis.crypto.subtle, 'importKey');
+    try {
+      const r = await signRelayRequest(input());
+      expect(r.ok).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![3]).toBe(false); // extractable: false
+      expect(Object.keys(r).sort()).toEqual(['ok', 'value']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it('answers with codes and never throws', async () => {
+    const other = generateKeyPairSync('ec', { namedCurve: 'secp384r1' }).privateKey.export({
+      format: 'der',
+      type: 'pkcs8',
+    });
     const codes: [Record<string, unknown>, string][] = [
-      [{ key: new Uint8Array(15) }, 'bad-key'],
-      [{ key: null }, 'bad-key'],
+      [{ privateKey: new Uint8Array(0) }, 'bad-key'],
+      [{ privateKey: new Uint8Array(32) }, 'bad-key'], // a raw scalar is no PKCS#8
+      [{ privateKey: KEY.privateKey.subarray(0, 40) }, 'bad-key'],
+      [{ privateKey: new Uint8Array(other) }, 'bad-key'], // PKCS#8, but P-384
+      [{ privateKey: 'text' }, 'bad-key'],
+      [{ privateKey: null }, 'bad-key'],
       [{ keyId: 'App' }, 'bad-key-id'],
       [{ keyId: '1app' }, 'bad-key-id'],
       [{ keyId: 'a'.repeat(33) }, 'bad-key-id'],
@@ -110,7 +115,7 @@ describe('signRelayRequest', () => {
       [{ nowMs: -1 }, 'bad-options'],
     ];
     for (const [over, reason] of codes) {
-      expect(await signRelayRequest(input(over)), JSON.stringify(Object.keys(over))).toMatchObject({
+      expect(await signRelayRequest(input(over)), JSON.stringify(over).slice(0, 40)).toMatchObject({
         ok: false,
         reason,
       });
@@ -124,10 +129,6 @@ describe('signRelayRequest', () => {
     vi.stubGlobal('crypto', {});
     try {
       expect(await signRelayRequest(input())).toMatchObject({
-        ok: false,
-        reason: 'unsupported-signature',
-      });
-      expect(await deriveVerifier(KEY)).toMatchObject({
         ok: false,
         reason: 'unsupported-signature',
       });

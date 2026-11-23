@@ -47,6 +47,8 @@ export interface Opts {
     noCa?: boolean;
     /** Signed by an unrelated key instead of the root: looks usable, but never leads to an anchor. */
     forged?: boolean;
+    /** Carries an unrelated public key: it never verifies the certificate below it. */
+    wrongKey?: boolean;
   }[];
   /** `n` chained intermediates I1..In (I1 signed by the root); the signer hangs below In. */
   deepChain?: number;
@@ -120,7 +122,7 @@ export function build(o: Opts = {}) {
     mkCert(
       'INT',
       'CA',
-      mid,
+      t.wrongKey ? attacker : mid,
       t.forged ? attacker : ca,
       caExts(t.extraExts ?? [], !t.noCa),
       Uint8Array.of(20 + i),

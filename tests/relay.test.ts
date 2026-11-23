@@ -1,11 +1,11 @@
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { verify } from 'node:crypto';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net, { type AddressInfo } from 'node:net';
 import {
   toBase64Url,
   verifyTimestampToken,
   fromBase64Url,
-  deriveVerifier,
   signRelayRequest,
 } from '../src/index.ts';
 import type { RelayKey } from '../relay/keys.ts';
@@ -19,6 +19,14 @@ import {
   networkUpstream,
   type Upstream,
 } from '../relay/upstream.ts';
+import {
+  makeTestKey,
+  nodeAuthHeader,
+  nodeSignature,
+  authMessage,
+  twinSignature,
+  type TestKey,
+} from './auth-helpers.ts';
 import { FREETSA_NONCE, fixture, fixtureText, sha256 } from './helpers.ts';
 
 const SERVICES = loadServices();
@@ -27,27 +35,9 @@ const ORIGIN = 'https://app.example';
 const NOW = Date.parse('2026-11-23T13:10:00Z');
 
 // Random per run: the repo holds no key material.
-const KEY_A = new Uint8Array(randomBytes(32));
-const KEY_B = new Uint8Array(randomBytes(32));
-const verifierOf = (k: Uint8Array) => new Uint8Array(createHash('sha256').update(k).digest());
-const KEYS: RelayKey[] = [
-  { id: 'app-a', verifier: verifierOf(KEY_A) },
-  { id: 'app-b', verifier: verifierOf(KEY_B) },
-];
-
-/** The header value, computed independently of the library (node:crypto, the format of the spec). */
-function authHeader(
-  key: Uint8Array,
-  kid: string,
-  method: string,
-  path: string,
-  ts: number,
-  body: Uint8Array,
-): string {
-  const msg = `zeitstempel-auth-v1\n${method}\n${path}\n${ts}\n${createHash('sha256').update(body).digest('hex')}`;
-  const mac = createHmac('sha256', verifierOf(key)).update(msg).digest('base64url');
-  return `v1.${kid}.${ts}.${mac}`;
-}
+const KEY_A = makeTestKey('app-a');
+const KEY_B = makeTestKey('app-b');
+const KEYS: RelayKey[] = [KEY_A, KEY_B].map((k) => ({ id: k.id, publicKey: k.publicKey }));
 
 interface Harness {
   base: string;
@@ -55,7 +45,7 @@ interface Harness {
   sign: (
     path: string,
     body: Uint8Array,
-    over?: { ts?: number; key?: Uint8Array; kid?: string },
+    over?: { ts?: number; key?: TestKey; kid?: string },
   ) => string;
   close: () => Promise<void>;
   calls: Uint8Array[];
@@ -94,7 +84,7 @@ async function start(
   let n = 0;
   return {
     sign: (path, body, o = {}) =>
-      authHeader(
+      nodeAuthHeader(
         o.key ?? KEY_A,
         o.kid ?? 'app-a',
         'POST',
@@ -359,22 +349,49 @@ describe('relay: start configuration', () => {
       readConfig({ ...OFF, RELAY_SERVICES: ' sectigo ' }, () => SERVICES).services.map((s) => s.id),
     ).toEqual(['sectigo']);
   });
-  it('warns when the key file can be read by group or others, and only then', () => {
+  it('warns when the key file can be written by group or others, and only then', () => {
     const at = (mode: number) => () => ({ mode });
-    expect(keyFilePermissionWarning('/k.json', at(0o100600), 'linux')).toBeNull();
-    expect(keyFilePermissionWarning('/k.json', at(0o100400), 'linux')).toBeNull();
-    for (const mode of [0o100640, 0o100604, 0o100644, 0o100660, 0o100666, 0o100610]) {
-      const text = keyFilePermissionWarning('/k.json', at(mode), 'linux');
-      expect(text, mode.toString(8)).toMatch(/lesbar/);
-      expect(text).toContain('0600');
+    // readable is fine: the file holds public keys only
+    for (const mode of [0o100600, 0o100400, 0o100644, 0o100640, 0o100604, 0o100444]) {
+      expect(keyFilePermissionWarning('/k.json', at(mode), 'linux'), mode.toString(8)).toBeNull();
     }
-    expect(keyFilePermissionWarning('/k.json', at(0o100644), 'win32')).toBeNull();
+    for (const mode of [0o100620, 0o100602, 0o100664, 0o100666, 0o100660, 0o100606, 0o100622]) {
+      const text = keyFilePermissionWarning('/k.json', at(mode), 'linux');
+      expect(text, mode.toString(8)).toMatch(/schreibbar/);
+      expect(text).toContain('/k.json');
+      expect(text).toContain(`Modus ${(mode & 0o777).toString(8)}`);
+    }
+    expect(keyFilePermissionWarning('/k.json', at(0o100666), 'win32')).toBeNull();
     expect(
       keyFilePermissionWarning('/k.json', () => {
         throw new Error('gone');
       }),
     ).toBeNull();
   });
+  it.skipIf(process.platform === 'win32')(
+    'judges a real file by its mode: 666 and 664 warn, 644 and 600 do not (path and mode only)',
+    () => {
+      const dir = new URL('../.tmp/keyfile-mode/', import.meta.url);
+      mkdirSync(dir, { recursive: true });
+      const file = new URL('keys.json', dir).pathname;
+      const MARKER = 'PUBLIC-KEY-MARKER-0123456789';
+      writeFileSync(file, MARKER);
+      const warn = (mode: number) => {
+        chmodSync(file, mode);
+        return keyFilePermissionWarning(file);
+      };
+      for (const mode of [0o666, 0o664, 0o662, 0o646]) {
+        const text = warn(mode);
+        expect(text, mode.toString(8)).not.toBeNull();
+        expect(text).toContain(file);
+        expect(text).toContain(`Modus ${mode.toString(8)}`);
+        expect(text).not.toContain(MARKER);
+      }
+      for (const mode of [0o644, 0o640, 0o600, 0o400]) {
+        expect(warn(mode), mode.toString(8)).toBeNull();
+      }
+    },
+  );
   it('hands the permission warning to the start (no key data in it)', () => {
     const env = { RELAY_KEYS_FILE: '/etc/z/keys.json' };
     const warned = readConfig(
@@ -396,10 +413,10 @@ describe('relay: start configuration', () => {
       env,
       () => SERVICES,
       () => KEYS,
-      (p) => keyFilePermissionWarning(p, () => ({ mode: 0o100644 }), 'linux'),
+      (p) => keyFilePermissionWarning(p, () => ({ mode: 0o100664 }), 'linux'),
     );
     expect(real.warnings[0]).toContain('/etc/z/keys.json');
-    expect(real.warnings[0]).not.toContain(toBase64Url(KEYS[0]!.verifier));
+    expect(real.warnings[0]).not.toContain(toBase64Url(KEYS[0]!.publicKey));
   });
   it('limits the open connections: the third socket is closed, the first two stay', async () => {
     const { server } = createRelayServer(
@@ -735,6 +752,12 @@ describe('relay: authentication', () => {
   let h: Harness;
   beforeEach(async () => (h = await start()));
   afterEach(() => h.close());
+  // twenty services whose own limit (60 per minute) is no obstacle, to reach the key and total limits
+  const MANY = Array.from({ length: 20 }, (_, i) => ({
+    ...SERVICES[0]!,
+    id: `s${i}`,
+    minIntervalMs: 1000,
+  }));
 
   const withHeader = (value: string | undefined, body = BODY, path = PATH) =>
     fetch(h.base + path, {
@@ -751,9 +774,9 @@ describe('relay: authentication', () => {
     expect(h.calls).toHaveLength(0);
   };
 
-  it('lets a correctly signed request through (header from the library, key never sent)', async () => {
+  it('lets a request signed by the library through (the private key is never sent)', async () => {
     const signed = await signRelayRequest({
-      key: KEY_A,
+      privateKey: KEY_A.privateKey,
       keyId: 'app-a',
       method: 'POST',
       path: PATH,
@@ -761,16 +784,26 @@ describe('relay: authentication', () => {
       nowMs: NOW,
     });
     if (!signed.ok) throw new Error('sign');
-    const verifier = await deriveVerifier(KEY_A);
-    expect(verifier.ok).toBe(true);
-    expect(signed.value).not.toContain(toBase64Url(KEY_A));
-    // library and relay agree with the independent computation
-    expect(signed.value).toBe(
-      authHeader(KEY_A, 'app-a', 'POST', PATH, secondsNow(), new TextEncoder().encode(BODY)),
-    );
+    expect(signed.value).not.toContain(toBase64Url(KEY_A.privateKey));
     const res = await withHeader(signed.value);
     expect(res.status).toBe(200);
     expect(h.calls).toHaveLength(1);
+  });
+  it('lets a request signed independently with node:crypto through (the format of the specification)', async () => {
+    const header = nodeAuthHeader(
+      KEY_A,
+      'app-a',
+      'POST',
+      PATH,
+      secondsNow(),
+      new TextEncoder().encode(BODY),
+    );
+    expect(header).toMatch(/^v2\.app-a\.\d+\.[A-Za-z0-9_-]{86}$/);
+    expect((await withHeader(header)).status).toBe(200);
+  });
+  it('refuses the version 1 header (HMAC), also when it is well formed', async () => {
+    const v1 = `v1.app-a.${secondsNow()}.${toBase64Url(new Uint8Array(32).fill(7))}`;
+    await unauthorized(await withHeader(v1));
   });
   it('accepts the second key as well', async () => {
     const body = new TextEncoder().encode(BODY);
@@ -782,41 +815,41 @@ describe('relay: authentication', () => {
   });
   it('refuses a header of the wrong form', async () => {
     const good = h.sign(PATH, new TextEncoder().encode(BODY), { ts: secondsNow() });
-    const [v, kid, ts, mac] = good.split('.') as [string, string, string, string];
+    const [v, kid, ts, sig] = good.split('.') as [string, string, string, string];
     const forms = [
       '',
-      'v1',
-      `v2.${kid}.${ts}.${mac}`,
-      `${v}.${kid.toUpperCase()}.${ts}.${mac}`,
-      `${v}.${kid}.0${ts}.${mac}`,
-      `${v}.${kid}.${ts}.${mac.slice(1)}`,
-      `${v}.${kid}.${ts}.${mac}x`,
-      `${v}.${kid}.${ts}.${mac}.extra`,
-      `${v}.${kid}.${ts}.${mac.slice(0, 42)}=`,
-      `${v}.${kid}.-${ts}.${mac}`,
-      `${v}.${kid}.${ts}.${mac.replace(/[A-Za-z0-9_-]$/, '*')}`,
+      'v2',
+      `v3.${kid}.${ts}.${sig}`,
+      `${v}.${kid.toUpperCase()}.${ts}.${sig}`,
+      `${v}.${kid}.0${ts}.${sig}`,
+      `${v}.${kid}.${ts}.${sig.slice(1)}`,
+      `${v}.${kid}.${ts}.${sig}x`,
+      `${v}.${kid}.${ts}.${sig}.extra`,
+      `${v}.${kid}.${ts}.${sig.slice(0, 85)}=`,
+      `${v}.${kid}.-${ts}.${sig}`,
+      `${v}.${kid}.${ts}.${sig.replace(/[A-Za-z0-9_-]$/, '*')}`,
     ];
     for (const form of forms) {
       await unauthorized(await withHeader(form));
     }
   });
-  it('refuses a wrong MAC', async () => {
+  it('refuses a wrong signature', async () => {
     const good = h.sign(PATH, new TextEncoder().encode(BODY), { ts: secondsNow() });
-    // Flip one bit of the decoded MAC and encode it again: the form stays valid, so only the
-    // comparison of the MAC itself can refuse it.
+    // Flip one bit of the decoded signature and encode it again: the form stays valid, so only the
+    // verification of the signature itself can refuse it.
     const parts = good.split('.');
-    const mac = Buffer.from(parts[3]!, 'base64url');
-    mac[0] = mac[0]! ^ 0x01;
-    const forged = [...parts.slice(0, 3), mac.toString('base64url')].join('.');
-    expect(forged).toMatch(/^v1\.app-a\.\d+\.[A-Za-z0-9_-]{43}$/);
+    const sig = Buffer.from(parts[3]!, 'base64url');
+    sig[10] = sig[10]! ^ 0x01;
+    const forged = [...parts.slice(0, 3), sig.toString('base64url')].join('.');
+    expect(forged).toMatch(/^v2\.app-a\.\d+\.[A-Za-z0-9_-]{86}$/);
     expect(forged).not.toBe(good);
     await unauthorized(await withHeader(forged));
   });
-  it('refuses a MAC made for another path', async () => {
+  it('refuses a signature made for another path', async () => {
     const other = h.sign('/v1/stamp/sectigo', new TextEncoder().encode(BODY));
     await unauthorized(await withHeader(other));
   });
-  it('refuses a MAC made for another body', async () => {
+  it('refuses a signature made for another body', async () => {
     const header = h.sign(PATH, new TextEncoder().encode(hashJson(sha256('other'))));
     await unauthorized(await withHeader(header));
   });
@@ -835,9 +868,9 @@ describe('relay: authentication', () => {
     const res = await withHeader(stale, 'x'.repeat(RELAY_LIMITS.bodyBytes + 1));
     expect(res.status).toBe(401);
   });
-  it('answers an unknown key id exactly like a wrong MAC', async () => {
+  it('answers an unknown key id exactly like a wrong signature', async () => {
     const body = new TextEncoder().encode(BODY);
-    const wrongMac = h.sign(PATH, body, { key: new Uint8Array(randomBytes(32)) }); // known id, wrong key
+    const wrongMac = h.sign(PATH, body, { key: makeTestKey('other') }); // known id, wrong key
     const unknownKid = h.sign(PATH, body, { kid: 'nobody' });
     const a = await withHeader(wrongMac);
     const b = await withHeader(unknownKid);
@@ -902,7 +935,7 @@ describe('relay: authentication', () => {
     const body = new TextEncoder().encode(BODY);
     const t = Math.floor(small.clock.now / 1000);
     for (let i = 0; i < 5; i += 1) {
-      const forged = small.sign(PATH, body, { ts: t - i, key: new Uint8Array(randomBytes(32)) });
+      const forged = small.sign(PATH, body, { ts: t - i, key: makeTestKey('other') });
       const res = await fetch(small.base + PATH, {
         method: 'POST',
         body: BODY,
@@ -920,7 +953,7 @@ describe('relay: authentication', () => {
       minIntervalMs: 1000,
     }));
     const m = await start({ services: many });
-    const go = (i: number, key: Uint8Array, kid: string) => {
+    const go = (i: number, key: TestKey, kid: string) => {
       const path = `/v1/stamp/s${i % 20}`;
       return fetch(m.base + path, {
         method: 'POST',
@@ -942,32 +975,264 @@ describe('relay: authentication', () => {
     expect((await go(1, KEY_A, 'app-a')).status).toBe(200);
     await m.close();
   });
-  it('keeps the global limit on top of the per-key limit', async () => {
-    const many = Array.from({ length: 20 }, (_, i) => ({
-      ...SERVICES[0]!,
-      id: `s${i}`,
-      minIntervalMs: 1000,
-    }));
-    const m = await start({ services: many });
+  it('keeps the global limit on top of the per-key limit (four keys: 4 x 20 > 60)', async () => {
+    const four = [KEY_A, KEY_B, makeTestKey('app-c'), makeTestKey('app-d')];
+    const m = await start({
+      services: MANY,
+      keys: four.map((k) => ({ id: k.id, publicKey: k.publicKey })),
+    });
     const statuses: number[] = [];
     for (let i = 0; i < RELAY_LIMITS.perMinuteTotal + 4; i += 1) {
-      const key = i % 2 === 0 ? KEY_A : KEY_B;
-      const kid = i % 2 === 0 ? 'app-a' : 'app-b';
+      const key = four[i % 4]!;
       const path = `/v1/stamp/s${i % 20}`;
       const res = await fetch(m.base + path, {
         method: 'POST',
         body: BODY,
         headers: {
           'Content-Type': 'application/json',
-          'X-Zeitstempel-Auth': m.sign(path, new TextEncoder().encode(BODY), { key, kid }),
+          'X-Zeitstempel-Auth': m.sign(path, new TextEncoder().encode(BODY), {
+            key,
+            kid: key.id,
+          }),
         },
       });
       statuses.push(res.status);
     }
+    expect(RELAY_LIMITS.perMinutePerKey * 3).toBeLessThanOrEqual(RELAY_LIMITS.perMinuteTotal);
     expect(statuses.filter((s) => s === 200)).toHaveLength(RELAY_LIMITS.perMinuteTotal);
     expect(statuses.filter((s) => s === 429)).toHaveLength(4);
     await m.close();
   });
+  it('lets three keys use up the total, so that a fourth is locked out until the window moves (documented)', async () => {
+    const three = [KEY_A, KEY_B, makeTestKey('app-c'), makeTestKey('app-d')];
+    const m = await start({
+      services: MANY,
+      keys: three.map((k) => ({ id: k.id, publicKey: k.publicKey })),
+    });
+    const go = (i: number, key: TestKey) => {
+      const path = `/v1/stamp/s${i % 20}`;
+      return fetch(m.base + path, {
+        method: 'POST',
+        body: BODY,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Zeitstempel-Auth': m.sign(path, bytesOf(BODY), { key, kid: key.id }),
+        },
+      });
+    };
+    for (let i = 0; i < 60; i += 1) expect((await go(i, three[i % 3]!)).status).toBe(200);
+    expect((await go(0, three[3]!)).status).toBe(429); // key d has not stamped at all
+    await m.close();
+  });
+  it('refuses the twin signature (r, n - s) of an accepted request as a replay', async () => {
+    const body = bytesOf(BODY);
+    const t = secondsNow();
+    const message = authMessage('POST', PATH, t, body);
+    const sig = nodeSignature(KEY_A, message);
+    const twin = twinSignature(sig);
+    // the twin is a valid signature of the very same message: that is why the cache must not use signatures
+    expect(twin.equals(sig)).toBe(false);
+    expect(
+      verify(
+        'sha256',
+        Buffer.from(message),
+        { key: KEY_A.object, dsaEncoding: 'ieee-p1363' },
+        twin,
+      ),
+    ).toBe(true);
+    const header = (b: Buffer) => `v2.app-a.${t}.${b.toString('base64url')}`;
+    expect((await withHeader(header(sig))).status).toBe(200);
+    h.calls.length = 0;
+    await unauthorized(await withHeader(header(twin)));
+    expect(h.stats().stamped).toBe(1);
+  });
+  it('refuses the original signature after its twin was accepted', async () => {
+    const body = bytesOf(BODY);
+    const t = secondsNow() - 1;
+    const sig = nodeSignature(KEY_A, authMessage('POST', PATH, t, body));
+    const header = (b: Buffer) => `v2.app-a.${t}.${b.toString('base64url')}`;
+    expect((await withHeader(header(twinSignature(sig)))).status).toBe(200);
+    h.calls.length = 0;
+    await unauthorized(await withHeader(header(sig)));
+  });
+  it('dies on a replay before the budget: 401, the budget and the stamp count stay, whatever Content-Type or body check would follow', async () => {
+    const m = await start({ services: MANY });
+    const path = '/v1/stamp/s0';
+    const body = bytesOf(BODY);
+    const header = m.sign(path, body, { ts: Math.floor(m.clock.now / 1000) });
+    const go = (type: string | null, h2: string) =>
+      fetch(m.base + path, {
+        method: 'POST',
+        body: new Uint8Array(body),
+        headers: { ...(type === null ? {} : { 'Content-Type': type }), 'X-Zeitstempel-Auth': h2 },
+      });
+    expect((await go('application/json', header)).status).toBe(200);
+    // as JSON it would be fine, as raw bytes it is no 32-byte hash (400), as text it is a 415: all 401
+    const types = ['application/json', 'application/octet-stream', 'text/plain', null];
+    let replays = 0;
+    for (let round = 0; round < 12; round += 1) {
+      for (const type of types) {
+        const res = await go(type, header);
+        expect([res.status, await res.json()], String(type)).toEqual([
+          401,
+          { error: 'unauthorized' },
+        ]);
+        replays += 1;
+      }
+    }
+    expect(m.calls).toHaveLength(1);
+    expect(m.stats()).toEqual({ stamped: 1, refused: { unauthorized: replays } });
+    // the budget of the key is still 19 requests of 20: exactly 19 more are served, the 20th is refused
+    for (let i = 1; i < RELAY_LIMITS.perMinutePerKey; i += 1) {
+      expect(
+        (await post(m, `/v1/stamp/s${i}`, BODY, 'application/json')).status,
+        `fresh ${i}`,
+      ).toBe(200);
+    }
+    expect((await post(m, '/v1/stamp/s0', BODY, 'application/json')).status).toBe(429);
+    expect(m.stats().stamped).toBe(RELAY_LIMITS.perMinutePerKey);
+    await m.close();
+  });
+  it('never lets a 429 caused by the replay cache spend budget: another key still has the service budget', async () => {
+    // one service with 6 requests per minute; replay cache of 8 entries, so 4 per key
+    const six = [{ ...SERVICES[0]!, id: 's0', minIntervalMs: 10_000 }];
+    const m = await start({ services: six, authReplayEntries: 8 });
+    const path = '/v1/stamp/s0';
+    // the stand-in service answers for one hash only: requests differ in their second, not their body
+    const go = (i: number, key: TestKey) =>
+      fetch(m.base + path, {
+        method: 'POST',
+        body: BODY,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Zeitstempel-Auth': m.sign(path, bytesOf(BODY), {
+            key,
+            kid: key.id,
+            ts: Math.floor(m.clock.now / 1000) - i,
+          }),
+        },
+      });
+    for (let i = 0; i < 4; i += 1) expect((await go(i, KEY_A)).status).toBe(200); // key A holds its share
+    for (let i = 4; i < 14; i += 1) {
+      const res = await go(i, KEY_A);
+      expect(res.status, `a ${i}`).toBe(429);
+      expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+    }
+    expect(m.stats().stamped).toBe(4);
+    // 4 of the 6 requests of the service are spent; the ten refusals cost nothing: key B gets the last two
+    expect((await go(20, KEY_B)).status).toBe(200);
+    expect((await go(21, KEY_B)).status).toBe(200);
+    expect((await go(22, KEY_B)).status).toBe(429); // now it is really spent
+    await m.close();
+  });
+  it('tells the longest wait of all limits that apply (key, service, total, replay cache)', async () => {
+    // key A: 1 request at t, 9 at t+1..t+9, 4 on s0 at t+10..t+13 (s0 is then full), 6 more up to 20
+    const services = MANY.map((s, i) => (i === 0 ? { ...s, minIntervalMs: 15_000 } : s));
+    const m = await start({ services });
+    const t0 = m.clock.now;
+    const at = (sec: number) => (m.clock.now = t0 + sec * 1000);
+    const go = async (i: number) => {
+      const path = `/v1/stamp/s${i}`;
+      return fetch(m.base + path, {
+        method: 'POST',
+        body: BODY,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Zeitstempel-Auth': m.sign(path, bytesOf(BODY), { ts: Math.floor(m.clock.now / 1000) }),
+        },
+      });
+    };
+    at(0);
+    expect((await go(1)).status).toBe(200);
+    for (let s = 1; s <= 9; s += 1) {
+      at(s);
+      expect((await go(2)).status).toBe(200);
+    }
+    for (let s = 10; s <= 13; s += 1) {
+      at(s);
+      expect((await go(0)).status).toBe(200);
+    }
+    for (let s = 14; s <= 19; s += 1) {
+      at(s);
+      expect((await go(3)).status).toBe(200);
+    }
+    at(30);
+    const refused = await go(0);
+    expect(refused.status).toBe(429);
+    // the key could stamp again at t+30 (its oldest request is from t), but s0 only at t+50 (its oldest
+    // is from t+10): the answer must say 40, not 30
+    expect(refused.headers.get('retry-after')).toBe('40');
+    at(30 + 40);
+    expect((await go(0)).status).toBe(200);
+    await m.close();
+  });
+  it('tells the replay cache wait when it is longer than the budget wait', async () => {
+    // one request per minute for the service; a replay cache that holds one entry per key
+    const one = [{ ...SERVICES[0]!, id: 's0', minIntervalMs: 60_000 }];
+    const m = await start({ services: one, authReplayEntries: 2 });
+    const path = '/v1/stamp/s0';
+    const t = Math.floor(m.clock.now / 1000);
+    const go = (ts: number) =>
+      fetch(m.base + path, {
+        method: 'POST',
+        body: BODY,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Zeitstempel-Auth': m.sign(path, bytesOf(BODY), { ts }),
+        },
+      });
+    expect((await go(t + 50)).status).toBe(200); // its entry lives until t + 120 s
+    m.clock.now += 10_000;
+    const res = await go(t + 60); // budget: 50 s more; cache: 110 s more
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('110');
+    await m.close();
+  });
+  it('keeps the replay cache within the bound that the limits give, and the default is above it', async () => {
+    const lifetimeMs = 2 * RELAY_LIMITS.authWindowSeconds * 1000 + RELAY_LIMITS.requestTimeoutMs;
+    const bound = RELAY_LIMITS.perMinuteTotal * Math.ceil(lifetimeMs / RELAY_LIMITS.windowMs);
+    expect(bound).toBe(180);
+    expect(RELAY_LIMITS.authReplayEntries).toBeGreaterThanOrEqual(bound);
+    // the worst case in practice: three batches of 60 stamped seconds ahead, at now = 0, 60 and 120 s;
+    // at 130 s the first entries are still alive. With room for exactly `bound` entries all are served,
+    // with one entry less the last request of the third batch has to wait.
+    const run = async (room: number): Promise<number[]> => {
+      const keys = [KEY_A, KEY_B, makeTestKey('app-c')];
+      const m = await start({
+        services: MANY,
+        keys: keys.map((k) => ({ id: k.id, publicKey: k.publicKey })),
+        authReplayEntries: room,
+      });
+      const t0 = m.clock.now;
+      const statuses: number[] = [];
+      for (let batch = 0; batch < 3; batch += 1) {
+        m.clock.now = t0 + batch * 60_000;
+        for (let i = 0; i < 60; i += 1) {
+          const key = keys[i % 3]!;
+          const path = `/v1/stamp/s${i % 20}`;
+          const res = await fetch(m.base + path, {
+            method: 'POST',
+            body: BODY,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Zeitstempel-Auth': m.sign(path, bytesOf(BODY), {
+                key,
+                kid: key.id,
+                ts: Math.floor(m.clock.now / 1000) + 60,
+              }),
+            },
+          });
+          statuses.push(res.status);
+        }
+      }
+      await m.close();
+      return statuses;
+    };
+    const roomy = await run(bound);
+    expect(roomy.filter((s) => s !== 200)).toEqual([]);
+    const tight = await run(bound - 2); // a share of ceil(0.5 * 178) = 89 per key stays above 60
+    expect(tight.filter((s) => s === 429).length).toBeGreaterThan(0);
+  }, 60_000);
   it('answers the preflight without authentication and allows the header', async () => {
     const res = await fetch(`${h.base}${PATH}`, { method: 'OPTIONS', headers: { Origin: ORIGIN } });
     expect(res.status).toBe(204);
@@ -986,16 +1251,16 @@ describe('relay: authentication', () => {
     });
     expect(res.status).toBe(403);
   });
-  it('counts failures as refused.unauthorized and keeps no key id, time or MAC', async () => {
+  it('counts failures as refused.unauthorized and keeps no key id, time or signature', async () => {
     const body = new TextEncoder().encode(BODY);
     const header = h.sign(PATH, body, { kid: 'nobody-special' });
     await withHeader(header);
     await withHeader(undefined);
     const stats = h.stats();
     expect(stats).toEqual({ stamped: 0, refused: { unauthorized: 2 } });
-    const mac = header.split('.')[3]!;
+    const sig = header.split('.')[3]!;
     expect(JSON.stringify(stats)).not.toContain('nobody-special');
-    expect(JSON.stringify(stats)).not.toContain(mac);
+    expect(JSON.stringify(stats)).not.toContain(sig);
   });
   it('writes nothing about a failed or successful call to the console', async () => {
     const spies = [vi.spyOn(console, 'log'), vi.spyOn(console, 'error'), vi.spyOn(console, 'warn')];
@@ -1011,16 +1276,16 @@ describe('relay: authentication', () => {
       vi.restoreAllMocks();
     }
   });
-  it('writes a MAC down only after the body and the budget passed: refused tries cannot lock out other keys', async () => {
+  it('writes a request down only after the body and the budget passed: refused tries cannot lock out other keys', async () => {
     const t = Math.floor(NOW / 1000);
     const sendBad = (i: number) => {
-      const body = `{"hash":"bad${i}"}`; // a different body, so a different valid MAC each time
+      const body = `{"hash":"bad${i}"}`; // a different body, so a different valid signature each time
       return fetch(h.base + PATH, {
         method: 'POST',
         body,
         headers: {
           'Content-Type': 'application/json',
-          'X-Zeitstempel-Auth': authHeader(KEY_A, 'app-a', 'POST', PATH, t, bytesOf(body)),
+          'X-Zeitstempel-Auth': nodeAuthHeader(KEY_A, 'app-a', 'POST', PATH, t, bytesOf(body)),
         },
       });
     };
@@ -1138,33 +1403,16 @@ describe('relay: authentication', () => {
     expect((await go(t, true)).status).toBe(200); // key B is not locked out
     await small.close();
   });
-  it('answers an unknown key id with 401 even when its MAC was made under an all-zero key', async () => {
-    // The relay's random source gives zeros here, so the dummy key is all zeros: only the explicit
-    // "id must be known" condition stands between this request and a stamp.
-    const z = await start({ random: (n) => new Uint8Array(n) });
+  it('answers an unknown key id with 401 even when the signature is valid for a known key', async () => {
+    // The signed message does not contain the key id: key A's valid signature under the id of nobody
+    // is checked against the dummy key and refused; under the id of key B it is checked against B.
     const body = bytesOf(BODY);
-    const t = Math.floor(z.clock.now / 1000);
-    const msg = `zeitstempel-auth-v1\nPOST\n${PATH}\n${t}\n${createHash('sha256').update(body).digest('hex')}`;
-    const mac = createHmac('sha256', Buffer.alloc(32)).update(msg).digest('base64url');
-    const res = await fetch(z.base + PATH, {
-      method: 'POST',
-      body: BODY,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Zeitstempel-Auth': `v1.nobody.${t}.${mac}`,
-      },
-    });
-    expect(res.status).toBe(401);
-    expect(z.calls).toHaveLength(0);
-    await z.close();
-  });
-  it('uses a random dummy key for unknown ids (an all-zero MAC key does not pass)', async () => {
-    // The test relay's random source is fixed but not zero: the dummy key is not the null key.
-    const body = bytesOf(BODY);
-    const t = Math.floor(h.clock.now / 1000);
-    const msg = `zeitstempel-auth-v1\nPOST\n${PATH}\n${t}\n${createHash('sha256').update(body).digest('hex')}`;
-    const mac = createHmac('sha256', Buffer.alloc(32)).update(msg).digest('base64url');
-    await unauthorized(await withHeader(`v1.nobody.${t}.${mac}`));
+    const t = secondsNow();
+    const good = nodeAuthHeader(KEY_A, 'app-a', 'POST', PATH, t, body);
+    const sig = good.split('.')[3]!;
+    await unauthorized(await withHeader(`v2.nobody.${t}.${sig}`));
+    await unauthorized(await withHeader(`v2.app-b.${t}.${sig}`));
+    expect((await withHeader(good)).status).toBe(200); // the original was not harmed by the tries
   });
   it('answers 401 without a header for a known service, 404 for an unknown one (public things only)', async () => {
     await unauthorized(await withHeader(undefined));

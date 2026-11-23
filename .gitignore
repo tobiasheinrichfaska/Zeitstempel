@@ -6,9 +6,11 @@ coverage/
 # Project-bound scratch area (workspace rule: never use global temp)
 .tmp/
 
-# Relay key files (V is an HMAC key: as secret as the app's key)
+# Relay key files: they hold public keys only, but stay local configuration (whoever writes the file
+# decides who may stamp); and a private key must never end up next to them
 relay-keys*.json
 *.keys.json
+*keys*.json
 
 # Local environment / editor
 .env

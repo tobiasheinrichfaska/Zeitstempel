@@ -1,4 +1,9 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  createHash,
+  generateKeyPairSync,
+  verify as verifySignature,
+  type KeyObject,
+} from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   buildTimestampRequest,
@@ -8,7 +13,7 @@ import {
   verifyTimestampToken,
   type Service,
 } from '../src/index.ts';
-import type { RelayKey } from './keys.ts';
+import { publicKeyObject, type RelayKey } from './keys.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { UpstreamError, type Upstream } from './upstream.ts';
 
@@ -29,7 +34,7 @@ export interface RelayOptions {
   /** Milliseconds since the epoch. */
   now: () => number;
   /**
-   * Who may stamp: the accepted keys (id and verifier), or `'off'` to accept unsigned requests
+   * Who may stamp: the accepted keys (id and public key), or `'off'` to accept unsigned requests
    * (local development only; there is no default, so it cannot be forgotten).
    */
   keys: readonly RelayKey[] | 'off';
@@ -37,12 +42,11 @@ export interface RelayOptions {
   authReplayEntries?: number;
 }
 
-/** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the MAC is not yet checked. */
+/** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
 interface Auth {
   kid: string;
   ts: number;
-  mac: Uint8Array;
-  macText: string;
+  signature: Uint8Array;
 }
 
 /** Counters only: no address, no hash, no token ever leaves a request. */
@@ -52,8 +56,8 @@ export interface RelayStats {
 }
 
 const JSON_TYPE = 'application/json';
-const AUTH_FORM = /^v1\.([a-z][a-z0-9-]{0,31})\.(0|[1-9][0-9]{0,11})\.([A-Za-z0-9_-]{43})$/;
-const AUTH_PREFIX = 'zeitstempel-auth-v1';
+const AUTH_FORM = /^v2\.([a-z][a-z0-9-]{0,31})\.(0|[1-9][0-9]{0,11})\.([A-Za-z0-9_-]{86})$/;
+const AUTH_PREFIX = 'zeitstempel-auth-v2';
 const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
 
 export interface Relay {
@@ -70,14 +74,25 @@ export function createRelay(options: RelayOptions): Relay {
   const windows = new Map<string, number[]>(); // service id → request times in the window
   const keyWindows = new Map<string, number[]>(); // key id → request times in the window (memory only)
   let total: number[] = [];
-  const keyById = new Map(
-    options.keys === 'off' ? [] : options.keys.map((k) => [k.id, k.verifier]),
-  );
-  // A key nobody holds: unknown ids still get the same HMAC work, so the answer tells nothing. It is
-  // random per process (nobody can sign with it); `macMatches` also insists on a known id.
-  let dummyVerifier: Uint8Array | undefined; // made on first use
+  const keyById = new Map<string, KeyObject>();
+  if (options.keys !== 'off') {
+    for (const k of options.keys) {
+      const key = publicKeyObject(k.publicKey);
+      if (key === null) throw new Error('relay key is not a valid P-256 public key'); // at start, no content
+      keyById.set(k.id, key);
+    }
+  }
   const authRequired = options.keys !== 'off';
-  // mac → the time (ms) until which a replay could still pass the window, and the key id it belongs to
+  // A key nobody holds: an unknown id still gets the same verification (against this random key made
+  // for the process, whose private half is dropped at once), so the answer tells nothing. `verified`
+  // also insists on a known id.
+  const dummyKey: KeyObject | null = authRequired
+    ? generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey
+    : null;
+  // A signed request is remembered by the digest of its signed message (with the key id), NOT by the
+  // signature: ECDSA is malleable (for a valid (r, s) the pair (r, n - s) is valid for the same message),
+  // so a cache on signatures would let the twin pass as new. Value: the time (ms) until which a replay
+  // could still pass the window, and the key id it belongs to.
   const replay = new Map<string, { until: number; kid: string }>();
   const replayMax = options.authReplayEntries ?? RELAY_LIMITS.authReplayEntries;
   const replayMaxPerKey = Math.max(1, Math.ceil(replayMax * RELAY_LIMITS.authReplayKeyShare));
@@ -118,10 +133,15 @@ export function createRelay(options: RelayOptions): Relay {
   }
 
   /**
-   * Counts a request against the window (total, per service, and per key when there is one); returns
-   * the seconds to wait when over a limit.
+   * Looks at the budget (total, per service, and per key when there is one) WITHOUT spending it: the
+   * seconds to wait when any limit is reached (the longest of all that apply, so a client that waits
+   * that long is not refused by another limit), and `spend` to count the request once it is served.
    */
-  function admit(serviceId: string, minIntervalMs: number, kid: string | null): number | null {
+  function budget(
+    serviceId: string,
+    minIntervalMs: number,
+    kid: string | null,
+  ): { wait: number | null; spend: () => void } {
     const now = options.now();
     total = total.filter((t) => now - t < RELAY_LIMITS.windowMs);
     const own = (windows.get(serviceId) ?? []).filter((t) => now - t < RELAY_LIMITS.windowMs);
@@ -129,23 +149,28 @@ export function createRelay(options: RelayOptions): Relay {
       kid === null
         ? []
         : (keyWindows.get(kid) ?? []).filter((t) => now - t < RELAY_LIMITS.windowMs);
-    const ownLimit = Math.max(1, Math.floor(RELAY_LIMITS.windowMs / minIntervalMs));
-    const overOwn = own.length >= ownLimit;
-    const overKey = kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey;
-    if (total.length >= RELAY_LIMITS.perMinuteTotal || overOwn || overKey) {
-      const oldest = overKey ? mine[0]! : overOwn ? own[0]! : total[0]!;
-      windows.set(serviceId, own);
-      if (kid !== null) keyWindows.set(kid, mine);
-      return Math.max(1, Math.ceil((RELAY_LIMITS.windowMs - (now - oldest)) / 1000));
-    }
-    total.push(now);
-    own.push(now);
     windows.set(serviceId, own);
-    if (kid !== null) {
-      mine.push(now);
-      keyWindows.set(kid, mine);
+    if (kid !== null) keyWindows.set(kid, mine);
+    const ownLimit = Math.max(1, Math.floor(RELAY_LIMITS.windowMs / minIntervalMs));
+    // the slot that frees first is the (length - limit + 1)-th oldest entry
+    const until = (times: number[], limit: number): number =>
+      Math.max(1, Math.ceil((RELAY_LIMITS.windowMs - (now - times[times.length - limit]!)) / 1000));
+    const waits: number[] = [];
+    if (total.length >= RELAY_LIMITS.perMinuteTotal) {
+      waits.push(until(total, RELAY_LIMITS.perMinuteTotal));
     }
-    return null;
+    if (own.length >= ownLimit) waits.push(until(own, ownLimit));
+    if (kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey) {
+      waits.push(until(mine, RELAY_LIMITS.perMinutePerKey));
+    }
+    return {
+      wait: waits.length === 0 ? null : Math.max(...waits),
+      spend: () => {
+        total.push(now);
+        own.push(now);
+        if (kid !== null) mine.push(now);
+      },
+    };
   }
 
   /** Form and time of the auth header, before the body is read; null for anything wrong. */
@@ -154,55 +179,76 @@ export function createRelay(options: RelayOptions): Relay {
     if (typeof value !== 'string') return null;
     const m = AUTH_FORM.exec(value);
     if (!m) return null;
-    const mac = fromBase64Url(m[3]!);
-    if (!mac || mac.length !== 32) return null;
+    const signature = fromBase64Url(m[3]!);
+    if (!signature || signature.length !== 64) return null;
     const ts = Number(m[2]);
     if (!inWindow(ts)) return null;
-    return { kid: m[1]!, ts, mac, macText: m[3]! };
+    return { kid: m[1]!, ts, signature };
   }
 
-  /** The MAC over method, path, time and body, in constant time; same work for an unknown id. */
-  function macMatches(auth: Auth, method: string, path: string, body: Uint8Array): boolean {
-    const verifier = keyById.get(auth.kid);
+  /**
+   * Checks the ECDSA signature over method, path, time and body (same work for an unknown id: it is
+   * checked against the dummy key). Returns the cache id of the signed message, or null when refused.
+   */
+  function checkSignature(
+    auth: Auth,
+    method: string,
+    path: string,
+    body: Uint8Array,
+  ): string | null {
+    const key = keyById.get(auth.kid);
     const message = `${AUTH_PREFIX}\n${method}\n${path}\n${auth.ts}\n${createHash('sha256').update(body).digest('hex')}`;
-    dummyVerifier ??= new Uint8Array(options.random(32));
-    const expected = createHmac('sha256', verifier ?? dummyVerifier)
-      .update(message)
-      .digest();
-    return timingSafeEqual(expected, auth.mac) && verifier !== undefined;
+    let valid: boolean;
+    try {
+      valid = verifySignature(
+        'sha256',
+        Buffer.from(message),
+        { key: key ?? dummyKey!, dsaEncoding: 'ieee-p1363' },
+        auth.signature,
+      );
+    } catch {
+      valid = false;
+    }
+    if (!valid || key === undefined) return null;
+    return `${auth.kid}:${createHash('sha256').update(message).digest('hex')}`;
   }
 
-  /** Read only: has this MAC been accepted before (and not yet expired)? */
-  function seen(auth: Auth): boolean {
-    const entry = replay.get(auth.macText);
+  /** Read only: has a request with this signed message been admitted before (and not yet expired)? */
+  function seen(id: string): boolean {
+    const entry = replay.get(id);
     return entry !== undefined && entry.until >= options.now();
   }
 
   /**
-   * Remembers a MAC that passed every check and was admitted; 'replay' if seen, or the seconds to wait
-   * when the cache is full or this key holds its share already (one key cannot lock out the others).
+   * Read only: the seconds to wait when the cache cannot take another entry of this key (it is full, or
+   * the key holds its share already: one key cannot lock out the others), else null. The longest of the
+   * two applies. Nothing is written, so a refusal here costs nothing; `remember` cannot fail afterwards.
    */
-  function remember(auth: Auth): 'new' | 'replay' | number {
+  function cacheWait(kid: string): number | null {
     const now = options.now();
     let soonest = Infinity;
     let soonestOwn = Infinity;
     let own = 0;
-    for (const [mac, entry] of replay) {
+    for (const [id, entry] of replay) {
       if (entry.until < now) {
-        replay.delete(mac);
+        replay.delete(id);
         continue;
       }
       soonest = Math.min(soonest, entry.until);
-      if (entry.kid === auth.kid) {
+      if (entry.kid === kid) {
         own += 1;
         soonestOwn = Math.min(soonestOwn, entry.until);
       }
     }
-    if (replay.has(auth.macText)) return 'replay';
-    if (own >= replayMaxPerKey) return Math.max(1, Math.ceil((soonestOwn - now) / 1000));
-    if (replay.size >= replayMax) return Math.max(1, Math.ceil((soonest - now) / 1000));
-    replay.set(auth.macText, { until: auth.ts * 1000 + keepMs, kid: auth.kid });
-    return 'new';
+    const waits: number[] = [];
+    if (own >= replayMaxPerKey) waits.push(Math.max(1, Math.ceil((soonestOwn - now) / 1000)));
+    if (replay.size >= replayMax) waits.push(Math.max(1, Math.ceil((soonest - now) / 1000)));
+    return waits.length === 0 ? null : Math.max(...waits);
+  }
+
+  /** Writes a request down; only after `seen` said no and `cacheWait` said null, in the same step. */
+  function remember(id: string, auth: Auth): void {
+    replay.set(id, { until: auth.ts * 1000 + keepMs, kid: auth.kid });
   }
 
   async function readBody(req: IncomingMessage): Promise<Uint8Array | null> {
@@ -251,29 +297,33 @@ export function createRelay(options: RelayOptions): Relay {
     if (authRequired && !auth) return unauthorized(res, origin);
     const body = await readBody(req);
     if (!body) return send(res, 413, { error: 'too-large' }, origin, { Connection: 'close' });
+    let signedId: string | null = null;
     if (auth) {
       // The window again: a slow body must not carry a head that was fresh when it arrived.
       if (!inWindow(auth.ts)) return unauthorized(res, origin);
-      if (!macMatches(auth, req.method ?? '', path, body)) return unauthorized(res, origin);
-      if (seen(auth)) return unauthorized(res, origin);
+      signedId = checkSignature(auth, req.method ?? '', path, body);
+      if (signedId === null) return unauthorized(res, origin);
+      // A replay dies here: before the Content-Type and the hash are looked at, and before the budget.
+      if (seen(signedId)) return unauthorized(res, origin);
     }
-    // The Content-Type is deliberately not part of the MAC (the body is): it only selects how the
+    // The Content-Type is deliberately not part of the signature (the body is): it only selects how the
     // already authenticated bytes are read.
     const hash = hashFrom(type, body);
     if (hash === 'unsupported') return send(res, 415, { error: 'unsupported-media-type' }, origin);
     if (hash === 'bad') return send(res, 400, { error: 'bad-hash' }, origin);
 
-    const wait = admit(service.id, service.minIntervalMs, auth?.kid ?? null);
-    if (wait !== null)
-      return send(res, 429, { error: 'rate-limited' }, origin, { 'Retry-After': String(wait) });
-    // Only now, for a request that is going to be served, is the MAC written down.
-    if (auth) {
-      const noted = remember(auth);
-      if (noted === 'replay') return unauthorized(res, origin);
-      if (noted !== 'new') {
-        return send(res, 429, { error: 'rate-limited' }, origin, { 'Retry-After': String(noted) });
-      }
+    // Look at the budget and at the replay cache first, spend and write only if both let the request
+    // pass: a 429 never costs budget and never leaves an entry. (No await between look and write.)
+    const budgetNow = budget(service.id, service.minIntervalMs, auth?.kid ?? null);
+    const cache = auth ? cacheWait(auth.kid) : null;
+    const waits = [budgetNow.wait, cache].filter((w): w is number => w !== null);
+    if (waits.length > 0) {
+      return send(res, 429, { error: 'rate-limited' }, origin, {
+        'Retry-After': String(Math.max(...waits)),
+      });
     }
+    budgetNow.spend();
+    if (auth && signedId !== null) remember(signedId, auth);
 
     const nonce = options.random(8);
     const request = buildTimestampRequest(hash, nonce);

@@ -9,8 +9,8 @@
       "anchors": ["anchors/freetsa-root.pem"],
       "qualified": false,
       "minIntervalMs": 15000,
-      "intendedUse": "General RFC 3161 service run by a private operator, free of charge.",
-      "terms": "Usage policy is linked from the service's page but was not readable on 2026-11-23; the page asks not to abuse the service. No guarantee of availability or of legal weight. The interval is a cautious assumption, not a published limit."
+      "intendedUse": "General RFC 3161 service run by a private operator, free of charge; commercial use is allowed by its usage policy (read 2026-11-23, not legally reviewed).",
+      "terms": "Usage policy (freetsa.org/freetsa.html, read 2026-11-23): at most one request per second per IP address; best-effort, no SLA; commercial use allowed; only IP addresses are kept, no hashes. The relay is one IP, so the limit holds for all its users together. Legal effect not regulated. Not legally reviewed, operator not asked."
     },
     {
       "id": "sectigo",
@@ -20,8 +20,8 @@
       "anchors": ["anchors/usertrust-rsa.pem"],
       "qualified": false,
       "minIntervalMs": 15000,
-      "intendedUse": "Public service for time stamping signed code. Other uses are not offered explicitly.",
-      "terms": "Terms not checked: use for anything but code signing is at the operator's discretion. Answers worked on 2026-11-23 over http and https."
+      "intendedUse": "Public service for time stamping signed code. Other uses are neither offered nor forbidden on the service page (read 2026-11-23).",
+      "terms": "Service page (read 2026-11-23): asks for a pause of 15 seconds or more between requests; describes code signing only; eIDAS use is pointed to the separate /qualified endpoint, so this one is not qualified. No explicit terms, availability or liability found for this endpoint. Not legally reviewed, operator not asked."
     },
     {
       "id": "digicert",
@@ -31,8 +31,8 @@
       "anchors": ["anchors/digicert-trusted-root-g4.pem"],
       "qualified": false,
       "minIntervalMs": 15000,
-      "intendedUse": "Public service for time stamping signed code. Other uses are not offered explicitly.",
-      "terms": "Terms not checked. Answered over plain http only; an https request timed out on 2026-11-23. The token is signed, so the transport adds privacy, not authenticity."
+      "intendedUse": "Public service for time stamping signed code (Authenticode). Other uses are neither offered nor forbidden in the documentation found (read 2026-11-23).",
+      "terms": "No terms found (knowledge base page and legal repository, read 2026-11-23): no rate limit, availability, liability or purpose stated. Answered over plain http only; an https request timed out on 2026-11-23. The token is signed, so the transport adds privacy, not authenticity. Not legally reviewed, operator not asked."
     },
     {
       "id": "certum",
@@ -42,8 +42,8 @@
       "anchors": ["anchors/certum-trusted-network-ca-2.pem"],
       "qualified": false,
       "minIntervalMs": 15000,
-      "intendedUse": "Public service of a certification authority; the offered scope is not documented here.",
-      "terms": "Terms not checked. Answered over plain http only on 2026-11-23 (https failed)."
+      "intendedUse": "Public service of a certification authority; its policy v1.7 lists transactions, archived data and signatures, but frees only Microsoft Authenticode from fees and contract.",
+      "terms": "Policy v1.7 (Polish, read 2026-11-23): only Authenticode use is free of licence fee and contract; for other users it threatens damages without a contract, so a contract is probably needed. No rate limit named. Plain http only (https failed). General terms (annex 1) not read. Not legally reviewed, operator not asked."
     }
   ]
 }

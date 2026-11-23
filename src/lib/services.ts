@@ -32,8 +32,19 @@ const KEYS = [
   'terms',
 ];
 
-/** Reads the services file strictly: unknown members, bad urls or duplicate ids are refused. */
+/**
+ * Reads the services file strictly: unknown members, bad urls or duplicate ids are refused. Never throws
+ * (a getter or proxy that throws gives `bad-services`).
+ */
 export function readServices(data: unknown): Result<Service[]> {
+  try {
+    return readServicesUnchecked(data);
+  } catch {
+    return fail('bad-services');
+  }
+}
+
+function readServicesUnchecked(data: unknown): Result<Service[]> {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return fail('bad-services');
   const top = data as Record<string, unknown>;
   if (top.version !== 1 || !Array.isArray(top.services) || Object.keys(top).length !== 2) {

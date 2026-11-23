@@ -10,13 +10,24 @@ export const RELAY_LIMITS = {
   requestTimeoutMs: 10_000,
   /** Requests per minute over all services and clients: nothing is counted per client. */
   perMinuteTotal: 60,
-  /** Requests per minute for one key id (on top of the total). */
-  perMinutePerKey: 30,
+  /**
+   * Requests per minute for one key id (on top of the total): a third of the total, so that one key
+   * cannot use it up and at least three keys are needed to lock out the others. A legitimate app stays
+   * below it anyway: the services' own limits (4 per minute each at 15 s) add up to 16 for the four
+   * shipped services.
+   */
+  perMinutePerKey: 20,
   /** Allowed difference (seconds) between the time in a signed request and the relay's clock. */
   authWindowSeconds: 60,
-  /** Signed requests remembered against replay; when full, new ones wait (429). */
-  authReplayEntries: 4096,
-  /** Share of the replay cache one key id may hold (a key that fills its share waits, the others do not). */
+  /**
+   * Signed requests remembered against replay; when full, new ones wait (429, without costing budget).
+   * An upper bound, not a typical size: an entry lives at most `2 * authWindowSeconds + requestTimeoutMs`
+   * (130 s) and only admitted requests are written, at most `perMinuteTotal` per minute, so at most
+   * 60 * ceil(130 / 60) = 180 entries exist at a time, whatever the number of keys. 512 leaves room
+   * (a test ties this value to those limits).
+   */
+  authReplayEntries: 512,
+  /** Share of the replay cache one key id may hold (a key that fills its share waits, the others do not). A safety net: the budget keeps a key far below it. */
   authReplayKeyShare: 0.5,
   /** Window of the counters. */
   windowMs: 60_000,

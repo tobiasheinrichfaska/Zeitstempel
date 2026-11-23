@@ -76,9 +76,10 @@
     <h3>VerifyOptions</h3>
     <table>
       <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>(options selbst)</td><td>einfaches Objekt, optional</td><td>Prototyp <code>Object.prototype</code> oder <code>null</code>; <code>null</code>, Zahl, Text, Funktion, Array, Klasseninstanz, <code>Map</code>, <code>Date</code>, <code>String</code>: <code>bad-options</code> (nie still als leere Optionen behandelt). Jede Option wird einmal gelesen, nur eigene Eigenschaften zählen</td></tr>
       <tr><td>expectedNonce</td><td>Bytes, optional</td><td>Gesendete Nonce; wenn gegeben, muss das Token genau sie tragen. Typregel: <code>Uint8Array</code> mit 1 bis 16 Byte, sonst <code>bad-options</code> (auch <code>null</code>, <code>0</code>, <code>""</code>, <code>NaN</code>, <code>false</code>, leeres Array); nur <code>undefined</code> heißt „nicht angegeben“</td></tr>
-      <tr><td>at</td><td>Date, optional</td><td>Zeitpunkt, zu dem die Zertifikate gültig sein müssen (Vorgabe: die Zeit des Tokens); ungültiges Datum: <code>bad-options</code></td></tr>
-      <tr><td>now</td><td>Date, optional</td><td>Aktuelle Zeit; ein Token aus der Zukunft wird abgelehnt (Vorgabe: nicht geprüft); angegeben, aber kein gültiges Datum: <code>bad-options</code> (kein stilles Überspringen)</td></tr>
+      <tr><td>at</td><td>Date, optional</td><td>Zeitpunkt, zu dem die Zertifikate gültig sein müssen (Vorgabe: die Zeit des Tokens); Typregel wie bei <code>now</code>, sonst <code>bad-options</code></td></tr>
+      <tr><td>now</td><td>Date, optional</td><td>Aktuelle Zeit; ein Token aus der Zukunft wird abgelehnt (Vorgabe: nicht geprüft); angegeben, aber kein echtes, gültiges <code>Date</code>: <code>bad-options</code> (kein stilles Überspringen). Typregel: Prototyp genau <code>Date.prototype</code>, endlich, Betrag höchstens 8,64e15 ms; Unterklassen, Fälschungen über <code>Symbol.toStringTag</code> und Daten aus anderen Realms sind Fehler; gelesen wird einmal mit dem eingebauten <code>getTime</code></td></tr>
       <tr><td>maxSkewMs</td><td>Zahl, optional</td><td>Erlaubter Vorsprung gegenüber <code>now</code> (Vorgabe 300000; <code>Infinity</code> erlaubt, NaN, negativ oder kein Zahlentyp: <code>bad-options</code>)</td></tr>
       <tr><td>requireCriticalEku</td><td>wahr/falsch, optional</td><td>Erweiterte Schlüsselverwendung muss kritisch sein (Vorgabe wahr); kein Wahrheitswert (außer <code>undefined</code>): <code>bad-options</code></td></tr>
     </table>
@@ -117,10 +118,9 @@
       <tr><td>verifyTimestampToken</td><td>(token, expectedSha256, trust: string[], options?) → Promise&lt;Result&lt;VerifiedTimestamp&gt;&gt;</td><td>Abdruck, Nonce, Signatur, Zeitstempel-Zertifikat, Kette zu einem der Anker prüfen</td></tr>
       <tr><td>parsePemCertificates, parseCertificate</td><td>(pem) → Certificate[] / (der) → Certificate</td><td>Zertifikate strikt lesen (wirft ReaderError)</td></tr>
       <tr><td>nameToString</td><td>(name: Uint8Array) → string</td><td>Lesbarer Name aus der DER-Form</td></tr>
-      <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen</td></tr>
-      <tr><td>deriveVerifier</td><td>(key: Uint8Array) → Promise&lt;Result&lt;Uint8Array&gt;&gt;</td><td>V = SHA-256(K) für die Schlüsseldatei des Relays; K mindestens 16 Byte</td></tr>
-      <tr><td>signRelayRequest</td><td>({ key, keyId, method, path, body, nowMs }) → Promise&lt;Result&lt;string&gt;&gt;</td><td>Wert des Kopfes <code>X-Zeitstempel-Auth</code> (<code>v1.&lt;kid&gt;.&lt;ts&gt;.&lt;mac&gt;</code>); die Uhr ist der Parameter <code>nowMs</code>; K bleibt in der App und wird weder zurückgegeben noch abgelegt</td></tr>
-      <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen; strenge Leser geben null bei ungültiger Eingabe</td></tr>
+      <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen; wirft nie (ein werfender Getter oder Proxy ergibt <code>bad-services</code>)</td></tr>
+      <tr><td>signRelayRequest</td><td>({ privateKey, keyId, method, path, body, nowMs }) &rarr; Promise&lt;Result&lt;string&gt;&gt;</td><td>Wert des Kopfes <code>X-Zeitstempel-Auth</code> (<code>v2.&lt;kid&gt;.&lt;ts&gt;.&lt;sig&gt;</code>): ECDSA P-256 / SHA-256 (r&#8214;s, 64 Byte) über Methode, Pfad, Zeit und Hash des Körpers; <code>privateKey</code> sind PKCS#8-Bytes, sie werden nicht extrahierbar importiert und weder zurückgegeben noch abgelegt; die Uhr ist der Parameter <code>nowMs</code>. Ein Schlüsselpaar zu erzeugen ist Sache von <code>scripts/make-key.ts</code>, nicht der Bibliothek</td></tr>
+      <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen. Strenge Leser (<code>fromBase64</code>, <code>fromBase64Url</code>) geben <code>null</code> bei ungültiger Eingabe und bei allem außer Text; <code>equalBytes</code> gibt <code>false</code>, wenn ein Argument kein <code>Uint8Array</code> ist; die Schreiber (<code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code>) werfen bei allem außer <code>Uint8Array</code> einen <code>TypeError</code> (ein Text oder Array würde sonst still als Bytes kodiert)</td></tr>
     </table>
 
     <h2>4 Fehlercodes</h2>
@@ -128,9 +128,9 @@
       <tr><th>Code</th><th>Bedeutung</th></tr>
       <tr><td>bad-hash</td><td>Hash nicht 32 Byte</td></tr>
       <tr><td>bad-nonce</td><td>Nonce nicht 1 bis 16 Byte</td></tr>
-      <tr><td>bad-options</td><td>Option ungültig (<code>options</code> kein Objekt, <code>expectedNonce</code> kein <code>Uint8Array</code> mit 1 bis 16 Byte, <code>now</code>/<code>at</code> kein gültiges Datum, <code>maxSkewMs</code> keine Zahl &ge; 0, <code>requireCriticalEku</code> kein Wahrheitswert; beim Signieren: Methode, Pfad, Körper oder <code>nowMs</code> ungültig)</td></tr>
+      <tr><td>bad-options</td><td>Option ungültig (<code>options</code> kein einfaches Objekt, <code>expectedNonce</code> kein <code>Uint8Array</code> mit 1 bis 16 Byte, <code>now</code>/<code>at</code> kein echtes, gültiges <code>Date</code>, <code>maxSkewMs</code> keine Zahl &ge; 0, <code>requireCriticalEku</code> kein Wahrheitswert; beim Signieren: Methode, Pfad, Körper oder <code>nowMs</code> ungültig)</td></tr>
       <tr><td>bad-services</td><td>Dienstliste ungültig</td></tr>
-      <tr><td>bad-key</td><td>Zugangsschlüssel kein <code>Uint8Array</code> oder unter 16 Byte</td></tr>
+      <tr><td>bad-key</td><td>Privater Schlüssel kein <code>Uint8Array</code> oder kein gültiger PKCS#8-Schlüssel für ECDSA P-256</td></tr>
       <tr><td>bad-key-id</td><td>Schlüsselkennung nicht nach <code>[a-z][a-z0-9-]{0,31}</code></td></tr>
       <tr><td>bad-key-file</td><td>Schlüsseldatei des Relays ungültig (Regelname in <code>detail</code>; Teil des Relays, nicht der Bibliothek)</td></tr>
       <tr><td>too-large</td><td>Eingabe über der Größengrenze</td></tr>
@@ -151,7 +151,7 @@
       <tr><td>imprint-mismatch</td><td>Token bestätigt einen anderen Hash</td></tr>
       <tr><td>nonce-mismatch</td><td>Nonce fehlt oder weicht ab</td></tr>
       <tr><td>one-signer-required</td><td>Nicht genau ein Unterzeichner</td></tr>
-      <tr><td>unsupported-signature</td><td>Signaturverfahren oder Schlüssel nicht unterstützt (zum Beispiel RSA-PSS)</td></tr>
+      <tr><td>unsupported-signature</td><td>Signaturverfahren oder Schlüssel nicht unterstützt (zum Beispiel RSA-PSS); beim Signieren für das Relay: kein WebCrypto (Seite über plain http)</td></tr>
       <tr><td>signed-attributes-missing</td><td>Signierte Attribute fehlen</td></tr>
       <tr><td>message-digest-mismatch</td><td>Hash des Inhalts stimmt nicht mit dem signierten überein</td></tr>
       <tr><td>signing-certificate-missing</td><td>Attribut zum Zeitstempel-Zertifikat fehlt</td></tr>
@@ -162,8 +162,8 @@
       <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token</td></tr>
       <tr><td>certificate-not-valid-at-time</td><td>Ein Zertifikat war zur Zeit des Tokens nicht gültig</td></tr>
       <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) und ausschließlich für Zeitstempel zugelassen (erweiterte Schlüsselverwendung muss genau <code>id-kp-timeStamping</code> enthalten)</td></tr>
-      <tr><td>not-a-ca</td><td>Aussteller ist keine Zertifizierungsstelle</td></tr>
-      <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker</td></tr>
+      <tr><td>not-a-ca</td><td>Der Aussteller, der das Zertifikat darunter signiert hat, ist keine Zertifizierungsstelle (<code>basicConstraints</code> ohne CA oder Schlüsselverwendung ohne <code>keyCertSign</code>)</td></tr>
+      <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker. Dazu zählen: kein Aussteller mit passendem Namen und gültiger Signatur im Token oder bei den Ankern; das Suchbudget ist erschöpft (Kandidaten- oder Signaturgrenze, Abschnitt 5); das echte Zwischenzertifikat wird von Scheinkandidaten verdeckt (sie sehen brauchbar aus, sind aber nicht vom echten Aussteller signiert); das Zertifikat des Zeitstempel-Dienstes ist selbstsigniert und nicht selbst einer der Anker. Ein genauerer Grund wird nur gemeldet, wenn er innerhalb des kleinen Budgets für die Ursachensuche gefunden wird</td></tr>
       <tr><td>chain-too-long</td><td>Kette länger als die Grenze</td></tr>
     </table>
 
@@ -174,8 +174,12 @@
       <tr><td>maxDepth</td><td>24</td><td>Größte Verschachtelung</td></tr>
       <tr><td>maxChildren</td><td>256</td><td>Elemente in einer Folge</td></tr>
       <tr><td>MAX_CERTIFICATES</td><td>16</td><td>Zertifikate in einem Token</td></tr>
-      <tr><td>MAX_CHAIN</td><td>6</td><td>Länge der geprüften Kette</td></tr>
+      <tr><td>MAX_CHAIN</td><td>6</td><td>Länge der geprüften Kette (Tiefe der Suche)</td></tr>
+      <tr><td>MAX_CANDIDATES</td><td>8</td><td>Brauchbare Kandidaten mit gültiger Signatur je Schritt der Kettensuche; unbrauchbare Zwillinge zählen nicht</td></tr>
+      <tr><td>MAX_SIGNATURE_CHECKS</td><td>64</td><td>Signaturprüfungen für die ganze Kettensuche (die Prüfung der Token-Signatur kommt dazu)</td></tr>
+      <tr><td>MAX_REASON_CHECKS</td><td>4</td><td>Zusätzliche Signaturprüfungen, nach erfolgloser Suche, um den genaueren Fehlergrund zu nennen; nehmen der Suche nichts weg</td></tr>
     </table>
+    <p class="note">Die Optionsregeln und die Suchgrenzen im Einzelnen: <code>docs/grenzen.md</code>.</p>
 
     <h2>6 Werkseinstellungen (mitgelieferte Daten)</h2>
     <p>

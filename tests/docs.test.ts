@@ -1,11 +1,15 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import * as lib from '../src/index.ts';
 import { DER_LIMITS } from '../src/lib/der.ts';
+import { VERIFY_LIMITS } from '../src/lib/verify.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
 
 const read = (name: string) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
 const model = read('data-model.html');
 const relayDoc = read('relay.md');
+const limitsDoc = read('grenzen.md');
 
 // Every member of the union must be listed here, or this file does not compile.
 const REASONS: Record<lib.Reason, true> = {
@@ -59,6 +63,25 @@ describe('docs against the code', () => {
       expect(model).toMatch(new RegExp(`<td>${name}</td><td>${value}</td>`));
     }
   });
+  it('data-model.html lists the chain search limits with their values', () => {
+    for (const [name, value] of Object.entries(VERIFY_LIMITS)) {
+      expect(model, name).toMatch(new RegExp(`<td>${name}</td><td>${value}</td>`));
+    }
+  });
+  it('grenzen.md states every chain search limit with its value', () => {
+    // one phrase per limit; a new limit in VERIFY_LIMITS does not compile until it has one
+    const phrase: Record<keyof typeof VERIFY_LIMITS, string> = {
+      MAX_CHAIN: `Tiefe ${VERIFY_LIMITS.MAX_CHAIN}`,
+      MAX_CANDIDATES: `höchstens ${VERIFY_LIMITS.MAX_CANDIDATES} brauchbare Kandidaten`,
+      MAX_SIGNATURE_CHECKS: `höchstens ${VERIFY_LIMITS.MAX_SIGNATURE_CHECKS}\nSignaturprüfungen`,
+      MAX_REASON_CHECKS: `höchstens\n${VERIFY_LIMITS.MAX_REASON_CHECKS} zusätzlichen Signaturprüfungen`,
+      MAX_CERTIFICATES: `höchstens ${VERIFY_LIMITS.MAX_CERTIFICATES} Zertifikate`,
+    };
+    const flat = limitsDoc.replace(/\s+/g, ' ');
+    for (const [name, text] of Object.entries(phrase)) {
+      expect(flat, name).toContain(text.replace(/\n/g, ' '));
+    }
+  });
   it('data-model.html names the public functions that exist', () => {
     const documented = [
       'buildTimestampRequest',
@@ -69,7 +92,6 @@ describe('docs against the code', () => {
       'parseCertificate',
       'nameToString',
       'readServices',
-      'deriveVerifier',
       'signRelayRequest',
       'toBase64Url',
       'fromBase64Url',
@@ -104,17 +126,55 @@ describe('docs against the code', () => {
 });
 
 describe('key files stay out of the repository', () => {
+  const PATTERNS = ['relay-keys*.json', '*.keys.json', '*keys*.json'];
+  const NAMES = [
+    'relay-keys.json',
+    'relay-keys.prod.json',
+    'app.keys.json',
+    'keys.json',
+    'prod-keys-2.json',
+    'my-relay-keys.local.json',
+  ];
   it('.gitignore names the relay key file patterns', () => {
     const lines = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8')
       .split('\n')
       .map((l) => l.trim());
-    expect(lines).toContain('relay-keys*.json');
-    expect(lines).toContain('*.keys.json');
+    for (const pattern of PATTERNS) expect(lines, pattern).toContain(pattern);
   });
-  it('relay.md says the key file holds secrets, wants mode 0600 and names the open Content-Type', () => {
-    expect(relayDoc).toContain('gleichwertige Geheimnisse');
-    expect(relayDoc).toContain('0600');
-    expect(relayDoc).not.toContain('Prüfwert **V');
+  it('git agrees: every usual key file name is ignored (checked with git where available)', () => {
+    const root = fileURLToPath(new URL('../', import.meta.url));
+    const probe = spawnSync('git', ['check-ignore', '-q', 'relay-keys.json'], { cwd: root });
+    const inRepo = probe.error === undefined && (probe.status === 0 || probe.status === 1);
+    if (!inRepo) return; // no git, or not a git checkout: the file content test above stands
+    for (const name of NAMES) {
+      const r = spawnSync('git', ['check-ignore', '-q', name], { cwd: root });
+      expect(r.status, `${name} must be ignored`).toBe(0);
+    }
+    // and nothing tracked has such a name
+    const tracked = spawnSync('git', ['ls-files', '*keys*.json'], { cwd: root, encoding: 'utf8' });
+    expect(tracked.stdout.trim()).toBe('');
+  });
+  it('relay.md describes the asymmetric file: public keys, integrity, no read warning, the open Content-Type', () => {
+    expect(relayDoc).toContain('kein Geheimnis');
+    expect(relayDoc).toContain('Unversehrtheit');
+    expect(relayDoc).toContain('nicht schreibbar');
+    expect(relayDoc).toContain('v2.<kid>.<ts>.<sig>');
     expect(relayDoc).toContain('bewusst nicht');
+    expect(relayDoc).not.toContain('gleichwertige Geheimnisse');
+    expect(relayDoc).not.toContain('0600 setzen');
+  });
+  it('relay.md names the replay cache by message digest, the longest Retry-After and the uncounted 400/415', () => {
+    expect(relayDoc).toContain('Digest der signierten Nachricht');
+    expect(relayDoc).toContain('(r, n − s)');
+    expect(relayDoc).toContain('längste');
+    expect(relayDoc).toContain('Anfragen, die nicht zählen');
+    expect(relayDoc).toContain('höchstens 180 Einträge');
+    expect(relayDoc).toContain('Obergrenze');
+    expect(relayDoc).toContain('Drei');
+  });
+  it('data-model.html describes signRelayRequest with a private key and no deriveVerifier', () => {
+    expect(model).toContain('privateKey');
+    expect(model).toContain('v2.');
+    expect(model).not.toContain('deriveVerifier');
   });
 });

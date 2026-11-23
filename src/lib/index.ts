@@ -10,5 +10,5 @@ export type { Failure, Reason, Result } from './result.ts';
 export { equalBytes, fromBase64, fromBase64Url, toBase64, toBase64Url, toHex } from './bytes.ts';
 export { readServices } from './services.ts';
 export type { Service } from './services.ts';
-export { deriveVerifier, signRelayRequest } from './auth.ts';
+export { signRelayRequest } from './auth.ts';
 export type { SignRelayRequestInput } from './auth.ts';

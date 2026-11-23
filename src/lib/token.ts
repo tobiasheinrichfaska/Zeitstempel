@@ -53,7 +53,8 @@ export interface ParsedToken {
   signer: SignerParts;
 }
 
-const MAX_CERTIFICATES = 16;
+/** Most certificates a token may carry. */
+export const MAX_CERTIFICATES = 16;
 
 function readTstInfo(der: Uint8Array): TstInfo {
   const f = children(expect(parseDer(der), TAG.sequence));

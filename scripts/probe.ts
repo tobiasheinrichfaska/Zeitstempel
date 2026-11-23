@@ -1,14 +1,14 @@
 // Probe: sends ONE hash of test data through the relay to a real service and checks the answer again.
 //   npm run probe -- --service freetsa            runs the relay in this process (real service behind it)
 //   npm run probe -- --service freetsa --relay https://relay.example   probes a running relay instead
-// A running relay wants signed requests: set RELAY_KEY (the key, base64url) and RELAY_KEY_ID in the
-// environment (never on the command line). The in-process relay makes a random key for the run.
+// A running relay wants signed requests: set RELAY_PRIVATE_KEY (the private key, PKCS#8 base64url, as
+// `node scripts/make-key.ts` prints it) and RELAY_KEY_ID in the environment (never on the command line).
+// The in-process relay makes a random key pair for the run.
 // Only the SHA-256 of a short test text leaves this computer; no personal data.
 import { createHash, randomBytes } from 'node:crypto';
 import type { RelayKey } from '../relay/keys.ts';
 import type { AddressInfo } from 'node:net';
 import {
-  deriveVerifier,
   fromBase64Url,
   signRelayRequest,
   toBase64Url,
@@ -41,19 +41,23 @@ let base = option('relay');
 let close = async () => {};
 let key: Uint8Array | null = null;
 let keyId = process.env.RELAY_KEY_ID ?? '';
-if (process.env.RELAY_KEY) {
-  key = fromBase64Url(process.env.RELAY_KEY);
+if (process.env.RELAY_PRIVATE_KEY) {
+  key = fromBase64Url(process.env.RELAY_PRIVATE_KEY);
   if (!key) {
-    console.error('RELAY_KEY is not base64url');
+    console.error('RELAY_PRIVATE_KEY is not base64url');
     process.exit(2);
   }
 }
 if (!base) {
-  key = new Uint8Array(randomBytes(32));
+  const pair = await globalThis.crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    true,
+    ['sign', 'verify'],
+  );
+  key = new Uint8Array(await globalThis.crypto.subtle.exportKey('pkcs8', pair.privateKey));
   keyId = 'probe';
-  const verifier = await deriveVerifier(key);
-  if (!verifier.ok) throw new Error(verifier.reason);
-  const keys: RelayKey[] = [{ id: keyId, verifier: verifier.value }];
+  const publicKey = new Uint8Array(await globalThis.crypto.subtle.exportKey('raw', pair.publicKey));
+  const keys: RelayKey[] = [{ id: keyId, publicKey }];
   const { server } = createRelayServer({
     keys,
     services: [service],
@@ -72,7 +76,7 @@ const payload = JSON.stringify({ hash: toBase64Url(hash) });
 const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 if (key) {
   const signed = await signRelayRequest({
-    key,
+    privateKey: key,
     keyId,
     method: 'POST',
     path: `/v1/stamp/${id}`,

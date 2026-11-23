@@ -52,66 +52,92 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 
 ### Zugangsschlüssel
 
-Nur Apps mit einem Zugangsschlüssel **K** dürfen stempeln. K sind beliebige Bytes (mindestens 16, empfohlen 32
-Zufallsbytes) und **werden nie übertragen**: K bleibt in der App. Das Relay kennt **V = SHA-256(K)** und eine
-Schlüsselkennung `kid` (`[a-z][a-z0-9-]{0,31}`). **V ist der HMAC-Schlüssel, kein bloßer Prüfwert:** wer V (die
-Schlüsseldatei) hat, kann gültige Anfragen signieren, ohne K zu kennen. Die Datei ist also ein Geheimnis von
-gleichem Rang wie K. Gesendet wird pro Anfrage nur ein HMAC, weder K noch V.
+Nur Apps mit einem Zugangsschlüssel dürfen stempeln. Das Verfahren ist **asymmetrisch** (ECDSA über P-256 mit
+SHA-256): Die App hält den **privaten Schlüssel** (PKCS#8); er bleibt in der App und wird **nie übertragen**. Das
+Relay kennt nur den **öffentlichen Schlüssel** und eine Schlüsselkennung `kid` (`[a-z][a-z0-9-]{0,31}`). Gesendet
+wird pro Anfrage nur eine Signatur. Die Schlüsseldatei des Relays enthält deshalb **kein Geheimnis**; es zählt ihre
+**Unversehrtheit**: wer sie schreiben kann, kann einen eigenen Schlüssel eintragen und damit stempeln.
 
-**Kopf:** `X-Zeitstempel-Auth: v1.<kid>.<ts>.<mac>`
+**Kopf:** `X-Zeitstempel-Auth: v2.<kid>.<ts>.<sig>`
 
 - `ts`: Unix-Sekunden, dezimal, ohne führende Nullen.
-- `mac` = base64url (ohne `=`) von `HMAC-SHA256(Schlüssel = V, Nachricht = "zeitstempel-auth-v1\n" + METHODE + "\n"
-  - PFAD + "\n" + ts + "\n" + hex(SHA-256(Körper)))`. `PFAD` ist der Pfad ohne Abfrage (`/v1/stamp/freetsa`),
-`Körper`sind die rohen Bytes, wie gesendet. Die Bibliothek rechnet das:`signRelayRequest` (siehe unten).
+- `sig` = base64url (ohne `=`, 86 Zeichen) der 64 Byte `r || s` (IEEE P1363, so wie WebCrypto ECDSA/SHA-256 sie
+  ausgibt) über die Nachricht `"zeitstempel-auth-v2\n" + METHODE + "\n" + PFAD + "\n" + ts + "\n" +
+hex(SHA-256(Körper))`. `PFAD` ist der Pfad ohne Abfrage (`/v1/stamp/freetsa`), `Körper` sind die rohen Bytes, wie
+  gesendet. Die Kennung ist nicht Teil der Nachricht; sie wählt den Schlüssel, gegen den geprüft wird. Die
+  Bibliothek rechnet das: `signRelayRequest` (siehe unten). Köpfe der früheren Fassung (`v1.…`, HMAC) werden mit
+  `401` abgelehnt.
 
 **Was das Relay prüft** (jeder Fehler der Anmeldung ist ein einheitliches `401 {"error":"unauthorized"}`; die
-Antwort verrät nicht, ob Kennung, Zeit oder MAC falsch war. `404`, `405` und `413` können **vor** der
-MAC-Prüfung kommen; sie verraten nur Öffentliches (welche Dienste es gibt, das Größenlimit) und sind kein
-Orakel für Kennung oder MAC. Ohne Kopf gibt es für einen bekannten Dienst nie etwas anderes als `401`):
+Antwort verrät nicht, ob Kennung, Zeit oder Signatur falsch war. `404`, `405` und `413` können **vor** der
+Signaturprüfung kommen; sie verraten nur Öffentliches (welche Dienste es gibt, das Größenlimit) und sind kein
+Orakel für Kennung oder Signatur. Ohne Kopf gibt es für einen bekannten Dienst nie etwas anderes als `401`):
 
 1. Form des Kopfes und `ts` innerhalb von ±`authWindowSeconds` (60 s) der Uhr des Relays, **vor** dem Lesen des
    Körpers. Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. Das Fenster wird **nach** dem Lesen
    des Körpers noch einmal geprüft (ein langsamer Körper rettet keinen veralteten Kopf).
-2. Nach dem Lesen des Körpers der MAC in konstanter Zeit. Bei unbekannter Kennung rechnet das Relay trotzdem
-   einen HMAC unter einem je Prozess zufälligen Schlüssel (gleiche Arbeit, kein Orakel), und eine unbekannte
-   Kennung wird in jedem Fall abgelehnt.
-3. Ein MAC, der schon angenommen wurde, wird abgelehnt (Wiederholung): jede Anfrage braucht einen frischen
-   Kopf, auch ein Wiederholungsversuch nach `429`. Der Speicher wird nur **gelesen**, solange die Anfrage nicht
-   bis zum Budget durchgekommen ist; eingetragen wird ein MAC erst, wenn Hash und Form des Körpers stimmen
-   und das Budget die Anfrage zugelassen hat. Abgewiesene Versuche (`400`, `429`) füllen den Speicher also nicht.
+2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Bei unbekannter Kennung prüft das Relay
+   trotzdem eine Signatur, und zwar gegen einen je Prozess zufällig erzeugten Schein-Schlüssel (gleiche Arbeit, gleiche
+   Antwort, kein Orakel); eine unbekannte Kennung wird in jedem Fall abgelehnt. Es wird kein Geheimnis verglichen,
+   ein Zeitangriff gibt also nichts preis.
+3. Eine Nachricht, die schon angenommen wurde, wird abgelehnt (Wiederholung): jede Anfrage braucht einen frischen
+   Kopf, auch ein Wiederholungsversuch nach `429`. **Gemerkt wird der Digest der signierten Nachricht (mit der
+   Kennung), nicht die Signatur:** ECDSA ist formbar, zu einer gültigen Signatur `(r, s)` ist auch `(r, n − s)`
+   für dieselbe Nachricht gültig, und ein Speicher über Signaturen ließe die Zwillingssignatur als neu durch (ein
+   Test belegt beides). Eine Wiederholung stirbt mit `401` **vor** dem `Content-Type`, vor der Prüfung des Hashes
+   und vor dem Budget: sie verbraucht weder Budget noch Eintrag. Der Speicher wird nur **gelesen**, solange die Anfrage
+   nicht bis zum Budget durchgekommen ist; eingetragen wird erst, wenn Hash und Form des Körpers stimmen und
+   Budget **und** Speicher die Anfrage zulassen. Abgewiesene Versuche (`400`, `415`, `429`) füllen den Speicher
+   also nicht und verbrauchen kein Budget.
    Der Speicher ist auf `authReplayEntries` Einträge begrenzt, davon darf eine Kennung höchstens den Anteil
    `authReplayKeyShare` halten (eine Kennung kann die anderen nicht aussperren). Ein Eintrag bleibt bis
-   `ts + authWindowSeconds + requestTimeoutMs`. Ist der Speicher (oder der Anteil der Kennung) voll, antwortet das
-   Relay `429` mit `Retry-After` (kein Eintrag wird verdrängt, das ließe eine Wiederholung zu).
+   `ts + authWindowSeconds + requestTimeoutMs`, also höchstens 130 s. Weil nur zugelassene Anfragen eingetragen
+   werden und höchstens `perMinuteTotal` je Minute zugelassen werden, gibt es **höchstens 180 Einträge zugleich**
+   (60 × ⌈130 / 60⌉), gleich wie viele Schlüssel es gibt; `authReplayEntries` (512) ist eine **Obergrenze** mit
+   Spielraum, die im Betrieb nicht erreicht wird, kein Wert, den man erwartet. Wäre er doch voll (oder der Anteil
+   der Kennung), antwortet das Relay `429` mit `Retry-After` (kein Eintrag wird verdrängt, das ließe eine
+   Wiederholung zu), und auch diese Antwort kostet kein Budget.
 4. Das Budget zählt zusätzlich zu den globalen und den Dienst-Grenzen `perMinutePerKey` je Schlüsselkennung
-   (nur im Speicher, nie im Protokoll).
+   (nur im Speicher, nie im Protokoll). Bei `429` nennt `Retry-After` die **längste** Wartezeit aller zutreffenden
+   Grenzen (Kennung, Dienst, Gesamt, Speicher): wer so lange wartet, wird von keiner anderen Grenze mehr
+   abgewiesen.
 
-Der `Content-Type` ist **bewusst nicht** Teil des MAC; gebunden sind Methode, Pfad, Zeit und die Bytes des
+Der `Content-Type` ist **bewusst nicht** Teil der Signatur; gebunden sind Methode, Pfad, Zeit und die Bytes des
 Körpers. Der Typ bestimmt nur, wie die bereits geprüften Bytes gelesen werden (JSON oder 32 Rohbytes).
 
-Das Relay schreibt weder Kennung noch Zeit noch MAC ins Protokoll; die Zähler kennen nur `unauthorized`.
+**Anfragen, die nicht zählen:** Eine Anfrage mit gültigem Kopf, aber falschem `Content-Type` (`415`) oder
+ungültigem Hash (`400`) zählt **nicht** gegen das Budget und wird **nicht** gemerkt; dieselbe signierte Anfrage lässt
+sich also innerhalb des Zeitfensters wiederholen und liefert wieder `400`/`415`. Das öffnet nichts: einen gültigen
+Kopf hat nur, wer den privaten Schlüssel hat (oder eine mitgeschnittene Anfrage), die Arbeit je Anfrage ist klein
+(eine Signaturprüfung, höchstens 512 Byte Körper) und ihre Zahl ist begrenzt durch die Frist von 10 s je Anfrage,
+höchstens 256 gleichzeitige Verbindungen und das Zeitfenster von 60 s. Kein Dienst wird dadurch aufgerufen.
 
-**Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 1, "keys": [{"id": "app-1", "verifier": "<V als base64url>"}]}`.
-Streng gelesen: genau diese Felder, 1 bis 64 Schlüssel, `id` nach dem Muster, `verifier` genau 32 Byte, keine
-doppelte `id`, kein doppelter `verifier`. Der `verifier` V ist der HMAC-Schlüssel: **die Datei enthält
-gleichwertige Geheimnisse**, nicht bloße Prüfwerte. Sie gehört **nie ins Repository** (`.gitignore` kennt
-`relay-keys*.json` und `*.keys.json`), wird vom Betreiber verwaltet und soll die Rechte **0600** haben (nur der
-Benutzer des Relays). Beim Start gibt das Relay eine Warnung (`{"event":"warning",…}` auf stderr, nur Pfad und
-Modus, kein Inhalt) aus, wenn Gruppe oder Andere die Datei lesen können (POSIX; unter Windows entfällt die
-Prüfung). Ein Fehler beim Lesen nennt Pfad und Regelname, nie Inhalt.
+Das Relay schreibt weder Kennung noch Zeit noch Signatur ins Protokoll; die Zähler kennen nur `unauthorized`.
 
-**Mögliche spätere Änderung (nicht umgesetzt):** ein asymmetrisches Verfahren (die App signiert mit einem
-privaten Schlüssel, das Relay hält nur öffentliche Schlüssel), damit die Datei kein Geheimnis mehr enthält.
+**Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`.
+`publicKey` ist der **unkomprimierte Punkt** (65 Byte: `04 || X || Y`) als base64url ohne `=`. Streng gelesen: genau
+diese Felder, 1 bis 64 Schlüssel, `id` nach dem Muster, der Punkt muss **auf der Kurve P-256 liegen** (sonst
+`public-key-point`), keine doppelte `id`, kein doppelter Schlüssel. Die Datei enthält **keine Geheimnisse**, gehört
+aber **nicht ins Repository** (`.gitignore` kennt `relay-keys*.json`, `*.keys.json` und `*keys*.json`): sie ist
+Konfiguration des Betreibers, und ein privater Schlüssel soll nie neben ihr liegen. Sie wird vom Betreiber verwaltet
+und darf für Gruppe und Andere **nicht schreibbar** sein (z. B. Modus 0644 oder 0600). Beim Start gibt das Relay eine
+Warnung (`{"event":"warning",…}` auf stderr, nur Pfad und Modus, kein Inhalt) aus, wenn Gruppe oder Andere die Datei
+schreiben können (Modus & 0o022; POSIX, unter Windows entfällt die Prüfung); das Relay startet trotzdem. Lesbarkeit
+ist unbedenklich. Ein Fehler beim Lesen nennt Pfad und Regelname, nie Inhalt.
 
 **Schlüssel erzeugen:** `node scripts/make-key.ts <kennung>` schreibt in zwei Zeilen auf die Konsole (und in keine
-Datei) K (base64url, für die App, geheim halten) und den Eintrag `{id, verifier}` für die Schlüsseldatei
-(ebenfalls geheim: V ist der HMAC-Schlüssel).
-`npm run probe` liest `RELAY_KEY` (K, base64url) und `RELAY_KEY_ID` aus der Umgebung und signiert damit.
+Datei) den **privaten** Schlüssel (PKCS#8, base64url; gehört nur der App, geheim halten) und den Eintrag
+`{id, publicKey}` für die Schlüsseldatei. `npm run probe` liest `RELAY_PRIVATE_KEY` (der private Schlüssel,
+base64url) und `RELAY_KEY_ID` aus der Umgebung und signiert damit.
 
-**Grenze:** K liegt in der App. Eine Web-App, die K im Browser hält, kann es nicht vor ihren eigenen
-Besuchern verbergen; der Schlüssel schützt das Relay vor fremden Apps und Skripten, nicht vor den Nutzern
+**Grenze:** Der private Schlüssel liegt in der App. Eine Web-App, die ihn im Browser hält, kann ihn nicht vor ihren
+eigenen Besuchern verbergen; der Schlüssel schützt das Relay vor fremden Apps und Skripten, nicht vor den Nutzern
 einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus der Datei, Relay neu starten).
+**Aussperren:** Das Budget je Kennung (`perMinutePerKey` = 20) liegt bei einem Drittel des gemeinsamen Budgets
+(`perMinuteTotal` = 60). **Drei** Kennungen (oder drei gestohlene Schlüssel) können das gemeinsame Budget also
+ausschöpfen und damit alle übrigen Kennungen für den Rest des Zeitfensters aussperren; eine oder zwei können es
+nicht. Mehr als 20 Anfragen je Minute braucht eine einzelne App nicht: die Dienstgrenzen der vier mitgelieferten
+Dienste ergeben zusammen 16 (4 je Dienst bei 15 s).
 
 ### Browser (CORS)
 
@@ -141,7 +167,7 @@ einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus 
    const path = '/v1/stamp/' + id;
    const text = JSON.stringify({ hash: toBase64Url(hash) });
    const signed = await signRelayRequest({
-     key, // K: aus dem Speicher der App, nie aus dem Quelltext der Seite, wenn es sich vermeiden lässt
+     privateKey, // PKCS#8-Bytes: aus dem Speicher der App, nie aus dem Quelltext der Seite, wenn es sich vermeiden lässt
      keyId: 'app-1',
      method: 'POST',
      path,
@@ -173,21 +199,21 @@ einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus 
 
 Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 
-| Status | Code                                                                            | Bedeutung                                                                                                            |
-| ------ | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                       |
-| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                         |
-| 400    | `bad-request`                                                                   | Pfad ist keine gültige Adresse (z. B. `//`, `//[`)                                                                   |
-| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, MAC, Wiederholung); einheitlich |
-| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                     |
-| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                     |
-| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                           |
-| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der MAC-Prüfung, nennt nur das öffentliche Limit      |
-| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                           |
-| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                 |
-| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                          |
-| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token                                          |
-| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                  |
+| Status | Code                                                                            | Bedeutung                                                                                                                 |
+| ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                            |
+| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                              |
+| 400    | `bad-request`                                                                   | Pfad ist keine gültige Adresse (z. B. `//`, `//[`)                                                                        |
+| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich |
+| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                          |
+| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                          |
+| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                |
+| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit       |
+| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                |
+| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                      |
+| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                               |
+| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token                                               |
+| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                       |
 
 ## Was das Relay prüft
 
@@ -203,28 +229,28 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 ## Was das Relay sieht
 
 Zeitpunkt und Netzadresse des Aufrufers (wie jeder Server), den **Hash** und den Kopf `X-Zeitstempel-Auth`
-(Kennung, Zeit, MAC), nie Inhalte und nie den Schlüssel K. Es schreibt **nichts** über Anfragen ins Protokoll:
-keine Adresse, keinen Hash, kein Token, keine Kennung, keinen MAC. Alle fünf Minuten steht eine
+(Kennung, Zeit, Signatur), nie Inhalte und nie den privaten Schlüssel. Es schreibt **nichts** über Anfragen ins Protokoll:
+keine Adresse, keinen Hash, kein Token, keine Kennung, keine Signatur. Alle fünf Minuten steht eine
 Zeile mit Zählern im Protokoll (Anzahl gestempelter Anfragen und Zahl der Ablehnungen je Art). Die
 Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); das ist Sache des Betreibers.
 
 ## Grenzen (`relay/limits.ts`)
 
-| Name                 | Wert   | Bedeutung                                                      |
-| -------------------- | ------ | -------------------------------------------------------------- |
-| `bodyBytes`          | 512    | Größter Körper einer Anfrage                                   |
-| `upstreamBytes`      | 65536  | Größte Antwort eines Dienstes                                  |
-| `upstreamTimeoutMs`  | 10000  | Frist für den ganzen Aufruf beim Dienst                        |
-| `requestTimeoutMs`   | 10000  | Frist für die ganze eingehende Anfrage                         |
-| `perMinuteTotal`     | 60     | Anfragen je Minute über alle Dienste                           |
-| `windowMs`           | 60000  | Zeitfenster der Zähler                                         |
-| `perMinutePerKey`    | 30     | Anfragen je Minute für eine Schlüsselkennung                   |
-| `authWindowSeconds`  | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr |
-| `authReplayEntries`  | 4096   | Gemerkte MACs gegen Wiederholung; voll: `429`                  |
-| `authReplayKeyShare` | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält          |
-| `maxSkewMs`          | 300000 | Erlaubter Unterschied zwischen Token-Zeit und Uhr des Relays   |
-| `maxOrigins`         | 16     | Zahl der einstellbaren Herkünfte                               |
-| `maxConnections`     | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab  |
+| Name                 | Wert   | Bedeutung                                                          |
+| -------------------- | ------ | ------------------------------------------------------------------ |
+| `bodyBytes`          | 512    | Größter Körper einer Anfrage                                       |
+| `upstreamBytes`      | 65536  | Größte Antwort eines Dienstes                                      |
+| `upstreamTimeoutMs`  | 10000  | Frist für den ganzen Aufruf beim Dienst                            |
+| `requestTimeoutMs`   | 10000  | Frist für die ganze eingehende Anfrage                             |
+| `perMinuteTotal`     | 60     | Anfragen je Minute über alle Dienste                               |
+| `windowMs`           | 60000  | Zeitfenster der Zähler                                             |
+| `perMinutePerKey`    | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)         |
+| `authWindowSeconds`  | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr     |
+| `authReplayEntries`  | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429` |
+| `authReplayKeyShare` | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält              |
+| `maxSkewMs`          | 300000 | Erlaubter Unterschied zwischen Token-Zeit und Uhr des Relays       |
+| `maxOrigins`         | 16     | Zahl der einstellbaren Herkünfte                                   |
+| `maxConnections`     | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab      |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4). `perMinuteTotal` und
 `minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht

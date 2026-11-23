@@ -489,3 +489,144 @@ describe('C6/C7: options are read once, own properties only', () => {
     expect(await reason({}, Object.assign([], { requireCriticalEku: false }))).toBe('bad-options');
   });
 });
+
+describe('E1: a Date is read once, with the built-in getTime, and only a real Date counts', () => {
+  const finiteThenNaN = (ms: number) => {
+    let reads = 0;
+    const d = new Date(ms);
+    d.getTime = () => {
+      reads += 1;
+      return reads === 1 ? ms : NaN;
+    };
+    return { d, reads: () => reads };
+  };
+  it('a now whose getTime answers finite and then NaN cannot skip the future check', async () => {
+    const { d, reads } = finiteThenNaN(0);
+    expect(await reason({}, { now: d })).toBe('time-in-future');
+    expect(reads()).toBe(0); // the overridden method is never called
+  });
+  it('an at whose getTime answers finite and then NaN is judged by its real time', async () => {
+    const { d, reads } = finiteThenNaN(Date.parse('2030-01-01T00:00:00Z'));
+    expect(await reason({}, { at: d })).toBe('ok');
+    expect(reads()).toBe(0);
+  });
+  it('a getTime that always answers NaN does not change what the Date is', async () => {
+    const d = new Date(0);
+    d.getTime = () => NaN;
+    expect(await reason({}, { now: d })).toBe('time-in-future');
+  });
+  it('refuses an object that only claims to be a Date through Symbol.toStringTag', async () => {
+    const fake = { [Symbol.toStringTag]: 'Date', getTime: () => 0 };
+    expect(await reason({}, { now: fake })).toBe('bad-options');
+    expect(await reason({}, { at: fake })).toBe('bad-options');
+    const nullProto = Object.assign(Object.create(null), { getTime: () => 0 });
+    nullProto[Symbol.toStringTag] = 'Date';
+    expect(await reason({}, { now: nullProto })).toBe('bad-options');
+  });
+  it('refuses a Date subclass and a Date with another prototype', async () => {
+    class MyDate extends Date {}
+    expect(await reason({}, { now: new MyDate(0) })).toBe('bad-options');
+    expect(await reason({}, { at: new MyDate(0) })).toBe('bad-options');
+    const other = new Date(0);
+    Object.setPrototypeOf(other, Object.create(Date.prototype));
+    expect(await reason({}, { now: other })).toBe('bad-options');
+  });
+});
+
+describe('E2: options must be a plain object', () => {
+  class Opts2 {
+    requireCriticalEku = false;
+  }
+  it('refuses class instances, Map, Date, String and boxed values', async () => {
+    const noCritical = { ekuCritical: false };
+    expect(await reason(noCritical, new Opts2())).toBe('bad-options');
+    expect(await reason({}, new Map())).toBe('bad-options');
+    expect(await reason({}, new Date())).toBe('bad-options');
+    expect(await reason({}, new String('x'))).toBe('bad-options');
+    expect(await reason({}, new Uint8Array(1))).toBe('bad-options');
+  });
+  it('refuses a proxy whose prototype lookup throws', async () => {
+    const p = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('boom');
+        },
+      },
+    );
+    expect(await reason({}, p)).toBe('bad-options');
+  });
+  it('accepts a plain object, an object without prototype and the empty options', async () => {
+    expect(await reason({}, { requireCriticalEku: true })).toBe('ok');
+    expect(await reason({}, Object.create(null))).toBe('ok');
+    expect(
+      await reason(
+        { ekuCritical: false },
+        Object.assign(Object.create(null), { requireCriticalEku: false }),
+      ),
+    ).toBe('ok');
+  });
+});
+
+describe('E5: the reason of a failure is searched for after the search, with a small budget', () => {
+  const unusable = (n: number) => Array.from({ length: n }, () => ({ wrongKey: true, noCa: true })); // flawed, and verify nothing
+  it('names the reason with at most 4 extra checks when the first look-alikes do not sign', async () => {
+    const t = build({ intermediate: { noKeyCertSign: true }, twins: unusable(14) });
+    const { value, count } = await countVerifies(() =>
+      verifyTimestampToken(t.token, t.imprint, [t.caPem]),
+    );
+    expect(value).toEqual({ ok: false, reason: 'untrusted-chain' });
+    expect(count).toBeLessThanOrEqual(1 + 4); // the token signature, then the reason budget
+  });
+  it('still names the reason when the look-alike that signed it is within the budget', async () => {
+    const t = build({
+      intermediate: { noKeyCertSign: true },
+      twins: [...unusable(2), { noCa: true }],
+    });
+    const { value, count } = await countVerifies(() =>
+      verifyTimestampToken(t.token, t.imprint, [t.caPem]),
+    );
+    expect(value).toEqual({ ok: false, reason: 'not-a-ca' });
+    expect(count).toBeLessThanOrEqual(1 + 4);
+  });
+  it('spends nothing on the reason while a usable branch is still being searched', async () => {
+    // a successful chain never works out a reason at all
+    const t = build({ intermediate: {}, twins: unusable(6) });
+    const { value, count } = await countVerifies(() =>
+      verifyTimestampToken(t.token, t.imprint, [t.caPem]),
+    );
+    expect(value.ok).toBe(true);
+    expect(count).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('E6: option edges', () => {
+  const MAX = 8.64e15;
+  it('inherited at and maxSkewMs (prototype pollution) do not count', async () => {
+    const proto = Object.prototype as Record<string, unknown>;
+    try {
+      proto.at = new Date(0);
+      expect(await reason({}, {})).toBe('ok');
+      delete proto.at;
+      proto.maxSkewMs = 0;
+      expect(await reason({}, { now: new Date('2025-12-31T23:59:00Z') })).toBe('ok');
+    } finally {
+      delete proto.at;
+      delete proto.maxSkewMs;
+    }
+  });
+  it('at = Date(0) is given: the certificates are not valid in 1970', async () => {
+    expect(await reason({}, { at: new Date(0) })).toBe('certificate-not-valid-at-time');
+  });
+  it('the extreme Dates are valid values with the expected effect', async () => {
+    expect(await reason({}, { now: new Date(MAX) })).toBe('ok');
+    expect(await reason({}, { now: new Date(-MAX) })).toBe('time-in-future');
+    expect(await reason({}, { now: new Date(MAX), maxSkewMs: Infinity })).toBe('ok');
+    expect(await reason({}, { at: new Date(MAX) })).toBe('certificate-not-valid-at-time');
+    expect(await reason({}, { at: new Date(-MAX) })).toBe('certificate-not-valid-at-time');
+  });
+  it('one millisecond beyond the extremes is an Invalid Date: bad-options', async () => {
+    expect(await reason({}, { now: new Date(MAX + 1) })).toBe('bad-options');
+    expect(await reason({}, { at: new Date(-MAX - 1) })).toBe('bad-options');
+  });
+});

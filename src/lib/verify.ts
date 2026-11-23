@@ -2,7 +2,7 @@ import { equalBytes, trimZeros } from './bytes.ts';
 import { TAG, children, expect, integerBytes, octets, oid, parseDer } from './der.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
-import { readToken, type ParsedToken, type TstInfo } from './token.ts';
+import { MAX_CERTIFICATES, readToken, type ParsedToken, type TstInfo } from './token.ts';
 import { parsePemCertificates, type Certificate } from './x509.ts';
 
 /** Trusted root (or intermediate) certificates, as PEM text. The caller decides whom to trust. */
@@ -34,6 +34,19 @@ export interface VerifiedTimestamp {
 }
 
 const MAX_CHAIN = 6;
+const MAX_CANDIDATES = 8; // usable, signature-valid issuer candidates tried per certificate
+const MAX_SIGNATURE_CHECKS = 64; // signature verifications for the whole chain search
+const MAX_REASON_CHECKS = 4; // extra verifications, after a failed search, to name the reason
+
+/** The limits of the chain search (docs/grenzen.md and docs/data-model.html name each value). */
+export const VERIFY_LIMITS = {
+  MAX_CHAIN,
+  MAX_CANDIDATES,
+  MAX_SIGNATURE_CHECKS,
+  MAX_REASON_CHECKS,
+  MAX_CERTIFICATES,
+} as const;
+
 const DEFAULT_SKEW_MS = 5 * 60 * 1000;
 
 const subtle = (): SubtleCrypto => {
@@ -136,8 +149,25 @@ const same = (a: Uint8Array, b: Uint8Array) => equalBytes(a, b);
 const dedupe = (certs: readonly Certificate[]): Certificate[] =>
   certs.filter((c, i) => certs.findIndex((d) => same(d.raw, c.raw)) === i);
 
-const isValidDate = (d: unknown): d is Date =>
-  Object.prototype.toString.call(d) === '[object Date]' && Number.isFinite((d as Date).getTime());
+const dateGetTime = Date.prototype.getTime;
+const MAX_DATE_MS = 8.64e15;
+
+/**
+ * The milliseconds of a genuine `Date` (prototype exactly `Date.prototype`), read once with the built-in
+ * `getTime` (an overridden `getTime`, a subclass or an object that only claims to be a Date count for
+ * nothing); `null` when it is none or not a finite time.
+ */
+function dateMs(d: unknown): number | null {
+  try {
+    if (typeof d !== 'object' || d === null || Object.getPrototypeOf(d) !== Date.prototype) {
+      return null;
+    }
+    const ms = dateGetTime.call(d) as unknown;
+    return typeof ms === 'number' && Number.isFinite(ms) && Math.abs(ms) <= MAX_DATE_MS ? ms : null;
+  } catch {
+    return null; // not a real Date (no internal time slot), or a proxy that throws
+  }
+}
 
 const NONCE_BYTES = { min: 1, max: 16 } as const;
 
@@ -152,9 +182,10 @@ interface OptionSnapshot {
 
 /**
  * Reads every option exactly once into a frozen snapshot and checks it: a given option must be usable (no
- * silent skipping of a check because of a bad value). Only own properties count (nothing inherited from
- * `Object.prototype`); a getter is read once and one that throws gives `bad-options`; arrays and
- * functions are refused; `Date` values become milliseconds and the nonce is copied.
+ * silent skipping of a check because of a bad value). `options` must be a plain object (prototype
+ * `Object.prototype` or `null`). Only own properties count (nothing inherited from `Object.prototype`); a
+ * getter is read once and one that throws gives `bad-options`; `Date` values become milliseconds (read
+ * once with the built-in `getTime`) and the nonce is copied.
  */
 function checkOptions(options: unknown): OptionSnapshot {
   const bad = () => new ReaderError('bad-options');
@@ -164,8 +195,9 @@ function checkOptions(options: unknown): OptionSnapshot {
     const skew = read('maxSkewMs');
     const nonce = read('expectedNonce');
     const critical = read('requireCriticalEku');
-    if (now !== undefined && !isValidDate(now)) throw bad();
-    if (at !== undefined && !isValidDate(at)) throw bad();
+    const nowMs = now === undefined ? undefined : dateMs(now);
+    const atMs = at === undefined ? undefined : dateMs(at);
+    if (nowMs === null || atMs === null) throw bad();
     if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
       throw bad();
     }
@@ -176,17 +208,19 @@ function checkOptions(options: unknown): OptionSnapshot {
     }
     if (critical !== undefined && typeof critical !== 'boolean') throw bad();
     return Object.freeze({
-      now: (now as Date | undefined)?.getTime(),
-      at: (at as Date | undefined)?.getTime(),
+      now: nowMs,
+      at: atMs,
       maxSkewMs: skew ?? DEFAULT_SKEW_MS,
       expectedNonce: nonceCopy,
       requireCriticalEku: critical ?? true,
     });
   };
   if (options === undefined) return snapshot(() => undefined);
-  if (typeof options !== 'object' || options === null || Array.isArray(options)) throw bad();
+  if (typeof options !== 'object' || options === null) throw bad();
   const o = options as Record<string, unknown>;
   try {
+    const proto: unknown = Object.getPrototypeOf(o);
+    if (proto !== Object.prototype && proto !== null) throw bad(); // class instance, Map, Date, array …
     return snapshot((key) => (Object.hasOwn(o, key) ? o[key] : undefined));
   } catch (e) {
     throw e instanceof ReaderError ? e : bad(); // a getter or proxy trap that throws
@@ -217,9 +251,6 @@ function validAt(cert: Certificate, at: number): boolean {
   return cert.notBefore <= at && at <= cert.notAfter;
 }
 
-const MAX_CANDIDATES = 8; // usable, signature-valid issuer candidates tried per certificate
-const MAX_SIGNATURE_CHECKS = 64; // signature verifications for the whole chain search
-
 /** Why a candidate issuer is unusable at time `at`, or null when it is fine. */
 function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: number) {
   if (issuer.isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
@@ -237,7 +268,8 @@ function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: nu
  * tried (depth, usable candidates per step and signature checks are bounded), so a look-alike certificate
  * with the same name cannot hide the real intermediate. The cheap checks (`issuerFlaw`) come before the
  * signature check: an unusable look-alike costs no signature check and does not count against
- * MAX_CANDIDATES; it is only verified (once per step) when no usable candidate exists, to report why.
+ * MAX_CANDIDATES. The reason of a failure is worked out only after the whole search has failed, with a
+ * budget of its own (MAX_REASON_CHECKS), so finding it never takes checks from a sibling branch.
  * Returns the number of certificates (anchor included) or throws the reason of the first failed branch.
  */
 async function buildChain(
@@ -246,10 +278,25 @@ async function buildChain(
   pool: readonly Certificate[],
   at: number,
 ): Promise<number> {
+  type Flawed = { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> };
+  type Failure = ReaderError | { current: Certificate; flawed: Flawed[] };
   let checks = 0;
-  let firstFailure: ReaderError | null = null;
-  const remember = (reason: ConstructorParameters<typeof ReaderError>[0]) => {
-    firstFailure ??= new ReaderError(reason);
+  let firstFailure: Failure | null = null;
+  const remember = (failure: Failure) => {
+    firstFailure ??= failure;
+  };
+  const verifies = async (current: Certificate, candidate: Certificate): Promise<boolean> => {
+    try {
+      return await verifyWithKey(
+        candidate,
+        current.signatureOid,
+        null,
+        current.tbs,
+        current.signature,
+      );
+    } catch {
+      return false; // an unsupported key or signature: try the next candidate
+    }
   };
   const walk = async (
     current: Certificate,
@@ -258,31 +305,16 @@ async function buildChain(
   ): Promise<number | null> => {
     if (anchors.some((a) => same(a.raw, current.raw))) return length;
     if (length > MAX_CHAIN) {
-      remember('chain-too-long');
+      remember(new ReaderError('chain-too-long'));
       return null;
     }
-    const verifies = async (candidate: Certificate): Promise<boolean> => {
-      checks += 1;
-      try {
-        return await verifyWithKey(
-          candidate,
-          current.signatureOid,
-          null,
-          current.tbs,
-          current.signature,
-        );
-      } catch {
-        return false; // an unsupported key or signature: try the next candidate
-      }
-    };
     const named = SIGNATURES[current.signatureOid]?.hash
       ? pool.filter(
           (c) => same(c.subject, current.issuer) && !path.some((p) => same(p.raw, c.raw)), // not self-signed, no loop
         )
       : [];
     const usable: Certificate[] = [];
-    const flawed: { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> }[] =
-      [];
+    const flawed: Flawed[] = [];
     for (const candidate of named) {
       const flaw = issuerFlaw(candidate, anchors, at);
       if (flaw) flawed.push({ candidate, flaw });
@@ -291,28 +323,29 @@ async function buildChain(
     let found = 0;
     for (const candidate of usable) {
       if (checks >= MAX_SIGNATURE_CHECKS || found >= MAX_CANDIDATES) break;
-      if (!(await verifies(candidate))) continue;
+      checks += 1;
+      if (!(await verifies(current, candidate))) continue;
       found += 1;
       const result = await walk(candidate, length + 1, [...path, candidate]);
       if (result !== null) return result;
     }
-    if (found === 0) {
-      // nothing usable signed it: report why the first look-alike that did sign it is unusable
-      for (const { candidate, flaw } of flawed) {
-        if (checks >= MAX_SIGNATURE_CHECKS) break;
-        if (await verifies(candidate)) {
-          remember(flaw);
-          found += 1;
-          break;
-        }
-      }
-    }
-    if (found === 0) remember('untrusted-chain');
+    if (found === 0) remember({ current, flawed }); // why is decided later, if the search fails
     return null;
   };
   const length = await walk(signer, 1, [signer]);
   if (length !== null) return length;
-  throw firstFailure ?? new ReaderError('untrusted-chain');
+  const failure = firstFailure as Failure | null;
+  if (failure instanceof ReaderError) throw failure;
+  if (failure) {
+    // nothing usable signed it: report why the first look-alike that did sign it is unusable
+    let spent = 0;
+    for (const { candidate, flaw } of failure.flawed) {
+      if (spent >= MAX_REASON_CHECKS) break;
+      spent += 1;
+      if (await verifies(failure.current, candidate)) throw new ReaderError(flaw);
+    }
+  }
+  throw new ReaderError('untrusted-chain');
 }
 
 /**

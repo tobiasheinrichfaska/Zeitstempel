@@ -1,50 +1,70 @@
+import { createPublicKey, type KeyObject } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { fail, fromBase64Url, ok, type Result } from '../src/index.ts';
+import { fail, fromBase64Url, ok, toHex, type Result } from '../src/index.ts';
 
 /**
- * A key the relay accepts: its id and V = SHA-256(K). V is the HMAC key of the request signature, so
- * whoever has V (this file) can sign requests: the file holds secrets of the same worth as K. K itself
- * stays in the app and is never transmitted; the relay never needs it.
+ * A key the relay accepts: its id and the public ECDSA P-256 key as the uncompressed point
+ * (65 bytes: `04 || X || Y`). The file holds no secret; what counts is who may write it (whoever can,
+ * can enter a key of their own).
  */
 export interface RelayKey {
   id: string;
-  verifier: Uint8Array;
+  publicKey: Uint8Array;
 }
 
 const KEY_ID = /^[a-z][a-z0-9-]{0,31}$/;
 export const MAX_KEYS = 64;
+// DER prefix of a SubjectPublicKeyInfo for id-ecPublicKey / prime256v1 followed by the 65-byte point
+const SPKI_P256 = Uint8Array.from(
+  Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex'),
+);
+
+/** The public key object for a point, or null when the point is not a valid point of the curve P-256. */
+export function publicKeyObject(point: Uint8Array): KeyObject | null {
+  if (!(point instanceof Uint8Array) || point.length !== 65 || point[0] !== 0x04) return null;
+  try {
+    const der = new Uint8Array(SPKI_P256.length + 65);
+    der.set(SPKI_P256);
+    der.set(point, SPKI_P256.length);
+    return createPublicKey({ key: Buffer.from(der), format: 'der', type: 'spki' });
+  } catch {
+    return null; // OpenSSL checks that the point lies on the curve
+  }
+}
 
 /**
- * Strict reader of the key file: `{"version": 1, "keys": [{"id", "verifier"}]}` with 1 to 64 keys,
- * ids of the form `[a-z][a-z0-9-]{0,31}`, verifiers of exactly 32 bytes (base64url, unpadded), no
- * duplicate id, no duplicate verifier, no other fields. The failure carries a rule name, never content.
- * Keep the file out of the repo and readable by the relay only (mode 0600).
+ * Strict reader of the key file: `{"version": 2, "keys": [{"id", "publicKey"}]}` with 1 to 64 keys,
+ * ids of the form `[a-z][a-z0-9-]{0,31}`, public keys as unpadded base64url of an uncompressed point
+ * (65 bytes) that lies on the curve P-256, no duplicate id, no duplicate key, no other fields. The
+ * failure carries a rule name, never content.
  */
 export function readKeyFile(data: unknown): Result<RelayKey[]> {
   const bad = (rule: string) => fail('bad-key-file', rule);
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return bad('not-an-object');
   const top = data as Record<string, unknown>;
   if (Object.keys(top).sort().join() !== 'keys,version') return bad('fields');
-  if (top.version !== 1) return bad('version');
+  if (top.version !== 2) return bad('version');
   if (!Array.isArray(top.keys) || top.keys.length < 1 || top.keys.length > MAX_KEYS) {
     return bad('key-count');
   }
   const keys: RelayKey[] = [];
   const ids = new Set<string>();
-  const verifiers = new Set<string>();
+  const points = new Set<string>();
   for (const entry of top.keys as unknown[]) {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return bad('entry');
     const e = entry as Record<string, unknown>;
-    if (Object.keys(e).sort().join() !== 'id,verifier') return bad('entry-fields');
+    if (Object.keys(e).sort().join() !== 'id,publicKey') return bad('entry-fields');
     if (typeof e.id !== 'string' || !KEY_ID.test(e.id)) return bad('id');
-    if (typeof e.verifier !== 'string') return bad('verifier');
-    const verifier = fromBase64Url(e.verifier);
-    if (!verifier || verifier.length !== 32) return bad('verifier');
+    if (typeof e.publicKey !== 'string') return bad('public-key');
+    const point = fromBase64Url(e.publicKey);
+    if (!point || point.length !== 65) return bad('public-key');
+    if (publicKeyObject(point) === null) return bad('public-key-point');
+    const hex = toHex(point);
     if (ids.has(e.id)) return bad('duplicate-id');
-    if (verifiers.has(e.verifier)) return bad('duplicate-verifier');
+    if (points.has(hex)) return bad('duplicate-key');
     ids.add(e.id);
-    verifiers.add(e.verifier);
-    keys.push({ id: e.id, verifier });
+    points.add(hex);
+    keys.push({ id: e.id, publicKey: point });
   }
   return ok(keys);
 }

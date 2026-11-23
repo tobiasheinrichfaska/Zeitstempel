@@ -1,73 +1,90 @@
 import { spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import { toBase64Url } from '../src/index.ts';
-import { loadKeys, readKeyFile } from '../relay/keys.ts';
+import { verify } from 'node:crypto';
+import { fromBase64Url, signRelayRequest, toBase64Url } from '../src/index.ts';
+import { loadKeys, publicKeyObject, readKeyFile } from '../relay/keys.ts';
 import { readConfig, startEvent } from '../relay/main.ts';
 import { loadServices } from '../relay/load.ts';
+import { authMessage, makeTestKey } from './auth-helpers.ts';
 
 const SERVICES = loadServices();
-const verifier = () =>
-  toBase64Url(new Uint8Array(createHash('sha256').update(randomBytes(32)).digest()));
+const pub = () => toBase64Url(makeTestKey('x').publicKey);
 const file = (keys: unknown[], over: Record<string, unknown> = {}) => ({
-  version: 1,
+  version: 2,
   keys,
   ...over,
 });
+const keyOf = (id: string) => ({ id, publicKey: pub() });
 
 describe('relay key file reader', () => {
-  it('reads keys with an id and a 32-byte verifier', () => {
-    const v = verifier();
-    const r = readKeyFile(
-      file([
-        { id: 'app-1', verifier: v },
-        { id: 'b', verifier: verifier() },
-      ]),
-    );
+  it('reads keys with an id and a public key (uncompressed P-256 point)', () => {
+    const a = makeTestKey('app-1');
+    const r = readKeyFile(file([{ id: 'app-1', publicKey: toBase64Url(a.publicKey) }, keyOf('b')]));
     expect(r.ok && r.value.map((k) => k.id)).toEqual(['app-1', 'b']);
-    expect(r.ok && r.value[0]!.verifier.length).toBe(32);
+    expect(r.ok && Buffer.from(r.value[0]!.publicKey).equals(Buffer.from(a.publicKey))).toBe(true);
   });
   it('refuses what is not exactly the format', () => {
-    const v = verifier();
+    const p = pub();
+    const point = makeTestKey('x').publicKey;
+    const offCurve = Uint8Array.from(point);
+    offCurve[64] = offCurve[64]! ^ 1; // Y changed by one bit: no longer on the curve
+    const compressed = Uint8Array.from([2, ...point.subarray(1, 33)]);
     const bad: [string, unknown][] = [
+      ['duplicate id', file([{ id: 'a', publicKey: p }, keyOf('a')])],
       [
-        'duplicate id',
+        'duplicate key',
         file([
-          { id: 'a', verifier: v },
-          { id: 'a', verifier: verifier() },
+          { id: 'a', publicKey: p },
+          { id: 'b', publicKey: p },
         ]),
       ],
+      ['point not on the curve', file([{ id: 'a', publicKey: toBase64Url(offCurve) }])],
+      ['compressed point', file([{ id: 'a', publicKey: toBase64Url(compressed) }])],
+      ['64 bytes (no prefix)', file([{ id: 'a', publicKey: toBase64Url(point.subarray(1)) }])],
+      ['66 bytes', file([{ id: 'a', publicKey: toBase64Url(Uint8Array.from([...point, 0])) }])],
       [
-        'duplicate verifier',
-        file([
-          { id: 'a', verifier: v },
-          { id: 'b', verifier: v },
-        ]),
+        'wrong prefix byte',
+        file([{ id: 'a', publicKey: toBase64Url(Uint8Array.from([5, ...point.subarray(1)])) }]),
       ],
-      ['short verifier', file([{ id: 'a', verifier: toBase64Url(new Uint8Array(31)) }])],
-      ['long verifier', file([{ id: 'a', verifier: toBase64Url(new Uint8Array(33)) }])],
-      ['padded verifier', file([{ id: 'a', verifier: v + '=' }])],
-      ['verifier not a string', file([{ id: 'a', verifier: 5 }])],
-      ['id uppercase', file([{ id: 'App', verifier: v }])],
-      ['id too long', file([{ id: 'a'.repeat(33), verifier: v }])],
-      ['id starts with digit', file([{ id: '1a', verifier: v }])],
-      ['extra field', file([{ id: 'a', verifier: v, note: 'x' }])],
-      ['extra top-level field', file([{ id: 'a', verifier: v }], { more: 1 })],
-      ['wrong version', file([{ id: 'a', verifier: v }], { version: 2 })],
+      ['all zero', file([{ id: 'a', publicKey: toBase64Url(new Uint8Array(65)) }])],
+      ['padded key', file([{ id: 'a', publicKey: p + '=' }])],
+      ['key not a string', file([{ id: 'a', publicKey: 5 }])],
+      ['old field name verifier', file([{ id: 'a', verifier: p }])],
+      ['id uppercase', file([{ id: 'App', publicKey: p }])],
+      ['id too long', file([{ id: 'a'.repeat(33), publicKey: p }])],
+      ['id starts with digit', file([{ id: '1a', publicKey: p }])],
+      ['extra field', file([{ id: 'a', publicKey: p, note: 'x' }])],
+      ['extra top-level field', file([{ id: 'a', publicKey: p }], { more: 1 })],
+      ['version 1 (HMAC file)', file([{ id: 'a', publicKey: p }], { version: 1 })],
       ['no keys', file([])],
       ['keys not an array', file([], { keys: {} })],
       ['not an object', []],
       ['null', null],
-      [
-        'more than 64 keys',
-        file(Array.from({ length: 65 }, (_, i) => ({ id: `k${i}`, verifier: verifier() }))),
-      ],
+      ['more than 64 keys', file(Array.from({ length: 65 }, (_, i) => keyOf(`k${i}`)))],
     ];
     for (const [name, data] of bad) {
       expect(readKeyFile(data), name).toMatchObject({ ok: false, reason: 'bad-key-file' });
     }
   });
+  it('names the rule that failed, never the content', () => {
+    const p = pub();
+    const off = Uint8Array.from(makeTestKey('x').publicKey);
+    off[64] = off[64]! ^ 1;
+    const r = readKeyFile(file([{ id: 'a', publicKey: toBase64Url(off) }]));
+    expect(r).toMatchObject({ ok: false, detail: 'public-key-point' });
+    expect(JSON.stringify(r)).not.toContain(toBase64Url(off));
+    expect(
+      JSON.stringify(readKeyFile(file([{ id: 'a', publicKey: p }, keyOf('a')]))),
+    ).not.toContain(p);
+  });
+  it('checks the point itself: only a point of the curve gives a key object', () => {
+    const point = makeTestKey('x').publicKey;
+    expect(publicKeyObject(point)).not.toBeNull();
+    const off = Uint8Array.from(point);
+    off[40] = off[40]! ^ 0x80;
+    expect(publicKeyObject(off)).toBeNull();
+  });
   it('accepts exactly 64 keys', () => {
-    const many = Array.from({ length: 64 }, (_, i) => ({ id: `k${i}`, verifier: verifier() }));
+    const many = Array.from({ length: 64 }, (_, i) => keyOf(`k${i}`));
     expect(readKeyFile(file(many)).ok).toBe(true);
   });
   it('loadKeys names the problem without printing the file', () => {
@@ -79,9 +96,7 @@ describe('relay key file reader', () => {
       expect((e as Error).message).not.toContain(secretish);
     }
     expect(() => loadKeys('/x/keys.json', () => JSON.stringify(file([])))).toThrow(/bad-key-file/);
-    expect(
-      loadKeys('/x/keys.json', () => JSON.stringify(file([{ id: 'a', verifier: verifier() }]))),
-    ).toHaveLength(1);
+    expect(loadKeys('/x/keys.json', () => JSON.stringify(file([keyOf('a')])))).toHaveLength(1);
   });
 });
 
@@ -96,8 +111,7 @@ describe('relay start: authentication', () => {
     expect(() => readConfig({ ...env, RELAY_AUTH: '' }, () => SERVICES)).toThrow(/RELAY_KEYS_FILE/);
   });
   it('reads the key file when one is named', () => {
-    const keys = [{ id: 'a', verifier: verifier() }];
-    const read = (): string => JSON.stringify(file(keys));
+    const read = (): string => JSON.stringify(file([keyOf('a')]));
     const config = readConfig(
       { ...env, RELAY_KEYS_FILE: '/x/k.json' },
       () => SERVICES,
@@ -111,13 +125,10 @@ describe('relay start: authentication', () => {
     ).toThrow(/RELAY_AUTH/);
   });
   it('reports the authentication mode on the start line', () => {
+    const keys = [{ id: 'a', publicKey: makeTestKey('a').publicKey }];
     expect(startEvent(8080, SERVICES, 'off')).toMatchObject({ event: 'start', auth: 'off' });
-    expect(startEvent(8080, SERVICES, [{ id: 'a', verifier: new Uint8Array(32) }])).toMatchObject({
-      auth: 'on',
-    });
-    expect(
-      JSON.stringify(startEvent(8080, SERVICES, [{ id: 'a', verifier: new Uint8Array(32) }])),
-    ).not.toContain('"a"');
+    expect(startEvent(8080, SERVICES, keys)).toMatchObject({ auth: 'on' });
+    expect(JSON.stringify(startEvent(8080, SERVICES, keys))).not.toContain('"a"');
   });
   it('the process ends with exit code 1 and one error line when the key file is missing', () => {
     const root = new URL('..', import.meta.url);
@@ -131,5 +142,49 @@ describe('relay start: authentication', () => {
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('config-error');
     expect(r.stderr).toContain('RELAY_KEYS_FILE');
+  });
+});
+
+describe('scripts/make-key.ts', () => {
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, ['scripts/make-key.ts', ...args], {
+      cwd: new URL('..', import.meta.url),
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+  it('prints a private key and a file entry that belong together, and nothing else', async () => {
+    const r = run('app-1');
+    expect(r.status).toBe(0);
+    const lines = r.stdout.trimEnd().split('\n');
+    expect(lines).toHaveLength(2);
+    const privateKey = fromBase64Url(lines[0]!);
+    const entry = JSON.parse(lines[1]!) as { id: string; publicKey: string };
+    expect(Object.keys(entry).sort()).toEqual(['id', 'publicKey']);
+    // the entry is exactly what the relay's reader takes
+    expect(readKeyFile({ version: 2, keys: [entry] }).ok).toBe(true);
+    // the library signs with the private key and the relay's key (from the entry) verifies it
+    const signed = await signRelayRequest({
+      privateKey: privateKey!,
+      keyId: entry.id,
+      method: 'POST',
+      path: '/v1/stamp/freetsa',
+      body: new Uint8Array(3),
+      nowMs: 1_000_000,
+    });
+    expect(signed.ok).toBe(true);
+    const key = publicKeyObject(fromBase64Url(entry.publicKey)!)!;
+    const message = authMessage('POST', '/v1/stamp/freetsa', 1000, new Uint8Array(3));
+    const sig = Buffer.from((signed as { value: string }).value.split('.')[3]!, 'base64url');
+    expect(verify('sha256', Buffer.from(message), { key, dsaEncoding: 'ieee-p1363' }, sig)).toBe(
+      true,
+    );
+    // the private key is not in the entry, and each run makes a new pair
+    expect(lines[1]).not.toContain(lines[0]);
+    expect(run('app-1').stdout).not.toBe(r.stdout);
+  });
+  it('refuses a bad key id and prints no key', () => {
+    const r = run('App');
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe('');
   });
 });

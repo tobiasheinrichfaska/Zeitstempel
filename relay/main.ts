@@ -3,7 +3,8 @@
 //   RELAY_ORIGINS            comma-separated browser origins that may call (default: none)
 //   RELAY_ALLOW_PLAIN_HTTP   "1" to use services that only answer over http (default: off)
 //   RELAY_SERVICES           comma-separated service ids to offer (default: all that fit)
-//   RELAY_KEYS_FILE          path of the key file (ids and secrets V; never in the repo, mode 0600); required
+//   RELAY_KEYS_FILE          path of the key file (ids and public keys; no secret, but only the operator may
+//                            write it; never in the repo); required
 //   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
@@ -73,8 +74,10 @@ export function chooseServices<T extends { id: string; url: string }>(
 }
 
 /**
- * A warning text when the key file can be read by its group or by others (POSIX); null otherwise,
- * also under Windows (no such modes) and when the file cannot be examined. Never names content.
+ * A warning text when the key file can be written by its group or by others (POSIX; mode & 0o022): whoever
+ * can write it can enter a key of their own. Null otherwise, also under Windows (no such modes) and when
+ * the file cannot be examined. The text names the path and the mode, nothing from the file. Reading is
+ * no problem: the file holds public keys only.
  */
 export function keyFilePermissionWarning(
   path: string,
@@ -88,8 +91,8 @@ export function keyFilePermissionWarning(
   } catch {
     return null;
   }
-  if ((mode & 0o077) === 0) return null;
-  return `${path}: Die Schlüsseldatei ist für Gruppe oder Andere lesbar (Modus ${(mode & 0o777).toString(8)}); sie enthält gleichwertige Geheimnisse, Rechte 0600 setzen (chmod 600)`;
+  if ((mode & 0o022) === 0) return null;
+  return `${path}: Die Schlüsseldatei ist für Gruppe oder Andere schreibbar (Modus ${(mode & 0o777).toString(8)}); wer sie schreiben kann, kann einen eigenen Schlüssel eintragen. Schreibrechte entziehen (chmod go-w)`;
 }
 
 /** Settings, the services to offer and the keys (or `'off'`), or a throw that names the problem. */

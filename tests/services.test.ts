@@ -115,3 +115,30 @@ describe('relay settings', () => {
     ).toThrow();
   });
 });
+
+describe('E7: readServices never throws', () => {
+  const boom = () => {
+    throw new Error('boom');
+  };
+  it('a getter that throws at the top, in the list or in an entry gives bad-services', () => {
+    const top = {
+      version: 1,
+      get services(): unknown {
+        return boom();
+      },
+    };
+    expect(readServices(top)).toEqual({ ok: false, reason: 'bad-services' });
+    const inEntry = clone();
+    Object.defineProperty(inEntry.services[0]!, 'name', { get: boom, enumerable: true });
+    expect(readServices(inEntry)).toEqual({ ok: false, reason: 'bad-services' });
+    const inAnchors = clone();
+    Object.defineProperty(inAnchors.services[0]!, 'anchors', { get: boom, enumerable: true });
+    expect(readServices(inAnchors)).toEqual({ ok: false, reason: 'bad-services' });
+  });
+  it('a proxy that throws gives bad-services', () => {
+    const p = new Proxy({}, { getPrototypeOf: boom, ownKeys: boom, get: boom, has: boom });
+    expect(readServices(p)).toEqual({ ok: false, reason: 'bad-services' });
+    const inList = { version: 1, services: [p] };
+    expect(readServices(inList)).toEqual({ ok: false, reason: 'bad-services' });
+  });
+});

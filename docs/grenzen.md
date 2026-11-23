@@ -41,16 +41,22 @@ Schnelltest (`npm run spike`).
 ## Verhalten bei Fehlern (fail-closed)
 
 Ein Wert, der nicht zu den Prüfoptionen passt, ergibt `bad-options` statt einer still übersprungenen Prüfung:
-`options` selbst muss weggelassen oder ein Objekt sein (nicht `null`, keine Zahl, keine Funktion, kein Array); `expectedNonce`
+`options` selbst muss weggelassen oder ein **einfaches Objekt** sein (Prototyp `Object.prototype` oder `null`;
+nicht `null`, keine Zahl, kein Text, keine Funktion, kein Array, keine Klasseninstanz, keine `Map`, kein `Date`,
+kein `String`-Objekt). Eine Klasseninstanz oder eine `Map` wird also nie als „leere Optionen“ angenommen: die
+Folge „Prüfung still aus“ ist ausdrücklich ausgeschlossen. `expectedNonce`
 muss, wenn der Schlüssel vorhanden und nicht `undefined` ist, ein `Uint8Array` mit 1 bis 16 Byte sein (`null`,
 `0`, `""`, `NaN`, `false`, ein leeres Array oder leere Bytes sind also Fehler und keine „keine Nonce“);
-`requireCriticalEku` muss ein Wahrheitswert sein; `now` und `at` müssen gültige Daten sein; `maxSkewMs` muss
-eine Zahl ≥ 0 sein (`Infinity` erlaubt). Nur `undefined` zählt als „nicht angegeben“. Unbekannte Schlüssel in
-`options` werden nicht geprüft.
+`requireCriticalEku` muss ein Wahrheitswert sein; `now` und `at` müssen **echte** `Date`-Objekte mit gültiger
+Zeit sein (Prototyp genau `Date.prototype`, endlich, Betrag höchstens 8,64e15 ms; Unterklassen, Objekte, die
+nur über `Symbol.toStringTag` ein Datum vortäuschen, und ein `Date` aus einem anderen Realm sind Fehler);
+`maxSkewMs` muss eine Zahl ≥ 0 sein (`Infinity` erlaubt). Nur `undefined` zählt als „nicht angegeben“.
+Unbekannte Schlüssel in `options` werden nicht geprüft.
 
 Die Optionen werden **einmal** gelesen und als eingefrorener Schnappschuss benutzt (`now` und `at` als
 Millisekunden, die Nonce als Kopie): Ein Getter, der beim zweiten Lesen etwas anderes antwortet, kann keine
-Prüfung ausschalten; ein Getter oder Proxy, der wirft, ergibt `bad-options`. Es zählen nur **eigene**
+Prüfung ausschalten; ein `Date` wird genau einmal mit dem eingebauten `Date.prototype.getTime` gelesen, eine
+überschriebene Methode `getTime` am Objekt wird nie aufgerufen; ein Getter oder Proxy, der wirft, ergibt `bad-options`. Es zählen nur **eigene**
 Eigenschaften; was über `Object.prototype` vererbt wurde (auch durch Prototype Pollution), wird ignoriert.
 
 **Bytes aus einem anderen Realm** (iframe, Worker, `vm`): Ein `Uint8Array` von dort besteht den
@@ -62,15 +68,21 @@ Prüfung beantwortet im Zweifel mit einem Fehlercode.
 
 Beim Aufbau der Kette werden alle brauchbaren Zertifikate mit passendem Namen und gültiger Signatur als
 Aussteller probiert (begrenzt: Tiefe 6, höchstens 8 brauchbare Kandidaten je Schritt, höchstens 64
-Signaturprüfungen für die ganze Suche, dazu die eine Prüfung der Signatur des Zeitstempel-Zertifikats). Die
+Signaturprüfungen für die ganze Suche, dazu die eine Prüfung der Signatur des Zeitstempel-Zertifikats; ein Token
+trägt höchstens 16 Zertifikate). Die
 billigen Prüfungen kommen vor der Signaturprüfung: Ein namensgleiches Zertifikat mit unbekannter kritischer
 Erweiterung, abgelaufener Gültigkeit oder ohne CA-Recht (kein `keyCertSign`) zählt **weder** gegen die 8
 Kandidaten **noch** gegen die 64 Signaturprüfungen. Ein Token mit dem echten Zwischenzertifikat und beliebig
 vielen solchen Zwillingen (bis zur Grenze von 16 Zertifikaten im Token) bleibt also gültig. Es führt auch nie zu
-einer Annahme, die ohne es nicht gälte, denn jeder Kandidat muss dieselben Prüfungen bestehen. Sind alle
-Kandidaten unbrauchbar, wird der Grund des **zuerst probierten** gemeldet (Reihenfolge: Anker, dann die
-Zertifikate im Token); ein brauchbarer Kandidat, dessen Weiterführung scheitert, hat Vorrang. Ist die Suche
-am Budget gescheitert, lautet der Grund `untrusted-chain`, nicht ein genauerer.
+einer Annahme, die ohne es nicht gälte, denn jeder Kandidat muss dieselben Prüfungen bestehen.
+
+**Fehlergrund:** Er wird erst nach erfolgloser Gesamtsuche ermittelt, mit einem **eigenen** Budget von höchstens
+4 zusätzlichen Signaturprüfungen; die Suche selbst gibt dafür nichts her, ein Zweig nimmt einem Geschwisterzweig
+also nichts weg. Gemeldet wird der Grund des **ersten** gescheiterten Zweigs (Reihenfolge: Anker, dann die
+Zertifikate im Token): bei lauter unbrauchbaren Kandidaten der Grund des ersten unter den ersten 4, der den
+Schritt tatsächlich signiert hat; ein brauchbarer Kandidat, dessen Weiterführung scheitert, hat Vorrang. Ist die
+Suche am Budget gescheitert oder trägt keiner der geprüften unbrauchbaren Kandidaten die Signatur, lautet der
+Grund `untrusted-chain`, nicht ein genauerer.
 
 **Restproblem (Verfügbarkeit, nicht Sicherheit):** Das Feld `certificates` im Token ist nicht signiert. Wer
 das Token verändern kann, darf Zertifikate hinzufügen, die gültig aussehen (CA, `keyCertSign`, gültig, gleicher
