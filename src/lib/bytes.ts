@@ -89,15 +89,12 @@ export function toHex(input: Uint8Array): string {
  * it) and the loop runs over that one number.
  */
 export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  try {
-    const length = byteLength(a);
-    if (length === null || length !== byteLength(b)) return false;
-    let diff = 0;
-    for (let i = 0; i < length; i += 1) diff |= a[i]! ^ b[i]!;
-    return diff === 0;
-  } catch {
-    return false; // a hostile proxy: its traps throw
-  }
+  const length = byteLength(a);
+  if (length === null || length !== byteLength(b)) return false;
+  // Both are genuine typed arrays now (a proxy gave `null` above), so indexing cannot throw.
+  let diff = 0;
+  for (let i = 0; i < length; i += 1) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
 }
 
 /**

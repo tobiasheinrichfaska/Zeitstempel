@@ -109,7 +109,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   checked: `trust` must be an array and `options` omitted or a plain object (prototype `Object.prototype` or
   `null`; not a class instance, `Map`, array), `expectedNonce` a `Uint8Array` of 1 to 16 bytes,
   `requireCriticalEku` a boolean, `now`/`at` a real valid `Date`, `maxSkewMs` a number >= 0, otherwise `bad-options` (never a silently skipped check; only `undefined`
-  means "not given"). A `Uint8Array` of another realm (iframe, worker, `vm`) is refused (`bad-hash` / `bad-options`): pass `new Uint8Array(x)`. The chain search tries every signature-valid issuer candidate (bounded), so a look-alike
+  means "not given"). A `Uint8Array` of another realm (iframe, worker, `vm`) is refused (`bad-hash` / `bad-options`; a token: `malformed`; the nonce of `buildTimestampRequest`: `bad-nonce`): pass `new Uint8Array(x)`; `readTimestampResponse` and `readToken` check no `instanceof` and accept such bytes. The chain search tries every signature-valid issuer candidate (bounded), so a look-alike
   certificate cannot block a valid token. A negative serial number makes a certificate unreadable (`malformed`).
   The relay's server limits the open connections (256) and the time for a whole request, headers included
   (10 s) (`relay/limits.ts`).
@@ -130,7 +130,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   2026-11-23 ran without it; `scripts/browser-check.mjs` needs a key or `RELAY_AUTH=off`). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key
   rotation. Anyone who can write the key file can add a key. Replay cache (digest of the signed message, at most
-  180 entries by the limits) and counters live in memory only (empty after a restart); client and relay clocks
+  180 entries by the limits) and counters live in memory only (empty after a restart; a head with `ts` from the start on, up to +60 s when the app clock runs ahead, can be replayed once after a restart until its window ends); client and relay clocks
   must agree within ±60 s. `perMinutePerKey` 20 of `perMinuteTotal` 60: three keys can use up the total.
 - Fixtures are real tokens of 2026-11-23; if a service rotates its certificates, new fixtures must be recorded
   with `scripts/make-request.ts` (the old ones stay valid for the tests).

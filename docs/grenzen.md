@@ -81,7 +81,13 @@ Versprechen. Das gilt auch für `signRelayRequest` (getestet: Proxy als Eingabe,
 
 **Bytes aus einem anderen Realm** (iframe, Worker, `vm`): Ein `Uint8Array` von dort besteht den
 `instanceof`-Test nicht und ergibt `bad-hash` bzw. `bad-options`. Der Aufrufer übergibt dann eine Kopie im
-eigenen Realm: `new Uint8Array(x)`.
+eigenen Realm: `new Uint8Array(x)`. Im Einzelnen: Ein Token aus einem anderen Realm ergibt `malformed`,
+`expectedNonce` ergibt `bad-options`, die Nonce bei `buildTimestampRequest` ergibt `bad-nonce`.
+`readTimestampResponse` und `readToken` prüfen kein `instanceof` und nehmen Bytes aus einem anderen Realm an.
+
+**Reihenfolge der Eingabeprüfungen:** `verifyTimestampToken` prüft Hash, Token-Größe und -Typ, Optionen und
+`trust` und liest dann erst das Token; diese Reihenfolge ist nicht zugesichert. Wer mehrere Eingaben falsch
+übergibt, sieht irgendeinen der Codes.
 
 Unerwartetes, das nicht eindeutig gelesen werden kann, wird abgelehnt und nie als gültig durchgelassen; die
 Prüfung beantwortet im Zweifel mit einem Fehlercode.

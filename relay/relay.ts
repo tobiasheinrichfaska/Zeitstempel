@@ -92,6 +92,7 @@ export function createRelay(options: RelayOptions): Relay {
   // Only ever lowered (on every request, see parseAuth), never recomputed upwards: a start clock that ran
   // ahead and is corrected later drops it once to the first corrected time.
   let startMs = options.now();
+  if (!Number.isFinite(startMs)) throw new Error('relay clock is not finite at start'); // at start, no content
   // A key nobody holds: an unknown id still gets the same verification (against this random key made
   // for the process, whose private half is dropped at once), so the answer tells nothing. `verified`
   // also insists on a known id.
@@ -184,7 +185,10 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** Form and time of the auth header, before the body is read; null for anything wrong. */
   function parseAuth(req: IncomingMessage): Auth | null {
-    startMs = Math.min(startMs, options.now()); // never up: a clock jump back lowers it for good
+    const seenMs = options.now();
+    // never up: a clock jump back lowers it for good; a reading that is not finite (NaN, -Infinity) is
+    // no time and must not poison it
+    if (Number.isFinite(seenMs)) startMs = Math.min(startMs, seenMs);
     const value = req.headers['x-zeitstempel-auth'];
     if (typeof value !== 'string') return null;
     const m = AUTH_FORM.exec(value);

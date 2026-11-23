@@ -1498,6 +1498,40 @@ describe('relay: authentication', () => {
       await j.close();
     });
   });
+  describe('start rule: unusual clock readings', () => {
+    const body = bytesOf(BODY);
+    const t0 = Math.floor(NOW / 1000);
+    const go = (hh: Harness, ts: number) =>
+      post(hh, PATH, BODY, 'application/json', {
+        'X-Zeitstempel-Auth': hh.sign(PATH, body, { ts }),
+      });
+    const prime = (hh: Harness) =>
+      post(hh, PATH, BODY, 'application/json', { 'X-Zeitstempel-Auth': 'garbage' });
+
+    it('a NaN and a -Infinity reading do not poison the start time', async () => {
+      const h = await start();
+      h.clock.now = Number.NaN;
+      await prime(h);
+      h.clock.now = Number.NEGATIVE_INFINITY;
+      await prime(h);
+      h.clock.now = NOW + 10_000;
+      expect((await go(h, t0 - 10)).status).toBe(401); // 20 s old, in the window, but before the start
+      expect((await go(h, t0 + 5)).status).toBe(200);
+      await h.close();
+    });
+    it('does not start when the clock is not finite at creation', async () => {
+      await expect(start({ clockStart: Number.NaN })).rejects.toThrow();
+      await expect(start({ clockStart: Number.NEGATIVE_INFINITY })).rejects.toThrow();
+    });
+    it('a clock 20 s back, a broken head that lowers the start, the clock forward: a head 19 s old passes', async () => {
+      const h = await start();
+      h.clock.now = NOW - 20_000;
+      expect((await prime(h)).status).toBe(401); // broken head: lowers the start all the same
+      h.clock.now = NOW;
+      expect((await go(h, t0 - 19)).status).toBe(200); // before the original start, after the lowered one
+      await h.close();
+    });
+  });
   it('keeps an entry until ts + window + request timeout, not only until the window ends', async () => {
     const small = await start({ authReplayEntries: 1 });
     const body = bytesOf(BODY);
