@@ -147,7 +147,7 @@
       <tr><td>bad-content-type</td><td>Inhaltstyp ist nicht <code>TSTInfo</code></td></tr>
       <tr><td>bad-tst-info</td><td>Inhalt des Tokens ungültig</td></tr>
       <tr><td>unsupported-hash</td><td>Hashverfahren nicht SHA-256 (Abdruck) oder SHA-1</td></tr>
-      <tr><td>bad-time</td><td>Zeitangabe ungültig</td></tr>
+      <tr><td>bad-time</td><td>Zeitangabe ungültig (GeneralizedTime: Sekunden, optional mit bis zu 9 Nachkommastellen ohne Null am Ende; sie werden auf Millisekunden abgeschnitten, nicht gerundet)</td></tr>
       <tr><td>time-in-future</td><td>Zeit des Tokens liegt hinter der Uhr des Prüfers</td></tr>
       <tr><td>imprint-mismatch</td><td>Token bestätigt einen anderen Hash</td></tr>
       <tr><td>nonce-mismatch</td><td>Nonce fehlt oder weicht ab</td></tr>
@@ -162,7 +162,7 @@
       <tr><td>bad-certificate</td><td>Zertifikat ungültig (auch: kritische, unbekannte Erweiterung in einem Zertifikat der Kette)</td></tr>
       <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token</td></tr>
       <tr><td>certificate-not-valid-at-time</td><td>Ein Zertifikat war zur Zeit des Tokens nicht gültig</td></tr>
-      <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) und ausschließlich für Zeitstempel zugelassen (erweiterte Schlüsselverwendung muss genau <code>id-kp-timeStamping</code> enthalten)</td></tr>
+      <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) und ausschließlich für Zeitstempel zugelassen (erweiterte Schlüsselverwendung muss genau <code>id-kp-timeStamping</code> enthalten); ebenso eine Zwischen-CA der Kette mit erweiterter Schlüsselverwendung ohne <code>id-kp-timeStamping</code> und ohne <code>anyExtendedKeyUsage</code> (Anker ausgenommen)</td></tr>
       <tr><td>not-a-ca</td><td>Der Aussteller, der das Zertifikat darunter signiert hat, ist keine Zertifizierungsstelle (<code>basicConstraints</code> ohne CA oder Schlüsselverwendung ohne <code>keyCertSign</code>)</td></tr>
       <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker. Dazu zählen: kein Aussteller mit passendem Namen und gültiger Signatur im Token oder bei den Ankern; das Suchbudget ist erschöpft (Kandidaten- oder Signaturgrenze, Abschnitt 5); das echte Zwischenzertifikat wird von Scheinkandidaten verdeckt (sie sehen brauchbar aus, sind aber nicht vom echten Aussteller signiert); das Zertifikat des Zeitstempel-Dienstes ist selbstsigniert und nicht selbst einer der Anker. Ein genauerer Grund wird nur gemeldet, wenn er innerhalb des kleinen Budgets für die Ursachensuche gefunden wird</td></tr>
       <tr><td>chain-too-long</td><td>Kette länger als die Grenze</td></tr>

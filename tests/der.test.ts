@@ -79,6 +79,29 @@ describe('DER reader', () => {
     expect([...encodeLength(128)]).toEqual([0x81, 128]);
     expect([...encodeLength(256)]).toEqual([0x82, 1, 0]);
   });
+  it('reads up to 9 fraction digits and cuts them off to milliseconds (never rounds)', () => {
+    const gt = (s: string) =>
+      time({ tag: TAG.generalizedTime, raw: new Uint8Array(), value: new TextEncoder().encode(s) });
+    const base = Date.UTC(2026, 10, 23, 13, 5, 56);
+    expect(gt('20261123130556.1234Z')).toBe(base + 123);
+    expect(gt('20261123130556.123456Z')).toBe(base + 123);
+    expect(gt('20261123130556.123456789Z')).toBe(base + 123);
+    expect(gt('20261123130556.9999Z')).toBe(base + 999); // cut off, not rounded up to the next second
+    expect(gt('20261123130556.0009Z')).toBe(base); // below one millisecond
+    expect(gt('20261123130556.01Z')).toBe(base + 10);
+    for (const bad of [
+      '20261123130556.1230Z', // trailing zero
+      '20261123130556.100Z',
+      '20261123130556.1234567890Z', // 10 digits
+      '20261123130556,123Z', // comma
+      '20261123130556.123456', // no Z
+      '20261123130556.123+0100', // zone
+      '20261123130560.123456Z', // :60
+      '20261123130556.Z', // empty fraction
+    ]) {
+      expect(() => gt(bad), bad).toThrow();
+    }
+  });
   it('reads strict times only', () => {
     const gt = (s: string) =>
       time({ tag: TAG.generalizedTime, raw: new Uint8Array(), value: new TextEncoder().encode(s) });

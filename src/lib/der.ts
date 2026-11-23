@@ -189,7 +189,7 @@ export function bitStringBytes(node: Node): Uint8Array {
   return node.value.subarray(1);
 }
 
-/** UTCTime or GeneralizedTime (whole seconds, with an optional fraction for the latter) as ms. */
+/** UTCTime or GeneralizedTime (whole seconds, with an optional fraction of up to 9 digits for the latter, cut off to ms, never rounded) as ms. */
 export function time(node: Node): number {
   const text = new TextDecoder('ascii').decode(node.value);
   let m: RegExpExecArray | null;
@@ -200,7 +200,7 @@ export function time(node: Node): number {
     if (!m) throw new ReaderError('bad-time');
     year = Number(m[1]) >= 50 ? 1900 + Number(m[1]) : 2000 + Number(m[1]);
   } else if (node.tag === TAG.generalizedTime) {
-    m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.(\d{1,3}))?Z$/.exec(text);
+    m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.(\d{1,9}))?Z$/.exec(text);
     if (!m) throw new ReaderError('bad-time');
     year = Number(m[1]);
     frac = m[7] ?? '';
@@ -215,7 +215,8 @@ export function time(node: Node): number {
     number,
   ];
   if (node.tag === TAG.generalizedTime && frac.endsWith('0')) throw new ReaderError('bad-time');
-  const ms = Date.UTC(year, mo - 1, d, h, mi, s) + (frac ? Number(frac.padEnd(3, '0')) : 0);
+  const ms =
+    Date.UTC(year, mo - 1, d, h, mi, s) + (frac ? Number(frac.slice(0, 3).padEnd(3, '0')) : 0);
   const back = new Date(ms);
   if (
     back.getUTCFullYear() !== year ||

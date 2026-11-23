@@ -8,6 +8,7 @@ export const OID = {
   signingCertificate: '1.2.840.113549.1.9.16.2.12',
   signingCertificateV2: '1.2.840.113549.1.9.16.2.47',
   ekuTimeStamping: '1.3.6.1.5.5.7.3.8',
+  anyExtendedKeyUsage: '2.5.29.37.0',
   extBasicConstraints: '2.5.29.19',
   extKeyUsage: '2.5.29.15',
   extEku: '2.5.29.37',

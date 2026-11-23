@@ -18,6 +18,13 @@ Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
    kritische, unbekannte Erweiterung, die Aussteller sind
    Zertifizierungsstellen und erlauben das Ausstellen von Zertifikaten, und die Kette endet bei einem der
    übergebenen Anker.
+9. Eine Zwischen-CA der Kette, die eine erweiterte Schlüsselverwendung trägt, muss `id-kp-timeStamping` oder
+   `anyExtendedKeyUsage` enthalten (sonst `bad-eku`); ohne diese Erweiterung gilt keine Einschränkung. Der
+   Anker ist ausgenommen (Entscheidung des Aufrufers).
+
+Punkt 9 ist **strenger als `openssl ts -verify`**, der eine solche Zwischen-CA annimmt; die Regel folgt der
+Praxis der Browser (Verschachtelung der erweiterten Schlüsselverwendung entlang der Kette). Eine Zwischen-CA nur
+für Codesignatur oder nur für Server-Authentifizierung kann also keinen Zeitstempel-Signierer ausstellen.
 
 Gegengeprüft wird mit `openssl ts -verify` an den aufgezeichneten Antworten von vier Diensten und beim
 Schnelltest (`npm run spike`).
@@ -34,6 +41,11 @@ Schnelltest (`npm run spike`).
 - **Nicht unterstützt:** RSA-PSS, SHA-1 als Hash des Abdrucks oder der Signatur, BER (nur DER), andere
   Hashverfahren als SHA-256 für den Abdruck, Token ohne `certReq` (das Zeitstempel-Zertifikat muss im Token
   liegen). Das sind abgelehnte Fälle, keine stillen Annahmen.
+- **Inhalt des TSTInfo und der Algorithmus-Kennungen:** Eine kritische, unbekannte Erweiterung in `TSTInfo`
+  wird nicht abgelehnt; das Feld `tsa` wird nicht gegen den Namen des Signierers geprüft; der Wertebereich von
+  `accuracy` (Sekunden, Milli-, Mikrosekunden) wird nicht auf die Grenzen aus RFC 3161 geprüft; die Parameter der
+  `AlgorithmIdentifier` werden nicht ausgewertet (die OID legt das Verfahren fest). Das RSA-Padding prüft nicht
+  diese Bibliothek, sondern WebCrypto der Plattform (unter Node getestet, im Browser nicht).
 - **Die Anker selbst:** Wem man vertraut, entscheidet der Aufrufer. Die mitgelieferten Anker stammen aus
   einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke (`docs/dienste.md`) wurden am
   2026-11-23 mit öffentlichen Betreiberseiten und dem System-Trust-Store abgeglichen (Netzabgleich, keine

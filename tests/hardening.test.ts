@@ -328,6 +328,57 @@ describe('N3: the intermediate certificate and trust anchors', () => {
   });
 });
 
+describe('Q1: an intermediate CA that names purposes must allow time stamping', () => {
+  const eku = (...oids: string[]) => ext('2.5.29.37', false, seq(...oids.map(oidT)));
+  const CODE = '1.3.6.1.5.5.7.3.3';
+  const SERVER = '1.3.6.1.5.5.7.3.1';
+  const ANY = '2.5.29.37.0';
+  it('refuses an intermediate with only code signing or only server authentication', async () => {
+    expect(await reason({ intermediate: { extraExts: [eku(CODE)] } })).toBe('bad-eku');
+    expect(await reason({ intermediate: { extraExts: [eku(SERVER)] } })).toBe('bad-eku');
+    expect(await reason({ intermediate: { extraExts: [eku(CODE, SERVER)] } })).toBe('bad-eku');
+    expect(
+      await reason({ intermediate: { extraExts: [ext('2.5.29.37', true, seq(oidT(CODE)))] } }),
+    ).toBe('bad-eku');
+  });
+  it('refuses an intermediate with an empty extended key usage list', async () => {
+    expect(await reason({ intermediate: { extraExts: [eku()] } })).toBe('bad-eku');
+  });
+  it('accepts timeStamping, anyExtendedKeyUsage, a list holding either, and no EKU at all', async () => {
+    expect(await reason({ intermediate: { extraExts: [eku(TS)] } })).toBe('ok');
+    expect(await reason({ intermediate: { extraExts: [eku(ANY)] } })).toBe('ok');
+    expect(await reason({ intermediate: { extraExts: [eku(CODE, TS)] } })).toBe('ok');
+    expect(await reason({ intermediate: { extraExts: [eku(SERVER, ANY)] } })).toBe('ok');
+    expect(await reason({ intermediate: {} })).toBe('ok');
+  });
+  it('leaves the trust anchor alone: the root and an intermediate given as anchor may carry any EKU', async () => {
+    expect(await reason({ caExts: [eku(CODE)] })).toBe('ok');
+    expect(await reason({ caExts: [eku(CODE)], intermediate: {} })).toBe('ok');
+    const t = build({ intermediate: { extraExts: [eku(CODE)] } });
+    const r = await verifyTimestampToken(t.token, t.imprint, [t.intPem]);
+    expect(r.ok).toBe(true);
+    // the exemption needs the same bytes, not the same subject
+    const sameName = build({ intermediate: {} });
+    expect(await verifyTimestampToken(t.token, t.imprint, [sameName.intPem])).toEqual({
+      ok: false,
+      reason: 'bad-eku',
+    });
+  });
+  it('is not blocked by a look-alike with a foreign EKU in front of the real intermediate', async () => {
+    expect(await reason({ intermediate: {}, twins: [{ extraExts: [eku(CODE)] }] })).toBe('ok');
+  });
+  it('does not make a flawed chain valid, and the reason follows the first unusable candidate', async () => {
+    const flawed = { intermediate: { extraExts: [eku(CODE)] } };
+    expect(await reason({ ...flawed, twins: [{ extraExts: [eku(SERVER)] }] })).toBe('bad-eku');
+    expect(await reason({ ...flawed, twins: [{ noCa: true }] })).toBe('not-a-ca'); // twin first
+    // earlier flaws win over the EKU: an unknown critical extension is named first
+    const unknownCrit = ext('1.2.3.4.5.6', true, octet(new Uint8Array(0)));
+    expect(await reason({ intermediate: { extraExts: [eku(CODE), unknownCrit] } })).toBe(
+      'bad-certificate',
+    );
+  });
+});
+
 /** Runs `f` and counts the signature verifications done through `crypto.subtle.verify`. */
 async function countVerifies<T>(f: () => Promise<T>): Promise<{ value: T; count: number }> {
   const spy = vi.spyOn(crypto.subtle, 'verify');

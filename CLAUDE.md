@@ -130,7 +130,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   2026-11-23 ran without it; `scripts/browser-check.mjs` needs a key or `RELAY_AUTH=off`). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key
   rotation. Anyone who can write the key file can add a key. Replay cache (digest of the signed message, at most
-  180 entries by the limits) and counters live in memory only (empty after a restart; a head with `ts` from the start on, up to +60 s when the app clock runs ahead, can be replayed once after a restart until its window ends); client and relay clocks
+  180 entries by the limits) and counters live in memory only (empty after a restart; a head with `ts` from the start on, up to +60 s when the app clock runs ahead, can be replayed after a restart until its window ends, i.e. up to 120 s after the relay start: `ts` <= start + 60 s plus the 60 s window; the replay cache is empty then; no code fix); client and relay clocks
   must agree within ±60 s. `perMinutePerKey` 20 of `perMinuteTotal` 60: three keys can use up the total.
 - Fixtures are real tokens of 2026-11-23; if a service rotates its certificates, new fixtures must be recorded
   with `scripts/make-request.ts` (the old ones stay valid for the tests).

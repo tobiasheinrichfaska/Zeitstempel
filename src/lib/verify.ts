@@ -258,8 +258,17 @@ function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: nu
     return 'not-a-ca' as const;
   }
   if (!validAt(issuer, at)) return 'certificate-not-valid-at-time' as const;
-  if (issuer.unknownCritical && !anchors.some((a) => same(a.raw, issuer.raw))) {
+  const isAnchor = anchors.some((a) => same(a.raw, issuer.raw));
+  if (issuer.unknownCritical && !isAnchor) {
     return 'bad-certificate' as const; // a trust anchor is the caller's decision, not checked
+  }
+  // EKU nesting (browser practice): a CA that names purposes must allow time stamping. No EKU: no limit.
+  if (
+    issuer.eku !== null &&
+    !isAnchor &&
+    !issuer.eku.oids.some((o) => o === OID.ekuTimeStamping || o === OID.anyExtendedKeyUsage)
+  ) {
+    return 'bad-eku' as const;
   }
   return null;
 }
