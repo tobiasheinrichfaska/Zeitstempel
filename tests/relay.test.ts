@@ -249,6 +249,18 @@ describe('relay: origins (CORS)', () => {
     const err = await post(h, '/v1/stamp/nope', '{}', 'application/json', { Origin: ORIGIN });
     expect(err.headers.get('access-control-allow-origin')).toBe(ORIGIN);
   });
+  it('lets the browser read Retry-After (exposed), also on a 429', async () => {
+    const h2 = await start();
+    const per = Math.floor(RELAY_LIMITS.windowMs / SERVICES[0]!.minIntervalMs);
+    let last: Response | undefined;
+    for (let i = 0; i <= per; i += 1)
+      last = await post(h2, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json', {
+        Origin: ORIGIN,
+      });
+    expect(last!.status).toBe(429);
+    expect(last!.headers.get('access-control-expose-headers')).toBe('Retry-After');
+    await h2.close();
+  });
   it('answers a caller without an Origin header (not a browser)', async () => {
     const res = await post(h, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json');
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
