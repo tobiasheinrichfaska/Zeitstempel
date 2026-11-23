@@ -1,5 +1,5 @@
-import { copyBytes, equalBytes, trimZeros } from './bytes.ts';
-import { TAG, children, expect, integerBytes, octets, oid, parseDer } from './der.ts';
+import { byteLength, copyBytes, equalBytes, trimZeros } from './bytes.ts';
+import { DER_LIMITS, TAG, children, expect, integerBytes, octets, oid, parseDer } from './der.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
 import { MAX_CERTIFICATES, readToken, type ParsedToken, type TstInfo } from './token.ts';
@@ -37,6 +37,7 @@ const MAX_CHAIN = 6;
 const MAX_CANDIDATES = 8; // usable, signature-valid issuer candidates tried per certificate
 const MAX_SIGNATURE_CHECKS = 64; // signature verifications for the whole chain search
 const MAX_REASON_CHECKS = 4; // extra verifications, after a failed search, to name the reason
+const MAX_TRUST_ANCHORS = 64; // entries of `trust`; a longer list is `bad-options`, checked before any entry is read
 
 /** The limits of the chain search (docs/grenzen.md and docs/data-model.html name each value). */
 export const VERIFY_LIMITS = {
@@ -44,6 +45,7 @@ export const VERIFY_LIMITS = {
   MAX_CANDIDATES,
   MAX_SIGNATURE_CHECKS,
   MAX_REASON_CHECKS,
+  MAX_TRUST_ANCHORS,
   MAX_CERTIFICATES,
 } as const;
 
@@ -201,11 +203,10 @@ function checkOptions(options: unknown): OptionSnapshot {
     if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
       throw bad();
     }
-    if (nonce !== undefined && !(nonce instanceof Uint8Array)) throw bad();
-    const nonceCopy = nonce === undefined ? undefined : Uint8Array.from(nonce as Uint8Array);
-    if (nonceCopy && (nonceCopy.length < NONCE_BYTES.min || nonceCopy.length > NONCE_BYTES.max)) {
-      throw bad();
-    }
+    // length checked before the copy, the copy never goes through the iterator (copyBytes)
+    const nonceCopy =
+      nonce === undefined ? undefined : copyBytes(nonce, NONCE_BYTES.min, NONCE_BYTES.max);
+    if (nonceCopy === null) throw bad();
     if (critical !== undefined && typeof critical !== 'boolean') throw bad();
     return Object.freeze({
       now: nowMs,
@@ -374,26 +375,40 @@ export async function verifyTimestampToken(
 }
 
 async function verifyChecked(
-  tokenBytes: Uint8Array,
+  tokenBytes: unknown,
   expectedSha256: unknown,
   trust: unknown,
   options: unknown,
 ): Promise<Result<VerifiedTimestamp>> {
   const wanted = copyBytes(expectedSha256, 32, 32);
   if (!wanted) return fail('bad-hash');
+  // the token is copied once, into an ArrayBuffer of its own (length checked before the copy); the rest
+  // works with the copy only, so a buffer changed or emptied meanwhile, or one living in a
+  // SharedArrayBuffer, changes nothing
+  const tokenLength = byteLength(tokenBytes);
+  if (tokenLength !== null && tokenLength > DER_LIMITS.maxBytes) return fail('too-large');
+  const tokenCopy = copyBytes(tokenBytes, 0, DER_LIMITS.maxBytes);
+  if (!tokenCopy) return fail('malformed');
+  // the list is read by length and index (once each), never through the iterator, and bounded first
   let trustList: unknown[];
   try {
     if (!Array.isArray(trust)) return fail('bad-options');
-    trustList = Array.from(trust as unknown[]); // read once; a proxy whose traps throw is no list
+    const count: unknown = (trust as unknown[]).length;
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+      return fail('bad-options');
+    }
+    if (count > MAX_TRUST_ANCHORS) return fail('bad-options');
+    trustList = [];
+    for (let i = 0; i < count; i += 1) trustList.push((trust as unknown[])[i]);
   } catch {
-    return fail('bad-options');
+    return fail('bad-options'); // a proxy whose traps throw is no list
   }
   const anchorsRead = guard(() => trustList.flatMap((pem) => parsePemCertificates(pem as string)));
   if (!anchorsRead.ok) return anchorsRead;
   const anchors = anchorsRead.value;
   try {
     const opts = checkOptions(options);
-    const token = readToken(tokenBytes);
+    const token = readToken(tokenCopy);
     const info: TstInfo = token.info;
     if (info.hashName !== 'SHA-256') throw new ReaderError('unsupported-hash');
     if (!same(info.imprint, wanted)) throw new ReaderError('imprint-mismatch');

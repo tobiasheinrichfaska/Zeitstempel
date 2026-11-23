@@ -667,8 +667,10 @@ describe('G2: the core functions survive hostile proxies', () => {
         ok: false,
         reason: 'bad-hash',
       });
-      const token = await run(hostile(t.token, trap), t.imprint, [t.caPem]);
-      expect(token.ok).toBe(false);
+      expect(await run(hostile(t.token, trap), t.imprint, [t.caPem])).toEqual({
+        ok: false,
+        reason: 'malformed',
+      });
       expect(
         await run(t.token, t.imprint, [t.caPem], {
           expectedNonce: hostile(Uint8Array.of(1), trap),

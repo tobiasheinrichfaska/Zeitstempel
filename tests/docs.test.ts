@@ -75,6 +75,7 @@ describe('docs against the code', () => {
       MAX_CANDIDATES: `höchstens ${VERIFY_LIMITS.MAX_CANDIDATES} brauchbare Kandidaten`,
       MAX_SIGNATURE_CHECKS: `höchstens ${VERIFY_LIMITS.MAX_SIGNATURE_CHECKS}\nSignaturprüfungen`,
       MAX_REASON_CHECKS: `höchstens\n${VERIFY_LIMITS.MAX_REASON_CHECKS} zusätzlichen Signaturprüfungen`,
+      MAX_TRUST_ANCHORS: `mehr als ${VERIFY_LIMITS.MAX_TRUST_ANCHORS} Einträge`,
       MAX_CERTIFICATES: `höchstens ${VERIFY_LIMITS.MAX_CERTIFICATES} Zertifikate`,
     };
     const flat = limitsDoc.replace(/\s+/g, ' ');
@@ -104,6 +105,16 @@ describe('docs against the code', () => {
       expect(typeof (lib as Record<string, unknown>)[name], name).toBe('function');
       expect(model, name).toContain(name);
     }
+  });
+  it('data-model.html names every export of src/index.ts (explicit exceptions only)', () => {
+    // functions that data-model.html documents by name; a new export fails here until it is listed or excepted
+    const NOT_DOCUMENTED: string[] = []; // exceptions: none (ok and fail have a row of their own)
+    const exported = Object.keys(lib).filter((k) => !NOT_DOCUMENTED.includes(k));
+    expect(exported.length).toBeGreaterThan(10);
+    for (const name of exported) {
+      expect(model, name).toMatch(new RegExp(`<tr><td>(?:[^<]*, )?${name}(?:, [^<]*)?</td>`));
+    }
+    for (const name of NOT_DOCUMENTED) expect(Object.keys(lib), name).toContain(name);
   });
   it('relay.md lists every relay limit with its value', () => {
     for (const [name, value] of Object.entries(RELAY_LIMITS)) {

@@ -78,16 +78,38 @@ export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   }
 }
 
+// The built-in `length` getter of every typed array: it reads the internal slot, so an own `length`, a
+// subclass override or a hostile prototype cannot change the answer (a proxy or a non-typed-array throws).
+const typedArrayLength = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype) as object,
+  'length',
+)!.get!;
+
+/** The length of a genuine `Uint8Array` (built-in getter, internal slot); `null` for anything else; never throws. */
+export function byteLength(value: unknown): number | null {
+  try {
+    if (!(value instanceof Uint8Array)) return null;
+    return typedArrayLength.call(value) as number;
+  } catch {
+    return null; // a proxy whose traps throw, a value without the internal slot
+  }
+}
+
 /**
  * A copy of `value` when it is a `Uint8Array` of `min` to `max` bytes, else `null`; never throws (a proxy whose
- * `getPrototypeOf` or `get` traps throw gives `null`). The caller works with the copy only, so a value that
- * answers differently the second time cannot change anything.
+ * `getPrototypeOf` or `get` traps throw gives `null`). The length is read first with the built-in getter and
+ * checked BEFORE anything is allocated or copied, and the copy is made with `TypedArray.prototype.set`, never
+ * through the iterator (an overridden, endless `Symbol.iterator` is never called). The caller works with the
+ * copy only (its own `ArrayBuffer`, also when the input lives in a `SharedArrayBuffer`), so a value that
+ * answers differently the second time, or is changed meanwhile, cannot change anything.
  */
 export function copyBytes(value: unknown, min: number, max: number): Uint8Array | null {
   try {
-    if (!(value instanceof Uint8Array)) return null;
-    const copy = Uint8Array.from(value);
-    return copy.length >= min && copy.length <= max ? copy : null;
+    const length = byteLength(value);
+    if (length === null || length < min || length > max) return null;
+    const copy = new Uint8Array(length);
+    copy.set(value as Uint8Array);
+    return copy;
   } catch {
     return null;
   }

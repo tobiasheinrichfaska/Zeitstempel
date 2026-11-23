@@ -60,6 +60,16 @@ Prüfung ausschalten; ein `Date` wird genau einmal mit dem eingebauten `Date.pro
 überschriebene Methode `getTime` am Objekt wird nie aufgerufen; ein Getter oder Proxy, der wirft, ergibt `bad-options`. Es zählen nur **eigene**
 Eigenschaften; was über `Object.prototype` vererbt wurde (auch durch Prototype Pollution), wird ignoriert.
 
+**Eingaben werden kopiert, nie iteriert:** `buildTimestampRequest` und `verifyTimestampToken` kopieren Hash,
+Nonce und Token genau einmal in einen eigenen `ArrayBuffer`. Die Länge kommt vorher aus dem eingebauten
+`length`-Getter der typisierten Arrays (nicht aus einer überschriebenen Eigenschaft) und wird gegen die Grenze
+geprüft, bevor etwas angelegt oder kopiert wird (Token höchstens 262 144 Byte, sonst `too-large`; Nonce 1 bis 16,
+Hash 32 Byte); kopiert wird mit `TypedArray.prototype.set`, nie über `Symbol.iterator` (ein überschriebener,
+endloser Iterator wird nicht aufgerufen). Ein Token in einem `SharedArrayBuffer` ist deshalb gültig, und ein Puffer,
+den der Aufrufer nach dem Aufruf leert oder ändert, ändert das Ergebnis nicht. `trust` wird über `length` und
+Index gelesen (jeder Eintrag einmal, nie über den Iterator); mehr als 64 Einträge sind `bad-options`, geprüft
+bevor ein Eintrag gelesen wird.
+
 **Feindliche Proxys:** `buildTimestampRequest`, `verifyTimestampToken` und `equalBytes` lesen ihre Eingaben
 höchstens einmal und fangen jeden Wurf ab (ein `Proxy`, dessen `getPrototypeOf`- oder `get`-Falle wirft): Ergebnis ist ein Code
 (`bad-hash`, `bad-nonce`, `bad-options`, `malformed`) bzw. `false`, nie eine Ausnahme oder ein abgelehntes

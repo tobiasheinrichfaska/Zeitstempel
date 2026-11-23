@@ -120,6 +120,7 @@
       <tr><td>nameToString</td><td>(name: Uint8Array) → string</td><td>Lesbarer Name aus der DER-Form</td></tr>
       <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen; wirft nie (ein werfender Getter oder Proxy ergibt <code>bad-services</code>)</td></tr>
       <tr><td>signRelayRequest</td><td>({ privateKey, keyId, method, path, body, nowMs }) &rarr; Promise&lt;Result&lt;string&gt;&gt;</td><td>Wert des Kopfes <code>X-Zeitstempel-Auth</code> (<code>v2.&lt;kid&gt;.&lt;ts&gt;.&lt;sig&gt;</code>): ECDSA P-256 / SHA-256 (r&#8214;s, 64 Byte) über Methode, Pfad, Zeit und Hash des Körpers; <code>privateKey</code> sind PKCS#8-Bytes, sie werden nicht extrahierbar importiert und weder zurückgegeben noch abgelegt; die Uhr ist der Parameter <code>nowMs</code>. Ein Schlüsselpaar zu erzeugen ist Sache von <code>scripts/make-key.ts</code>, nicht der Bibliothek</td></tr>
+      <tr><td>ok, fail</td><td>(value) → Result&lt;T&gt; / (reason, detail?) → Failure</td><td>Bauen die Ergebnisformen <code>{ ok: true, value }</code> und <code>{ ok: false, reason }</code>; für Aufrufer, die eigene <code>Result</code>-Werte erzeugen</td></tr>
       <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen. Strenge Leser (<code>fromBase64</code>, <code>fromBase64Url</code>) geben <code>null</code> bei ungültiger Eingabe und bei allem außer Text; <code>equalBytes</code> gibt <code>false</code>, wenn ein Argument kein <code>Uint8Array</code> ist; die Schreiber (<code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code>) werfen bei allem außer <code>Uint8Array</code> einen <code>TypeError</code> (ein Text oder Array würde sonst still als Bytes kodiert). Ein <code>Uint8Array</code> aus einem anderen Realm (iframe, Worker, <code>vm</code>) zählt nicht als eines: als <code>new Uint8Array(x)</code> übergeben</td></tr>
     </table>
 
@@ -177,6 +178,7 @@
       <tr><td>MAX_CHAIN</td><td>6</td><td>Länge der geprüften Kette (Tiefe der Suche)</td></tr>
       <tr><td>MAX_CANDIDATES</td><td>8</td><td>Brauchbare Kandidaten mit gültiger Signatur je Schritt der Kettensuche; unbrauchbare Zwillinge zählen nicht</td></tr>
       <tr><td>MAX_SIGNATURE_CHECKS</td><td>64</td><td>Signaturprüfungen für die ganze Kettensuche (die Prüfung der Token-Signatur kommt dazu)</td></tr>
+      <tr><td>MAX_TRUST_ANCHORS</td><td>64</td><td>Einträge von <code>trust</code>; eine längere Liste ist <code>bad-options</code> (die Länge wird vor dem Lesen eines Eintrags geprüft)</td></tr>
       <tr><td>MAX_REASON_CHECKS</td><td>4</td><td>Zusätzliche Signaturprüfungen, nach erfolgloser Suche, um den genaueren Fehlergrund zu nennen; nehmen der Suche nichts weg</td></tr>
     </table>
     <p class="note">Die Optionsregeln und die Suchgrenzen im Einzelnen: <code>docs/grenzen.md</code>.</p>
