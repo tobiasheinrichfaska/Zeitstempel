@@ -63,7 +63,7 @@ security-reviewed by a human; library tested under Node only, never in a browser
 | `relay/upstream.ts`                                                                          | The one way out: POST to a service (TLS, no redirect, hard deadline, size cap)                                                                          |
 | `relay/limits.ts`                                                                            | Every relay limit in one place                                                                                                                          |
 | `relay/server.ts`, `relay/main.ts`, `relay/load.ts`                                          | HTTP server, start (settings from the environment), loading the data files                                                                              |
-| `scripts/`                                                                                   | `spike.ts`, `probe.ts`, `make-request.ts`, `fix-declarations.mjs`                                                                                       |
+| `scripts/`                                                                                   | `spike.ts`, `probe.ts`, `make-request.ts`, `fix-declarations.mjs`, `browser-check.mjs` (Chromium, by hand)                                              |
 | `tests/`                                                                                     | `der`, `verify`, `services-fixtures`, `openssl`, `relay`, `services`, `docs`, `coupling`; `fixtures/` = recorded answers of real services (public data) |
 | `package.json`, `tsconfig*.json`, `eslint.config.js`, `vitest.config.ts`, `.prettierrc.json` | Toolchain                                                                                                                                               |
 | `.github/workflows/tests.yml`                                                                | Check "Tests": typecheck, lint, format, tests, build                                                                                                    |
@@ -91,8 +91,11 @@ npm run spike   # by hand, needs the network (see manual_tests/)
 
 ## Known Limitations
 
-- **Never run in a browser.** Only Node 24 tests. A guard test keeps the core free of Node imports, but
-  WebCrypto behaviour in real browsers (ECDSA P-384, RSA-4096) is unchecked.
+- **Browser: checked once, in headless Chromium 157 only** (2026-11-23, `node scripts/browser-check.mjs`, by
+  hand, needs Playwright with Chromium, which is not a dependency): the four recorded tokens verify (ECDSA P-384
+  and RSA-4096 signers), wrong hash / wrong anchor / changed bytes are refused, and a cross-origin call to the
+  relay (preflight included) works. Firefox and Safari were not run. In an insecure context (plain http, not
+  localhost) `crypto.subtle` is missing and verification answers `unsupported-signature`.
 - **No revocation check, no name or path-length constraints, no policy check** (`docs/grenzen.md`). RSA-PSS,
   SHA-1 and BER are refused.
 - **The free services are not qualified** (eIDAS): limited legal weight. Terms of use of all four are not
@@ -108,4 +111,4 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   with `scripts/make-request.ts` (the old ones stay valid for the tests).
 - Not on npm; consumers take it by Git tag (none yet).
 
-_Last updated: 2026-11-23 (project created: library, relay, services, measurement)_
+_Last updated: 2026-11-23 (browser check in Chromium, `Access-Control-Expose-Headers: Retry-After`, relay interface documented for clients)_

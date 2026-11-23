@@ -27,6 +27,55 @@ RELAY_ORIGINS=https://app.example npm run relay
 | `GET /health`                                                                                                              | `{ok: true, services: [...]}`                                                                 |
 | `OPTIONS …`                                                                                                                | Vorabfrage (CORS) für die konfigurierten Herkünfte                                            |
 
+### Formate
+
+- **`hash`** ist der SHA-256 (32 Byte) als **base64url ohne Auffüllzeichen** (`=`), also 43 Zeichen. Der JSON-Körper
+  hat genau ein Feld; Rohbytes gehen nur mit `Content-Type: application/octet-stream` (genau 32 Byte).
+  Ein `charset`-Zusatz im `Content-Type` wird ignoriert. Mehr als 512 Byte Körper werden abgelehnt.
+- **200:** `service` (Kennung), `genTime` (ISO 8601, UTC, mit Millisekunden, z. B. `2026-11-23T13:05:56.000Z`;
+  die Zeit des Dienstes, sekundengenau), `accuracyMs` (ganze Zahl oder `null`), `serial` (Kleinbuchstaben-Hex),
+  `token` (base64url ohne Auffüllzeichen, das Token als DER, so wie es `readToken`/`verifyTimestampToken` der
+  Bibliothek erwarten).
+- **`GET /v1/services`:** `{"services": [{"id", "name", "qualified", "intendedUse"}]}`. Die Reihenfolge ist die der Datei
+  `services.json`; es gibt keine Vorgabe, die App wählt eine Kennung (eine Einstellung der App, nicht des Relays).
+- **`GET /health`:** `{"ok": true, "services": ["<id>", …]}`.
+- Alle Antworten sind JSON (`application/json; charset=utf-8`), auch Fehler. Das Relay benutzt keine Cookies
+  und verlangt keine Anmeldung.
+
+### Browser (CORS)
+
+- Die App-Herkunft muss in `RELAY_ORIGINS` stehen, **genau** wie der Browser sie sendet (`https://app.example`,
+  ohne Pfad, ohne Schrägstrich am Ende).
+- Ein `POST` mit `Content-Type: application/json` (oder `application/octet-stream`) löst im Browser eine
+  **Vorabfrage** aus. Antwort darauf: `204` mit `Access-Control-Allow-Origin: <die Herkunft>`,
+  `Access-Control-Allow-Methods: GET, POST`, `Access-Control-Allow-Headers: Content-Type`,
+  `Access-Control-Max-Age: 600`, `Vary: Origin`.
+- Jede Antwort an eine erlaubte Herkunft (auch Fehler) trägt `Access-Control-Allow-Origin: <die Herkunft>`
+  und `Access-Control-Expose-Headers: Retry-After` (sonst kann das Skript der Seite `Retry-After` nicht lesen).
+  Es gibt keinen Platzhalter `*` und keine Anmeldedaten (`credentials`) im Browseraufruf.
+- Eine **nicht erlaubte Herkunft** bekommt `403 origin-not-allowed` **ohne** `Access-Control-Allow-Origin`; der
+  Browser zeigt der Seite dann nur einen Netzwerkfehler (`TypeError`), nicht den Code. Ebenso sieht die Seite bei
+  `413` (Verbindung wird geschlossen) unter Umständen nur einen Netzwerkfehler. Aufrufer ohne `Origin`-Kopf
+  (Skripte, `curl`) werden nicht eingeschränkt.
+- Eine Seite über **`http`** (nicht `localhost`) hat in Browsern kein WebCrypto; die Prüfung liefert dann
+  `unsupported-signature`. Die App sollte über `https` laufen.
+
+### Die App als Client
+
+1. Hash der Daten bilden (SHA-256, 32 Byte), `fetch(relay + '/v1/stamp/' + id, {method: 'POST', headers:
+{'Content-Type': 'application/json'}, body: JSON.stringify({hash: toBase64Url(hash)})})`. Keine Anmeldedaten,
+   kein `mode`-Zusatz nötig. Die Frist der App sollte **länger als 12 s** sein (das Relay wartet bis zu 10 s auf
+   den Dienst).
+2. Bei `200`: `fromBase64Url(body.token)` und `verifyTimestampToken(token, hash, [ankerPem…], {now})`
+   **ohne** `expectedNonce` (die Nonce wählt das Relay, die App kennt sie nicht; die Bindung an den Hash
+   prüft `imprint-mismatch`). Die Anker (`anchors/*.pem` des Dienstes aus `services.json`) liefert die App
+   selbst mit; wem sie traut, entscheidet sie. `genTime` des Relays ist nur eine Anzeige: maßgeblich ist
+   `value.genTime` der eigenen Prüfung.
+3. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder fragen. Bei `502`/`504`/Netzwerkfehler: später
+   noch einmal versuchen oder einen anderen Dienst nehmen; ein Fehlschlag ist kein Beweis für etwas.
+4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes und Hash aufbewahren; geprüft wird später
+   mit denselben Mitteln, ohne das Relay.
+
 Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 
 | Status | Code                                                                            | Bedeutung                                                                      |

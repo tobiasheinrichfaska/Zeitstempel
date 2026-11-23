@@ -68,7 +68,14 @@ export function createRelay(options: RelayOptions): Relay {
       'Content-Length': String(Buffer.byteLength(text)),
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
-      ...(origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : { Vary: 'Origin' }),
+      ...(origin
+        ? {
+            'Access-Control-Allow-Origin': origin,
+            // Without this a browser hides Retry-After from the page's script.
+            'Access-Control-Expose-Headers': 'Retry-After',
+            Vary: 'Origin',
+          }
+        : { Vary: 'Origin' }),
       ...extra,
     });
     res.end(text);

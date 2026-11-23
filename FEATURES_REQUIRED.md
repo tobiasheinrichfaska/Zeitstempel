@@ -9,7 +9,7 @@
 - [x] **Token prüfen** — vier aufgezeichnete Antworten echter Dienste werden akzeptiert, jede Veränderung abgelehnt (`tests/verify.test.ts`, `tests/services-fixtures.test.ts`)
 - [x] **Übereinstimmung mit openssl** — `tests/openssl.test.ts` (nur mit openssl auf dem Rechner)
 - [x] **Kern ohne Node-Importe** — Wächter-Test (`tests/coupling.test.ts`)
-- [ ] **Läuft in einem Browser** — nicht geprüft
+- [x] **Läuft in einem Browser** — nur Headless-Chromium, von Hand (`node scripts/browser-check.mjs`); Firefox und Safari nicht geprüft
 
 ## Relay
 
