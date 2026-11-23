@@ -22,6 +22,13 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 | `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`         | keine          |
 | `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                  | aus            |
 
+| `RELAY_HOST` | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt | alle (auth an) |
+
+`RELAY_AUTH=off` lauscht **nur auf `127.0.0.1`** (Vorgabe, auch ohne `RELAY_HOST`; eine andere Adresse als
+`127.0.0.1`, `::1` oder `localhost` wird abgelehnt) und schreibt beim Start `{"event":"warning","message":"auth off,
+loopback only (…)"}` auf stderr. Ein Relay ohne Anmeldung ist so nicht von außen erreichbar. Mit Schlüsseldatei
+gilt die Vorgabe „alle Adressen“, außer `RELAY_HOST` ist gesetzt.
+
 `RELAY_AUTH=off` und `RELAY_KEYS_FILE` zusammen werden abgelehnt. Die Startzeile im Protokoll meldet
 `"auth":"on"` oder `"auth":"off"`.
 
@@ -69,19 +76,30 @@ hex(SHA-256(Körper))`. `PFAD` ist der Pfad ohne Abfrage (`/v1/stamp/freetsa`), 
   `401` abgelehnt.
 
 **Was das Relay prüft** (jeder Fehler der Anmeldung ist ein einheitliches `401 {"error":"unauthorized"}`; die
-Antwort verrät nicht, ob Kennung, Zeit oder Signatur falsch war. `404`, `405` und `413` können **vor** der
-Signaturprüfung kommen; sie verraten nur Öffentliches (welche Dienste es gibt, das Größenlimit) und sind kein
-Orakel für Kennung oder Signatur. Ohne Kopf gibt es für einen bekannten Dienst nie etwas anderes als `401`):
+Antwort verrät nicht, ob Kennung, Zeit oder Signatur falsch war. Die Reihenfolge der Prüfungen: `403`
+(Herkunft), `405` (Methode), `400` (Abfragezeichenfolge, Anfrageziel), `404` (Dienst), dann `401` (Anmeldung),
+`413` beim Lesen des Körpers, und erst nach der Anmeldung `415`/`400` (Hash) und `429`. Alles vor der
+Anmeldung verrät nur Öffentliches (welche Dienste es gibt, das Größenlimit, die Form des Ziels) und ist kein
+Orakel für Kennung oder Signatur. Ohne Kopf gibt es für einen bekannten Dienst mit erlaubter Herkunft, Methode
+POST und kanonischem Ziel nie etwas anderes als `401`):
 
 1. Form des Kopfes und `ts` innerhalb von ±`authWindowSeconds` (60 s) der Uhr des Relays, **vor** dem Lesen des
-   Körpers. Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. Das Fenster wird **nach** dem Lesen
+   Körpers; zusätzlich darf `ts` nicht vor dem Start des Prozesses liegen (`ts` · 1000 ≥ Startzeit − 1000 ms). Der
+   Wiederholungsspeicher liegt nur im Speicher und ist nach einem Neustart leer; ohne diese Regel ließe sich ein
+   mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: **nach einem
+   Neustart sind Köpfe aus der Zeit davor ungültig** (die App signiert ohnehin jeden Versuch neu). **Widerruf
+   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen und das Relay neu starten. Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. Das Fenster wird **nach** dem Lesen
    des Körpers noch einmal geprüft (ein langsamer Körper rettet keinen veralteten Kopf).
-2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Bei unbekannter Kennung prüft das Relay
-   trotzdem eine Signatur, und zwar gegen einen je Prozess zufällig erzeugten Schein-Schlüssel (gleiche Arbeit, gleiche
-   Antwort, kein Orakel); eine unbekannte Kennung wird in jedem Fall abgelehnt. Es wird kein Geheimnis verglichen,
+2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Das Relay führt **für jeden wohlgeformten
+   Kopf genau eine** Prüfung aus, auch bei unbekannter Kennung (gegen einen je Prozess zufällig erzeugten
+   Schein-Schlüssel; gleiche Arbeit, gleiche Antwort, kein Orakel); erst danach entscheidet die Kennung, und eine
+   unbekannte Kennung wird in jedem Fall abgelehnt (ein Test zählt die Prüfungen). Diese Prüfung läuft also für
+   jeden wohlgeformten Kopf mit frischer Zeit; begrenzt wird die Arbeit durch höchstens 256 Verbindungen, die
+   Frist von 10 s je Anfrage und das Zeitfenster. Es wird kein Geheimnis verglichen,
    ein Zeitangriff gibt also nichts preis.
-3. Eine Nachricht, die schon angenommen wurde, wird abgelehnt (Wiederholung): jede Anfrage braucht einen frischen
-   Kopf, auch ein Wiederholungsversuch nach `429`. **Gemerkt wird der Digest der signierten Nachricht (mit der
+3. Eine Nachricht, die schon angenommen wurde, wird abgelehnt (Wiederholung): nach `200` und nach `502`/`504` (die Anfrage wurde
+   angenommen) braucht jeder weitere Versuch einen frischen Kopf. Nach `429` (nichts wurde eingetragen) darf
+   **derselbe** Kopf innerhalb des Zeitfensters wiederholt werden. **Gemerkt wird der Digest der signierten Nachricht (mit der
    Kennung), nicht die Signatur:** ECDSA ist formbar, zu einer gültigen Signatur `(r, s)` ist auch `(r, n − s)`
    für dieselbe Nachricht gültig, und ein Speicher über Signaturen ließe die Zwillingssignatur als neu durch (ein
    Test belegt beides). Eine Wiederholung stirbt mit `401` **vor** dem `Content-Type`, vor der Prüfung des Hashes
@@ -112,6 +130,15 @@ Kopf hat nur, wer den privaten Schlüssel hat (oder eine mitgeschnittene Anfrage
 (eine Signaturprüfung, höchstens 512 Byte Körper) und ihre Zahl ist begrenzt durch die Frist von 10 s je Anfrage,
 höchstens 256 gleichzeitige Verbindungen und das Zeitfenster von 60 s. Kein Dienst wird dadurch aufgerufen.
 
+**Kein Relay in der Nachricht:** Die signierte Nachricht enthält nichts, was ein einzelnes Relay bezeichnet. Wird
+**derselbe Schlüssel bei zwei Relays** eingetragen, kann ein Kopf, der bei dem einen angenommen wurde, innerhalb von
+höchstens 60 s bei dem anderen noch einmal angenommen werden (Querwiederholung). **Schlüssel nicht auf mehrere
+Relays teilen**; je Relay einen eigenen eintragen.
+
+**Anfrageziel:** Das rohe Ziel der Anfrage muss gleich dem kanonischen Pfad sein (kein `./`, `..`, Rückwärtsstrich,
+keine Absolutform `http://…`, kein leeres `?`); sonst `400 bad-request`. So bindet die Signatur den Pfad wörtlich:
+was signiert wurde, ist das, was geroutet wird.
+
 Das Relay schreibt weder Kennung noch Zeit noch Signatur ins Protokoll; die Zähler kennen nur `unauthorized`.
 
 **Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`.
@@ -123,7 +150,10 @@ Konfiguration des Betreibers, und ein privater Schlüssel soll nie neben ihr lie
 und darf für Gruppe und Andere **nicht schreibbar** sein (z. B. Modus 0644 oder 0600). Beim Start gibt das Relay eine
 Warnung (`{"event":"warning",…}` auf stderr, nur Pfad und Modus, kein Inhalt) aus, wenn Gruppe oder Andere die Datei
 schreiben können (Modus & 0o022; POSIX, unter Windows entfällt die Prüfung); das Relay startet trotzdem. Lesbarkeit
-ist unbedenklich. Ein Fehler beim Lesen nennt Pfad und Regelname, nie Inhalt.
+ist unbedenklich. Ein Fehler beim Lesen nennt Pfad und Regelname, nie Inhalt. **Grenze der Warnung:** sie prüft nur die Datei selbst,
+nicht das Verzeichnis, in dem sie liegt, und nicht den Eigentümer; wer das Verzeichnis schreiben kann, kann die
+Datei ersetzen. Verzeichnis und Eigentümer sind Sache des Betreibers. Doppelte `id`s in den Schlüsseln, die dem Relay
+übergeben werden, sind ein Startfehler.
 
 **Schlüssel erzeugen:** `node scripts/make-key.ts <kennung>` schreibt in zwei Zeilen auf die Konsole (und in keine
 Datei) den **privaten** Schlüssel (PKCS#8, base64url; gehört nur der App, geheim halten) und den Eintrag
@@ -203,7 +233,7 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                            |
 | 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                              |
-| 400    | `bad-request`                                                                   | Pfad ist keine gültige Adresse (z. B. `//`, `//[`)                                                                        |
+| 400    | `bad-request`                                                                   | Anfrageziel ist keine gültige Adresse (z. B. `//`, `//[`) oder nicht gleich dem kanonischen Pfad (`./`, `\`, Absolutform) |
 | 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich |
 | 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                          |
 | 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                          |

@@ -1,7 +1,7 @@
 import {
   createHash,
   generateKeyPairSync,
-  verify as verifySignature,
+  verify as verifySignatureNode,
   type KeyObject,
 } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -40,6 +40,8 @@ export interface RelayOptions {
   keys: readonly RelayKey[] | 'off';
   /** Size of the replay cache (default `RELAY_LIMITS.authReplayEntries`); a parameter for tests. */
   authReplayEntries?: number;
+  /** The ECDSA check (default `node:crypto` verify); a parameter so a test can count the verifications. */
+  verifySignature?: typeof verifySignatureNode;
 }
 
 /** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
@@ -79,10 +81,15 @@ export function createRelay(options: RelayOptions): Relay {
     for (const k of options.keys) {
       const key = publicKeyObject(k.publicKey);
       if (key === null) throw new Error('relay key is not a valid P-256 public key'); // at start, no content
+      if (keyById.has(k.id)) throw new Error('relay key ids must be unique'); // at start, no content
       keyById.set(k.id, key);
     }
   }
   const authRequired = options.keys !== 'off';
+  const doVerify = options.verifySignature ?? verifySignatureNode;
+  // Heads signed before this process started are refused (the replay cache is empty after a restart,
+  // so an old head could otherwise be replayed once more within its window).
+  const startMs = options.now();
   // A key nobody holds: an unknown id still gets the same verification (against this random key made
   // for the process, whose private half is dropped at once), so the answer tells nothing. `verified`
   // also insists on a known id.
@@ -183,6 +190,7 @@ export function createRelay(options: RelayOptions): Relay {
     if (!signature || signature.length !== 64) return null;
     const ts = Number(m[2]);
     if (!inWindow(ts)) return null;
+    if (ts * 1000 < startMs - 1000) return null; // signed before this process started
     return { kid: m[1]!, ts, signature };
   }
 
@@ -200,7 +208,7 @@ export function createRelay(options: RelayOptions): Relay {
     const message = `${AUTH_PREFIX}\n${method}\n${path}\n${auth.ts}\n${createHash('sha256').update(body).digest('hex')}`;
     let valid: boolean;
     try {
-      valid = verifySignature(
+      valid = doVerify(
         'sha256',
         Buffer.from(message),
         { key: key ?? dummyKey!, dsaEncoding: 'ieee-p1363' },
@@ -209,7 +217,8 @@ export function createRelay(options: RelayOptions): Relay {
     } catch {
       valid = false;
     }
-    if (!valid || key === undefined) return null;
+    // Always exactly one verification, known id or not; the id decides only afterwards.
+    if (!(valid && key !== undefined)) return null;
     return `${auth.kid}:${createHash('sha256').update(message).digest('hex')}`;
   }
 
@@ -406,6 +415,9 @@ export function createRelay(options: RelayOptions): Relay {
       return send(res, 400, { error: 'bad-request' }, echo);
     }
     if (url.search !== '') return send(res, 400, { error: 'no-query' }, echo);
+    // The signature binds the path literally: the raw target must be the canonical path (no `./`, `..`,
+    // backslash, absolute form, empty query `?`), so what is signed is what is routed.
+    if (req.url !== url.pathname) return send(res, 400, { error: 'bad-request' }, echo);
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {

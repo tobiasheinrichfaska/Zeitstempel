@@ -6,15 +6,20 @@
 //   RELAY_KEYS_FILE          path of the key file (ids and public keys; no secret, but only the operator may
 //                            write it; never in the repo); required
 //   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
+//   RELAY_HOST               address to listen on (default: all interfaces; with RELAY_AUTH=off always
+//                            127.0.0.1, and only a loopback address is accepted)
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
+import type { Server } from 'node:http';
 import { loadServices } from './load.ts';
 import { loadKeys, type RelayKey } from './keys.ts';
 import type { RelayService } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { networkUpstream } from './upstream.ts';
 import { createRelayServer } from './server.ts';
+
+const LOOPBACK = ['127.0.0.1', '::1', 'localhost'];
 
 export function readSettings(env: NodeJS.ProcessEnv) {
   const origins = (env.RELAY_ORIGINS ?? '')
@@ -41,9 +46,16 @@ export function readSettings(env: NodeJS.ProcessEnv) {
   if (authOff && (env.RELAY_KEYS_FILE ?? '') !== '') {
     throw new Error('RELAY_AUTH=off und RELAY_KEYS_FILE schließen sich aus');
   }
+  const hostEnv = (env.RELAY_HOST ?? '').trim();
+  if (authOff && hostEnv !== '' && !LOOPBACK.includes(hostEnv)) {
+    throw new Error('RELAY_AUTH=off erlaubt nur eine Loopback-Adresse in RELAY_HOST');
+  }
+  // undefined: listen on all interfaces (only with authentication)
+  const host: string | undefined = authOff ? hostEnv || '127.0.0.1' : hostEnv || undefined;
   return {
     origins,
     port,
+    host,
     allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
     only,
     authOff,
@@ -104,8 +116,14 @@ export function readConfig(
 ) {
   const settings = readSettings(env);
   const services = chooseServices(load(), settings.only, settings.allowPlainHttp);
-  if (settings.authOff)
-    return { settings, services, keys: 'off' as const, warnings: [] as string[] };
+  if (settings.authOff) {
+    return {
+      settings,
+      services,
+      keys: 'off' as const,
+      warnings: [`auth off, loopback only (${settings.host})`],
+    };
+  }
   if (settings.keysFile === '') {
     throw new Error(
       'RELAY_KEYS_FILE fehlt (ohne Schlüsseldatei startet das Relay nicht; nur für die lokale Entwicklung: RELAY_AUTH=off)',
@@ -130,6 +148,17 @@ export function startEvent(
   };
 }
 
+/** Starts listening; a host of `undefined` means all interfaces. */
+export function listenOn(
+  server: Server,
+  port: number,
+  host: string | undefined,
+  done: () => void,
+): void {
+  if (host === undefined) server.listen(port, done);
+  else server.listen(port, host, done);
+}
+
 function main(): void {
   let config: ReturnType<typeof readConfig>;
   try {
@@ -150,7 +179,7 @@ function main(): void {
     now: () => Date.now(),
     keys,
   });
-  server.listen(settings.port, () => {
+  listenOn(server, settings.port, settings.host, () => {
     console.log(JSON.stringify(startEvent(settings.port, services, keys)));
   });
   setInterval(

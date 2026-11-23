@@ -1,4 +1,4 @@
-import { verify } from 'node:crypto';
+import { verify, verify as nodeVerify } from 'node:crypto';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net, { type AddressInfo } from 'node:net';
@@ -10,8 +10,9 @@ import {
 } from '../src/index.ts';
 import type { RelayKey } from '../relay/keys.ts';
 import { loadServices } from '../relay/load.ts';
-import { keyFilePermissionWarning, readConfig } from '../relay/main.ts';
+import { keyFilePermissionWarning, listenOn, readConfig } from '../relay/main.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
+import type { RelayOptions } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import {
   UpstreamError,
@@ -61,10 +62,13 @@ async function start(
     random?: (n: number) => Uint8Array;
     keys?: readonly RelayKey[] | 'off';
     authReplayEntries?: number;
+    /** The relay's clock at its creation (the process start); default NOW. */
+    clockStart?: number;
+    verifySignature?: RelayOptions['verifySignature'];
   } = {},
 ): Promise<Harness> {
   const calls: Uint8Array[] = [];
-  const clock = { now: NOW };
+  const clock = { now: over.clockStart ?? NOW };
   const stand: Upstream = async (_t, body) => {
     calls.push(body);
     return { status: 200, contentType: 'application/timestamp-reply', body: RECORDED };
@@ -77,6 +81,7 @@ async function start(
     random: over.random ?? (() => FREETSA_NONCE),
     now: () => clock.now,
     keys: over.keys ?? KEYS,
+    ...(over.verifySignature === undefined ? {} : { verifySignature: over.verifySignature }),
     ...(over.authReplayEntries === undefined ? {} : { authReplayEntries: over.authReplayEntries }),
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -89,8 +94,8 @@ async function start(
         o.kid ?? 'app-a',
         'POST',
         path,
-        // Every call gets its own second inside the window, so equal requests are no replays.
-        o.ts ?? Math.floor(clock.now / 1000) + ((n++ % 100) - 50),
+        // Every call gets its own second inside the window (not before the start second), so equal requests are no replays.
+        o.ts ?? Math.floor(clock.now / 1000) + ((n++ % 59) - 1),
         body,
       ),
     base: `http://127.0.0.1:${port}`,
@@ -138,6 +143,28 @@ function rawGet(h: Harness, path: string): Promise<{ status: number; body: strin
     });
     req.on('error', reject);
     req.end();
+  });
+}
+
+/** Sends method, request target and body exactly as given (fetch would normalise the target). */
+function rawRequest(
+  h: Harness,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body: string,
+): Promise<{ status: number; body: string }> {
+  const port = Number(new URL(h.base).port);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers }, (res) => {
+      const parts: Buffer[] = [];
+      res.on('data', (c: Buffer) => parts.push(c));
+      res.on('end', () =>
+        resolve({ status: res.statusCode ?? 0, body: Buffer.concat(parts).toString('utf8') }),
+      );
+    });
+    req.on('error', reject);
+    req.end(body);
   });
 }
 
@@ -190,9 +217,15 @@ describe('relay: stamping', () => {
   });
 
   it('refuses a token from the future', async () => {
-    h.clock.now = NOW - RELAY_LIMITS.maxSkewMs - 3 * 3_600_000;
-    const res = await post(h, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json');
+    const early = await start({ clockStart: NOW - RELAY_LIMITS.maxSkewMs - 3 * 3_600_000 });
+    const res = await post(
+      early,
+      '/v1/stamp/freetsa',
+      hashJson(sha256('probe')),
+      'application/json',
+    );
     expect(await res.json()).toEqual({ error: 'upstream-invalid', reason: 'time-in-future' });
+    await early.close();
   });
 });
 
@@ -417,6 +450,38 @@ describe('relay: start configuration', () => {
     );
     expect(real.warnings[0]).toContain('/etc/z/keys.json');
     expect(real.warnings[0]).not.toContain(toBase64Url(KEYS[0]!.publicKey));
+  });
+  it('with RELAY_AUTH=off it listens on 127.0.0.1 only and warns; with keys it does not narrow', async () => {
+    const off = readConfig({ RELAY_AUTH: 'off' }, () => SERVICES);
+    expect(off.settings.host).toBe('127.0.0.1');
+    expect(off.warnings).toHaveLength(1);
+    expect(off.warnings[0]).toContain('auth off, loopback only');
+    expect(() => readConfig({ RELAY_AUTH: 'off', RELAY_HOST: '0.0.0.0' }, () => SERVICES)).toThrow(
+      /Loopback/,
+    );
+    const keyed = readConfig(
+      { RELAY_KEYS_FILE: '/k.json' },
+      () => SERVICES,
+      () => KEYS,
+      () => null,
+    );
+    expect(keyed.settings.host).toBeUndefined();
+    expect(keyed.warnings).toEqual([]);
+    // the real bind: the address the server ends up on
+    const { server } = createRelayServer({
+      services: SERVICES,
+      origins: [],
+      allowPlainHttp: false,
+      upstream: async () => {
+        throw new Error('unused');
+      },
+      random: () => FREETSA_NONCE,
+      now: () => NOW,
+      keys: 'off',
+    });
+    await new Promise<void>((r) => listenOn(server, 0, off.settings.host, r));
+    expect((server.address() as AddressInfo).address).toBe('127.0.0.1');
+    await new Promise<void>((r) => server.close(() => r()));
   });
   it('limits the open connections: the third socket is closed, the first two stay', async () => {
     const { server } = createRelayServer(
@@ -856,10 +921,12 @@ describe('relay: authentication', () => {
   it('refuses a time too old or too new, accepts the edge of the window', async () => {
     const body = new TextEncoder().encode(BODY);
     const w = RELAY_LIMITS.authWindowSeconds;
-    await unauthorized(await withHeader(h.sign(PATH, body, { ts: secondsNow() - w - 1 })));
-    await unauthorized(await withHeader(h.sign(PATH, body, { ts: secondsNow() + w + 1 })));
-    expect((await withHeader(h.sign(PATH, body, { ts: secondsNow() - w }))).status).toBe(200);
-    expect((await withHeader(h.sign(PATH, body, { ts: secondsNow() + w }))).status).toBe(200);
+    h.clock.now = NOW + w * 1000; // a minute after the start, so the past edge is not before the start
+    const now = secondsNow() + w;
+    await unauthorized(await withHeader(h.sign(PATH, body, { ts: now - w - 1 })));
+    await unauthorized(await withHeader(h.sign(PATH, body, { ts: now + w + 1 })));
+    expect((await withHeader(h.sign(PATH, body, { ts: now - w }))).status).toBe(200);
+    expect((await withHeader(h.sign(PATH, body, { ts: now + w }))).status).toBe(200);
   });
   it('decides on the time before it reads the body', async () => {
     const body = new TextEncoder().encode(BODY);
@@ -916,15 +983,15 @@ describe('relay: authentication', () => {
         },
       });
     const t = Math.floor(small.clock.now / 1000);
-    for (let i = 0; i < 3; i += 1) expect((await go(t - i, i === 2)).status).toBe(200);
-    const full = await go(t - 3, true);
+    for (let i = 0; i < 3; i += 1) expect((await go(t + i, i === 2)).status).toBe(200);
+    const full = await go(t + 3, true);
     expect(full.status).toBe(429);
     expect(await full.json()).toEqual({ error: 'rate-limited' });
     expect(Number(full.headers.get('retry-after'))).toBeGreaterThan(0);
     expect(small.calls).toHaveLength(3);
-    // the oldest entry (second t-2, kept for window + request timeout = 70 s) is out after 68 s
-    expect(full.headers.get('retry-after')).toBe('68');
-    small.clock.now += 68_000;
+    // the oldest entry (second t, kept for window + request timeout = 70 s) is out after 70 s
+    expect(full.headers.get('retry-after')).toBe('70');
+    small.clock.now += 70_000;
     expect((await go(Math.floor(small.clock.now / 1000), true)).status).toBe(429); // still full
     small.clock.now += 1_000;
     expect((await go(Math.floor(small.clock.now / 1000), true)).status).toBe(200); // the oldest is gone
@@ -1108,7 +1175,7 @@ describe('relay: authentication', () => {
           'X-Zeitstempel-Auth': m.sign(path, bytesOf(BODY), {
             key,
             kid: key.id,
-            ts: Math.floor(m.clock.now / 1000) - i,
+            ts: Math.floor(m.clock.now / 1000) + i,
           }),
         },
       });
@@ -1398,8 +1465,8 @@ describe('relay: authentication', () => {
         },
       });
     expect((await go(t)).status).toBe(200);
-    expect((await go(t - 1)).status).toBe(200);
-    expect((await go(t - 2)).status).toBe(429); // key A holds its share
+    expect((await go(t + 1)).status).toBe(200);
+    expect((await go(t + 2)).status).toBe(429); // key A holds its share
     expect((await go(t, true)).status).toBe(200); // key B is not locked out
     await small.close();
   });
@@ -1418,6 +1485,82 @@ describe('relay: authentication', () => {
     await unauthorized(await withHeader(undefined));
     const res = await withHeader(undefined, BODY, '/v1/stamp/nope');
     expect(res.status).toBe(404);
+  });
+  it('refuses a head signed before the process started, also after a restart with the same clock', async () => {
+    const body = bytesOf(BODY);
+    const old = h.sign(PATH, body, { ts: secondsNow() - 10 }); // within the window of the first process
+    // not possible for the first process either: it started at NOW, 10 s later than the head
+    await unauthorized(await withHeader(old));
+    const first = await start({ clockStart: NOW - 30_000 });
+    const head = first.sign(PATH, body, { ts: secondsNow() - 10 });
+    const ok = await post(first, PATH, BODY, 'application/json', { 'X-Zeitstempel-Auth': head });
+    expect(ok.status).toBe(200);
+    // restart: a new instance, later clock; the replay cache is empty, but the old head is refused
+    const second = await start({ clockStart: NOW });
+    const again = await post(second, PATH, BODY, 'application/json', {
+      'X-Zeitstempel-Auth': head,
+    });
+    expect(again.status).toBe(401);
+    expect(await again.json()).toEqual({ error: 'unauthorized' });
+    expect(second.calls).toHaveLength(0);
+    // one second before the start is still fine, two are not
+    const edge = (ts: number) =>
+      post(second, PATH, BODY, 'application/json', {
+        'X-Zeitstempel-Auth': second.sign(PATH, body, { ts }),
+      });
+    expect((await edge(secondsNow() - 2)).status).toBe(401);
+    expect((await edge(secondsNow() - 1)).status).toBe(200);
+    await first.close();
+    await second.close();
+  });
+  it('does one signature verification for every well-formed head: unknown id, wrong signature, valid', async () => {
+    let count = 0;
+    const counting = await start({
+      verifySignature: ((...args: Parameters<typeof nodeVerify>) => {
+        count += 1;
+        return nodeVerify(...args);
+      }) as typeof nodeVerify,
+    });
+    const body = bytesOf(BODY);
+    const go = (header: string) =>
+      post(counting, PATH, BODY, 'application/json', { 'X-Zeitstempel-Auth': header });
+    expect((await go(counting.sign(PATH, body, { kid: 'nobody' }))).status).toBe(401);
+    expect(count).toBe(1);
+    expect((await go(counting.sign(PATH, bytesOf('other')))).status).toBe(401); // wrong signature
+    expect(count).toBe(2);
+    expect((await go(counting.sign(PATH, body))).status).toBe(200);
+    expect(count).toBe(3);
+    await counting.close();
+  });
+  it('refuses a request target that is not the canonical path, so the signature binds the path literally', async () => {
+    const body = bytesOf(BODY);
+    const headers = (): Record<string, string> => ({
+      'Content-Type': 'application/json',
+      'X-Zeitstempel-Auth': h.sign(PATH, body),
+    });
+    for (const target of [
+      '/v1/stamp/./freetsa',
+      '/v1/stamp/x/../freetsa',
+      '/v1/stamp\\freetsa',
+      '/v1\\stamp/freetsa',
+      `http://relay.invalid${PATH}`,
+      `${PATH}?`,
+    ]) {
+      const res = await rawRequest(h, 'POST', target, headers(), BODY);
+      expect(res.status, target).toBe(400);
+      expect(JSON.parse(res.body).error, target).toMatch(/^(bad-request|no-query)$/);
+    }
+    expect(h.calls).toHaveLength(0);
+    // the same head with the canonical target still works (it was never admitted)
+    const ok = await rawRequest(h, 'POST', PATH, headers(), BODY);
+    expect(ok.status).toBe(200);
+    expect(JSON.parse((await rawRequest(h, 'GET', '/health/.', {}, '')).body)).toEqual({
+      error: 'bad-request',
+    });
+  });
+  it('throws at the start when two keys share an id', async () => {
+    const dup: RelayKey[] = [KEYS[0]!, { id: KEYS[0]!.id, publicKey: KEYS[1]!.publicKey }];
+    await expect(start({ keys: dup })).rejects.toThrow(/unique/);
   });
   it('is off only when expressly started without keys', async () => {
     const open = await start({ keys: 'off' });
