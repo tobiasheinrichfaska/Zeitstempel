@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "id": "freetsa",
+      "name": "FreeTSA",
+      "url": "https://freetsa.org/tsr",
+      "hash": "sha256",
+      "anchors": ["anchors/freetsa-root.pem"],
+      "qualified": false,
+      "minIntervalMs": 15000,
+      "intendedUse": "General RFC 3161 service run by a private operator, free of charge.",
+      "terms": "Usage policy is linked from the service's page but was not readable on 2026-11-23; the page asks not to abuse the service. No guarantee of availability or of legal weight. The interval is a cautious assumption, not a published limit."
+    },
+    {
+      "id": "sectigo",
+      "name": "Sectigo Public Time Stamping",
+      "url": "https://timestamp.sectigo.com",
+      "hash": "sha256",
+      "anchors": ["anchors/usertrust-rsa.pem"],
+      "qualified": false,
+      "minIntervalMs": 15000,
+      "intendedUse": "Public service for time stamping signed code. Other uses are not offered explicitly.",
+      "terms": "Terms not checked: use for anything but code signing is at the operator's discretion. Answers worked on 2026-11-23 over http and https."
+    },
+    {
+      "id": "digicert",
+      "name": "DigiCert Timestamp",
+      "url": "http://timestamp.digicert.com",
+      "hash": "sha256",
+      "anchors": ["anchors/digicert-trusted-root-g4.pem"],
+      "qualified": false,
+      "minIntervalMs": 15000,
+      "intendedUse": "Public service for time stamping signed code. Other uses are not offered explicitly.",
+      "terms": "Terms not checked. Answered over plain http only; an https request timed out on 2026-11-23. The token is signed, so the transport adds privacy, not authenticity."
+    },
+    {
+      "id": "certum",
+      "name": "Certum Timestamp",
+      "url": "http://time.certum.pl",
+      "hash": "sha256",
+      "anchors": ["anchors/certum-trusted-network-ca-2.pem"],
+      "qualified": false,
+      "minIntervalMs": 15000,
+      "intendedUse": "Public service of a certification authority; the offered scope is not documented here.",
+      "terms": "Terms not checked. Answered over plain http only on 2026-11-23 (https failed)."
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+# CLAUDE.md — Zeitstempel
+
+> Workspace-wide conventions (language, git, build, architecture, testing, collaboration):
+> [`c:\skripte\private\general stuff\CLAUDE.md`](../../private/general%20stuff/CLAUDE.md)
+
+---
+
+## Project overview
+
+RFC 3161 time stamps for web apps: build a request, read the answer strictly, verify the token (hash, nonce,
+signature, certificate chain to given trust anchors), a list of services as data, and a small relay that
+forwards only hashes to fixed services because browsers cannot reach them (CORS). Created 2026-11-23 so that
+an app can prove "this hash existed at the latest at time T".
+
+**Platform:** library for browsers and Node (standard APIs only); the relay runs on Node 24
+**Language:** TypeScript (erasable syntax only; the relay and the scripts run unbuilt through Node's type stripping)
+**Architecture:** `src/lib/` is the pure library (clock and randomness are parameters, errors are codes,
+nothing throws, strict bounded DER reader written here: no ASN.1 dependency). `relay/` is the I/O around it.
+`services.json` and `anchors/` are data. Status 0.1.0: **not published to npm, not tagged, not
+security-reviewed by a human; library tested under Node only, never in a browser.**
+
+## Key rules
+
+- **Public repo (AGPLv3 + commercial):** no private project names (also not in commit messages, branch names or
+  PR texts; `tests/coupling.test.ts` fails if one appears), no credentials, no real data. Only hashes of
+  short test texts are ever sent to external services.
+- **The library core imports nothing from `node:`** and no `fetch`, `Buffer` or `process` (ESLint rule and
+  guard test). It must run in a browser.
+- **Trust is the caller's decision:** anchors are a parameter. The shipped anchors (`anchors/`) are data for
+  the relay; their fingerprints are listed in `docs/dienste.md` and have NOT been compared with the operators.
+- **The relay is not an open proxy:** a client names a service id and a hash, nothing else; the relay builds the
+  request, calls only the address in `services.json`, follows no redirect, and checks the answer.
+- **Never log what a request carries** (no address, hash, token). Counters only.
+- Nothing is published to npm, tagged, rolled out or deployed without Tobias' OK. No qualified service
+  contract and no credentials ever in the repo.
+- Every rule keeps its test; a verification rule is checked against `openssl ts -verify` where possible.
+
+---
+
+## Project Directory
+
+| File/Folder                                                                                  | Purpose                                                                                                                                                 |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE.md`                                                                                  | Project documentation and conventions                                                                                                                   |
+| `README.md`                                                                                  | Short description (German), use, license section                                                                                                        |
+| `FEATURES_REQUIRED.md`                                                                       | Critical paths the audit validates                                                                                                                      |
+| `docs/data-model.html`                                                                       | Self-contained reference: structures, functions, error codes, limits (`tests/docs.test.ts` ties codes, limits and functions to the code)                |
+| `docs/dienste.md`                                                                            | The services: measurement, anchors with fingerprints, terms (not clarified), what a stamp is worth, template for a qualified service                    |
+| `docs/relay.md`                                                                              | Relay: settings, interface, error codes, limits (tied to the code by a test), what it sees                                                              |
+| `docs/grenzen.md`                                                                            | What the verification checks and what it does NOT                                                                                                       |
+| `manual_tests/`                                                                              | Human-tester instructions (terminal commands that need the network)                                                                                     |
+| `src/index.ts`, `src/lib/index.ts`                                                           | Public entry                                                                                                                                            |
+| `src/lib/der.ts`                                                                             | Strict bounded DER reader and the writers the request needs                                                                                             |
+| `src/lib/oids.ts`                                                                            | OIDs and algorithm tables as data                                                                                                                       |
+| `src/lib/x509.ts`                                                                            | Certificate reader, PEM bundles                                                                                                                         |
+| `src/lib/request.ts`                                                                         | `buildTimestampRequest`                                                                                                                                 |
+| `src/lib/token.ts`                                                                           | Token (CMS SignedData over TSTInfo) and `readTimestampResponse`                                                                                         |
+| `src/lib/verify.ts`                                                                          | `verifyTimestampToken`: imprint, nonce, signature, certificates, chain                                                                                  |
+| `src/lib/services.ts`                                                                        | `readServices`: strict reader of `services.json`                                                                                                        |
+| `src/lib/bytes.ts`, `src/lib/result.ts`                                                      | Byte/base64 helpers; `Result`, `Reason` codes, `ReaderError`                                                                                            |
+| `services.json`, `anchors/`                                                                  | The services as data and their trust anchors (PEM)                                                                                                      |
+| `relay/relay.ts`                                                                             | The relay rules (`createRelay`), no I/O of its own                                                                                                      |
+| `relay/upstream.ts`                                                                          | The one way out: POST to a service (TLS, no redirect, hard deadline, size cap)                                                                          |
+| `relay/limits.ts`                                                                            | Every relay limit in one place                                                                                                                          |
+| `relay/server.ts`, `relay/main.ts`, `relay/load.ts`                                          | HTTP server, start (settings from the environment), loading the data files                                                                              |
+| `scripts/`                                                                                   | `spike.ts`, `probe.ts`, `make-request.ts`, `fix-declarations.mjs`                                                                                       |
+| `tests/`                                                                                     | `der`, `verify`, `services-fixtures`, `openssl`, `relay`, `services`, `docs`, `coupling`; `fixtures/` = recorded answers of real services (public data) |
+| `package.json`, `tsconfig*.json`, `eslint.config.js`, `vitest.config.ts`, `.prettierrc.json` | Toolchain                                                                                                                                               |
+| `.github/workflows/tests.yml`                                                                | Check "Tests": typecheck, lint, format, tests, build                                                                                                    |
+| `.gitattributes`, `.gitignore`                                                               | LF line endings; ignore rules                                                                                                                           |
+| `LICENSE`, `LICENSE_COMMERCIAL.md`, `CONTRIBUTING.md`                                        | AGPLv3 + commercial                                                                                                                                     |
+
+---
+
+## Data Model
+
+Authoritative reference: [`docs/data-model.html`](docs/data-model.html). No persisted data; shipped reference
+data: `services.json` and `anchors/`. Regenerate/align the document in the same session the model changes.
+
+## Tests
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm run format:check
+npm test
+npm run build
+npm run spike   # by hand, needs the network (see manual_tests/)
+```
+
+## Known Limitations
+
+- **Never run in a browser.** Only Node 24 tests. A guard test keeps the core free of Node imports, but
+  WebCrypto behaviour in real browsers (ECDSA P-384, RSA-4096) is unchecked.
+- **No revocation check, no name or path-length constraints, no policy check** (`docs/grenzen.md`). RSA-PSS,
+  SHA-1 and BER are refused.
+- **The free services are not qualified** (eIDAS): limited legal weight. Terms of use of all four are not
+  clarified; two are meant for code signing (`docs/dienste.md`).
+- **Two of the four services answer over plain http only** (`digicert`, `certum`); the relay offers them only
+  with `RELAY_ALLOW_PLAIN_HTTP=1`.
+- **Anchors come from a Git for Windows certificate bundle and FreeTSA's page; their fingerprints are not
+  compared with the operators.** The tests judge certificate validity at the stamped time, so the recorded
+  answers stay valid after their certificates expire.
+- **The relay's counters are global, not per client** (it knows no addresses). One caller can use up the
+  limit. Not rolled out, no image, no authentication towards a paid (qualified) service.
+- Fixtures are real tokens of 2026-11-23; if a service rotates its certificates, new fixtures must be recorded
+  with `scripts/make-request.ts` (the old ones stay valid for the tests).
+- Not on npm; consumers take it by Git tag (none yet).
+
+_Last updated: 2026-11-23 (project created: library, relay, services, measurement)_

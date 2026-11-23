@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zeitstempel – Datenmodell</title>
+    <style>
+      :root { color-scheme: light dark; --bg:#fff; --fg:#1b1f23; --mut:#57606a; --line:#d0d7de; --acc:#0b5cad; --box:#f6f8fa; }
+      @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --mut:#9da7b3; --line:#30363d; --acc:#58a6ff; --box:#161b22; } }
+      body { background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,sans-serif; margin:0 auto; max-width:62rem; padding:1rem 1rem 4rem; }
+      h2 { margin-top:2.2rem; border-bottom:1px solid var(--line); padding-bottom:.2rem; }
+      table { border-collapse:collapse; width:100%; margin:.6rem 0 1.2rem; font-size:.92rem; }
+      th,td { border:1px solid var(--line); padding:.3rem .5rem; text-align:left; vertical-align:top; }
+      th { background:var(--box); } code { background:var(--box); padding:0 .25rem; border-radius:3px; }
+      .note { color:var(--mut); } svg { max-width:100%; height:auto; }
+      svg text { fill:var(--fg); font:13px system-ui,sans-serif; } svg rect.e { fill:var(--box); stroke:var(--acc); stroke-width:1.5; }
+      svg path { stroke:var(--acc); stroke-width:1.5; fill:none; } svg .lab { fill:var(--mut); font-size:11px; }
+    </style>
+  </head>
+  <body>
+    <h1>Zeitstempel – Datenmodell</h1>
+    <p class="note">
+      Quelle: <code>src/lib/</code>, <code>relay/</code> und <code>services.json</code> (Stand 2026-11-23). Bei jeder
+      Änderung in derselben Sitzung abgleichen; <code>tests/docs.test.ts</code> prüft, dass jeder Fehlercode, jede
+      Grenze und jede öffentliche Funktion hier steht. Die Datei ist eigenständig (kein Netz, kein Build).
+    </p>
+    <p>
+      Das Paket speichert <strong>nichts</strong>: Es gibt keine Datenbank und keine Datei, die zur Laufzeit
+      geschrieben wird. Die Formen unten sind Eingaben, Ergebnisse und die mitgelieferte Dienstliste.
+    </p>
+
+    <h2>1 Entitäten</h2>
+    <h3>Service (ein Eintrag in <code>services.json</code>)</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Pflicht</th><th>Bedeutung</th></tr>
+      <tr><td>id</td><td>Text <code>[a-z][a-z0-9-]{0,31}</code></td><td>ja</td><td>Kennung, eindeutig; so wird der Dienst im Relay angesprochen</td></tr>
+      <tr><td>name</td><td>Text, höchstens 100 Zeichen</td><td>ja</td><td>Anzeigename</td></tr>
+      <tr><td>url</td><td>http- oder https-Adresse ohne Anmeldedaten, Abfrage und Fragment</td><td>ja</td><td>Ziel der Anfrage</td></tr>
+      <tr><td>hash</td><td>"sha256"</td><td>ja</td><td>Hashverfahren der Anfrage; nur SHA-256</td></tr>
+      <tr><td>anchors</td><td>Pfade <code>anchors/&lt;name&gt;.pem</code>, 1 bis 8</td><td>ja</td><td>Vertrauensanker des Dienstes (PEM-Dateien)</td></tr>
+      <tr><td>qualified</td><td>wahr/falsch</td><td>ja</td><td>Qualifizierter Vertrauensdienst im Sinne von eIDAS; bei allen mitgelieferten Diensten falsch</td></tr>
+      <tr><td>minIntervalMs</td><td>ganze Zahl 1000 bis 3600000</td><td>ja</td><td>Kleinster Abstand zwischen zwei Anfragen an den Dienst</td></tr>
+      <tr><td>intendedUse</td><td>Text, höchstens 500 Zeichen</td><td>ja</td><td>Wofür der Betreiber den Dienst anbietet</td></tr>
+      <tr><td>terms</td><td>Text, höchstens 800 Zeichen</td><td>ja</td><td>Stand der Nutzungsbedingungen, ehrlich auch „nicht geprüft“</td></tr>
+    </table>
+    <p>Die Datei hat die Form <code>{ "version": 1, "services": [Service, …] }</code>, höchstens 32 Einträge, unbekannte Felder werden abgelehnt.</p>
+
+    <h3>TstInfo (Inhalt eines Tokens, RFC 3161 § 2.4.2)</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>policy</td><td>OID als Text</td><td>Richtlinie des Dienstes</td></tr>
+      <tr><td>hashOid, hashName</td><td>OID, "SHA-1"/"SHA-256"/"SHA-384"/"SHA-512" oder null</td><td>Hashverfahren des Abdrucks</td></tr>
+      <tr><td>imprint</td><td>Bytes</td><td>Der bestätigte Hash</td></tr>
+      <tr><td>serial</td><td>Hex-Text</td><td>Seriennummer des Tokens</td></tr>
+      <tr><td>genTime</td><td>Millisekunden seit 1970</td><td>Zeit, die der Dienst bestätigt</td></tr>
+      <tr><td>accuracyMs</td><td>Zahl oder null</td><td>Genauigkeit, wenn angegeben</td></tr>
+      <tr><td>nonce</td><td>Bytes oder null</td><td>Die in der Anfrage gesendete Zufallszahl (ohne führende Nullen)</td></tr>
+    </table>
+    <h3>TimestampResponse</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>status</td><td>0 oder 1</td><td>0 gewährt, 1 gewährt mit Änderungen; alles höher ist <code>rejected</code></td></tr>
+      <tr><td>token</td><td>Bytes (DER)</td><td>Das Token (<code>ContentInfo</code> mit <code>SignedData</code>): das, was man aufbewahrt</td></tr>
+      <tr><td>info</td><td>TstInfo</td><td>Der gelesene Inhalt (noch nicht geprüft)</td></tr>
+    </table>
+    <h3>VerifiedTimestamp (Ergebnis einer erfolgreichen Prüfung)</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>genTime</td><td>ISO-8601-Text (UTC)</td><td>Bestätigte Zeit</td></tr>
+      <tr><td>accuracyMs</td><td>Zahl oder null</td><td>Genauigkeit</td></tr>
+      <tr><td>policy</td><td>Text</td><td>Richtlinie</td></tr>
+      <tr><td>serial</td><td>Hex-Text</td><td>Seriennummer</td></tr>
+      <tr><td>signer</td><td>Text <code>CN=…, O=…</code></td><td>Lesbarer Name des Zeitstempel-Zertifikats; nicht zum Vergleichen</td></tr>
+      <tr><td>chainLength</td><td>Zahl</td><td>Zertifikate vom Zeitstempel-Zertifikat bis zum Anker (Anker eingerechnet)</td></tr>
+    </table>
+    <h3>VerifyOptions</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>expectedNonce</td><td>Bytes, optional</td><td>Gesendete Nonce; wenn gegeben, muss das Token genau sie tragen</td></tr>
+      <tr><td>at</td><td>Date, optional</td><td>Zeitpunkt, zu dem die Zertifikate gültig sein müssen (Vorgabe: die Zeit des Tokens)</td></tr>
+      <tr><td>now</td><td>Date, optional</td><td>Aktuelle Zeit; ein Token aus der Zukunft wird abgelehnt (Vorgabe: nicht geprüft)</td></tr>
+      <tr><td>maxSkewMs</td><td>Zahl, optional</td><td>Erlaubter Vorsprung gegenüber <code>now</code> (Vorgabe 300000)</td></tr>
+      <tr><td>requireCriticalEku</td><td>wahr/falsch, optional</td><td>Erweiterte Schlüsselverwendung muss kritisch sein (Vorgabe wahr)</td></tr>
+    </table>
+
+    <h2>2 Beziehungen</h2>
+    <svg viewBox="0 0 700 190" role="img" aria-label="Beziehungen der Strukturen">
+      <rect class="e" x="10" y="20" width="110" height="46" rx="6" /><text x="38" y="48">Service</text>
+      <rect class="e" x="10" y="120" width="110" height="46" rx="6" /><text x="24" y="148">Anker (PEM)</text>
+      <rect class="e" x="250" y="20" width="130" height="46" rx="6" /><text x="272" y="48">TimeStampReq</text>
+      <rect class="e" x="250" y="120" width="130" height="46" rx="6" /><text x="268" y="148">TimeStampResp</text>
+      <rect class="e" x="490" y="120" width="110" height="46" rx="6" /><text x="520" y="148">Token</text>
+      <rect class="e" x="490" y="20" width="110" height="46" rx="6" /><text x="512" y="48">TstInfo</text>
+      <path d="M65 66 L65 120" /><text class="lab" x="70" y="98">anchors 1:1..8</text>
+      <path d="M120 40 L250 40" /><text class="lab" x="140" y="34">Ziel (url)</text>
+      <path d="M315 66 L315 120" /><text class="lab" x="320" y="98">Antwort 1:1</text>
+      <path d="M380 143 L490 143" /><text class="lab" x="400" y="137">token 1:0..1</text>
+      <path d="M545 120 L545 66" /><text class="lab" x="550" y="98">Inhalt 1:1</text>
+    </svg>
+    <table>
+      <tr><th>Von</th><th>Feld</th><th>Nach</th><th>Kardinalität</th></tr>
+      <tr><td>Service</td><td>anchors</td><td>Anker (PEM-Datei)</td><td>1 : 1..8</td></tr>
+      <tr><td>TimeStampReq</td><td>(Anfrage an <code>url</code>)</td><td>Service</td><td>n : 1</td></tr>
+      <tr><td>TimeStampResp</td><td>(Antwort auf die Anfrage)</td><td>TimeStampReq</td><td>1 : 1</td></tr>
+      <tr><td>TimeStampResp</td><td>token</td><td>Token</td><td>1 : 0..1 (fehlt bei Ablehnung)</td></tr>
+      <tr><td>Token</td><td>Inhalt</td><td>TstInfo</td><td>1 : 1</td></tr>
+      <tr><td>Token</td><td>Zertifikate</td><td>Zertifikat (X.509)</td><td>1 : 0..16</td></tr>
+    </table>
+
+    <h2>3 Funktionen (Bibliothek, <code>src/lib/</code>)</h2>
+    <p class="note">Alle laufen in Browser und Node (nur Standard-APIs). Keine wirft: Fehler sind <code>{ ok: false, reason }</code>.</p>
+    <table>
+      <tr><th>Funktion</th><th>Signatur</th><th>Zweck</th></tr>
+      <tr><td>buildTimestampRequest</td><td>(sha256: Uint8Array, nonce: Uint8Array) → Result&lt;Uint8Array&gt;</td><td>RFC-3161-Anfrage (DER) mit <code>certReq = TRUE</code>; Nonce 1 bis 16 Byte</td></tr>
+      <tr><td>readTimestampResponse</td><td>(bytes: Uint8Array) → Result&lt;TimestampResponse&gt;</td><td>Antwort strikt lesen; Ablehnung ist <code>rejected</code> mit der Statusnummer in <code>detail</code></td></tr>
+      <tr><td>readToken</td><td>(bytes: Uint8Array) → ParsedToken (wirft ReaderError)</td><td>Token strikt lesen (Baustein der Prüfung)</td></tr>
+      <tr><td>verifyTimestampToken</td><td>(token, expectedSha256, trust: string[], options?) → Promise&lt;Result&lt;VerifiedTimestamp&gt;&gt;</td><td>Abdruck, Nonce, Signatur, Zeitstempel-Zertifikat, Kette zu einem der Anker prüfen</td></tr>
+      <tr><td>parsePemCertificates, parseCertificate</td><td>(pem) → Certificate[] / (der) → Certificate</td><td>Zertifikate strikt lesen (wirft ReaderError)</td></tr>
+      <tr><td>nameToString</td><td>(name: Uint8Array) → string</td><td>Lesbarer Name aus der DER-Form</td></tr>
+      <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen</td></tr>
+      <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen; strenge Leser geben null bei ungültiger Eingabe</td></tr>
+    </table>
+
+    <h2>4 Fehlercodes</h2>
+    <table>
+      <tr><th>Code</th><th>Bedeutung</th></tr>
+      <tr><td>bad-hash</td><td>Hash nicht 32 Byte</td></tr>
+      <tr><td>bad-nonce</td><td>Nonce nicht 1 bis 16 Byte</td></tr>
+      <tr><td>bad-services</td><td>Dienstliste ungültig</td></tr>
+      <tr><td>too-large</td><td>Eingabe über der Größengrenze</td></tr>
+      <tr><td>malformed</td><td>Kein gültiges DER</td></tr>
+      <tr><td>indefinite-length</td><td>BER mit unbestimmter Länge (nicht erlaubt)</td></tr>
+      <tr><td>too-deep</td><td>Verschachtelung über der Grenze</td></tr>
+      <tr><td>trailing-bytes</td><td>Bytes nach dem Ende der Struktur</td></tr>
+      <tr><td>bad-structure</td><td>Aufbau stimmt nicht mit dem Standard überein</td></tr>
+      <tr><td>rejected</td><td>Der Dienst hat abgelehnt (Status in <code>detail</code>)</td></tr>
+      <tr><td>no-token</td><td>Gewährt, aber ohne Token</td></tr>
+      <tr><td>not-signed-data</td><td>Token ist kein <code>SignedData</code></td></tr>
+      <tr><td>unsupported-version</td><td>Version einer Struktur nicht unterstützt</td></tr>
+      <tr><td>bad-content-type</td><td>Inhaltstyp ist nicht <code>TSTInfo</code></td></tr>
+      <tr><td>bad-tst-info</td><td>Inhalt des Tokens ungültig</td></tr>
+      <tr><td>unsupported-hash</td><td>Hashverfahren nicht SHA-256 (Abdruck) oder SHA-1</td></tr>
+      <tr><td>bad-time</td><td>Zeitangabe ungültig</td></tr>
+      <tr><td>time-in-future</td><td>Zeit des Tokens liegt hinter der Uhr des Prüfers</td></tr>
+      <tr><td>imprint-mismatch</td><td>Token bestätigt einen anderen Hash</td></tr>
+      <tr><td>nonce-mismatch</td><td>Nonce fehlt oder weicht ab</td></tr>
+      <tr><td>one-signer-required</td><td>Nicht genau ein Unterzeichner</td></tr>
+      <tr><td>unsupported-signature</td><td>Signaturverfahren oder Schlüssel nicht unterstützt (zum Beispiel RSA-PSS)</td></tr>
+      <tr><td>signed-attributes-missing</td><td>Signierte Attribute fehlen</td></tr>
+      <tr><td>message-digest-mismatch</td><td>Hash des Inhalts stimmt nicht mit dem signierten überein</td></tr>
+      <tr><td>signing-certificate-missing</td><td>Attribut zum Zeitstempel-Zertifikat fehlt</td></tr>
+      <tr><td>signing-certificate-mismatch</td><td>Zertifikat passt nicht zum signierten Attribut</td></tr>
+      <tr><td>signature-invalid</td><td>Signatur stimmt nicht</td></tr>
+      <tr><td>bad-pem</td><td>Anker nicht als PEM lesbar oder leer</td></tr>
+      <tr><td>bad-certificate</td><td>Zertifikat ungültig</td></tr>
+      <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token</td></tr>
+      <tr><td>certificate-not-valid-at-time</td><td>Ein Zertifikat war zur Zeit des Tokens nicht gültig</td></tr>
+      <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) für Zeitstempel zugelassen</td></tr>
+      <tr><td>not-a-ca</td><td>Aussteller ist keine Zertifizierungsstelle</td></tr>
+      <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker</td></tr>
+      <tr><td>chain-too-long</td><td>Kette länger als die Grenze</td></tr>
+    </table>
+
+    <h2>5 Grenzen der Bibliothek</h2>
+    <table>
+      <tr><th>Name</th><th>Wert</th><th>Wirkung</th></tr>
+      <tr><td>maxBytes</td><td>262144</td><td>Größte gelesene DER-Struktur</td></tr>
+      <tr><td>maxDepth</td><td>24</td><td>Größte Verschachtelung</td></tr>
+      <tr><td>maxChildren</td><td>256</td><td>Elemente in einer Folge</td></tr>
+      <tr><td>MAX_CERTIFICATES</td><td>16</td><td>Zertifikate in einem Token</td></tr>
+      <tr><td>MAX_CHAIN</td><td>6</td><td>Länge der geprüften Kette</td></tr>
+    </table>
+
+    <h2>6 Werkseinstellungen (mitgelieferte Daten)</h2>
+    <p>
+      Die Dienstliste <code>services.json</code> (vier freie Dienste: freetsa, sectigo, digicert, certum) und die
+      Dateien unter <code>anchors/</code> werden mit dem Paket ausgeliefert. Sie sind <strong>feste
+      Referenzdaten</strong>, keine Voreinstellungen: Das Relay liest sie beim Start; der Betreiber ändert sie
+      durch eine neue Fassung der Dateien. Die Messung und die Herkunft der Anker stehen in
+      <code>docs/dienste.md</code>. Die Bibliothek selbst hat keine Voreinstellungen außer den in
+      <code>VerifyOptions</code> genannten.
+    </p>
+  </body>
+</html>

@@ -1,0 +1,26 @@
+# Dependencies & build output
+node_modules/
+dist/
+coverage/
+
+# Project-bound scratch area (workspace rule: never use global temp)
+.tmp/
+
+# Local environment / editor
+.env
+.env.*
+.vscode/
+.idea/
+*.wsb
+
+# Data files (workspace checklist private → public)
+*.xlsx
+*.csv
+*.db
+*.sqlite*
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini

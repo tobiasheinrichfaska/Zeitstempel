@@ -1,0 +1,48 @@
+{
+  "name": "zeitstempel",
+  "private": true,
+  "version": "0.1.0",
+  "description": "RFC 3161 time stamps for web apps: request, strict reader, verification (browser and Node) and a small relay.",
+  "license": "AGPL-3.0-only",
+  "author": "Tobias Heinrich",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "services.json",
+    "anchors"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "build": "tsc -p tsconfig.build.json && node scripts/fix-declarations.mjs",
+    "relay": "node relay/main.ts",
+    "probe": "node scripts/probe.ts",
+    "spike": "node scripts/spike.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.0.0",
+    "eslint": "^10.3.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.6.0",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^4.1.12"
+  }
+}
