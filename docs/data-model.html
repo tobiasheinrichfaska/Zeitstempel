@@ -39,7 +39,7 @@
       <tr><td>hash</td><td>"sha256"</td><td>ja</td><td>Hashverfahren der Anfrage; nur SHA-256</td></tr>
       <tr><td>anchors</td><td>Pfade <code>anchors/&lt;name&gt;.pem</code>, 1 bis 8</td><td>ja</td><td>Vertrauensanker des Dienstes (PEM-Dateien)</td></tr>
       <tr><td>qualified</td><td>wahr/falsch</td><td>ja</td><td>Qualifizierter Vertrauensdienst im Sinne von eIDAS; bei allen mitgelieferten Diensten falsch</td></tr>
-      <tr><td>minIntervalMs</td><td>ganze Zahl 1000 bis 3600000</td><td>ja</td><td>Kleinster Abstand zwischen zwei Anfragen an den Dienst</td></tr>
+      <tr><td>minIntervalMs</td><td>ganze Zahl 1000 bis 3600000</td><td>ja</td><td>Daraus folgt das Budget des Dienstes: höchstens 60000 / minIntervalMs Anfragen je Minute (kein Mindestabstand zwischen zwei Anfragen)</td></tr>
       <tr><td>intendedUse</td><td>Text, höchstens 500 Zeichen</td><td>ja</td><td>Wofür der Betreiber den Dienst anbietet</td></tr>
       <tr><td>terms</td><td>Text, höchstens 800 Zeichen</td><td>ja</td><td>Stand der Nutzungsbedingungen, ehrlich auch „nicht geprüft“</td></tr>
     </table>
@@ -175,7 +175,7 @@
       <tr><td>maxDepth</td><td>24</td><td>Größte Verschachtelung</td></tr>
       <tr><td>maxChildren</td><td>256</td><td>Elemente in einer Folge</td></tr>
       <tr><td>MAX_CERTIFICATES</td><td>16</td><td>Zertifikate in einem Token</td></tr>
-      <tr><td>MAX_CHAIN</td><td>6</td><td>Länge der geprüften Kette (Tiefe der Suche)</td></tr>
+      <tr><td>MAX_CHAIN</td><td>6</td><td>Tiefe der Kettensuche: höchstens 5 Zwischenzertifikate; <code>chainLength</code> höchstens 7 (Anker eingerechnet)</td></tr>
       <tr><td>MAX_CANDIDATES</td><td>8</td><td>Brauchbare Kandidaten mit gültiger Signatur je Schritt der Kettensuche; unbrauchbare Zwillinge zählen nicht</td></tr>
       <tr><td>MAX_SIGNATURE_CHECKS</td><td>64</td><td>Signaturprüfungen für die ganze Kettensuche (die Prüfung der Token-Signatur kommt dazu)</td></tr>
       <tr><td>MAX_TRUST_ANCHORS</td><td>64</td><td>Einträge von <code>trust</code>; eine längere Liste ist <code>bad-options</code> (die Länge wird vor dem Lesen eines Eintrags geprüft)</td></tr>

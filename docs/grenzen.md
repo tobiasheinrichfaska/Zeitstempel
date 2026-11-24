@@ -35,10 +35,10 @@ Schnelltest (`npm run spike`).
   Zertifikat erscheint weiterhin gültig. Die Prüfung gilt für die Zeit der Bestätigung; für Langzeitnachweise
   bräuchte man zusätzlich Sperrinformationen zum damaligen Zeitpunkt (Langzeit-Validierung, LTV).
 - **Namens- und Pfadbeschränkungen** der Zertifikate (NameConstraints, pathLenConstraint) werden nicht
-  ausgewertet; die Länge der Kette ist begrenzt (6).
+  ausgewertet; die Länge der Kette ist begrenzt (höchstens 5 Zwischenzertifikate; `chainLength` höchstens 7, Anker eingerechnet).
 - **Zertifikatsrichtlinien** (Policy-OIDs): Die Richtlinie des Tokens wird gemeldet, aber nicht gegen eine
   Erwartung geprüft.
-- **Nicht unterstützt:** RSA-PSS, SHA-1 als Hash des Abdrucks oder der Signatur, BER (nur DER), andere
+- **Nicht unterstützt:** RSA-PSS, BER (nur DER), SHA-1 (nur als Zertifikats-Hash im Attribut `signingCertificate` (v1) angenommen; als Hash des Abdrucks oder der Signatur und überall sonst abgelehnt), andere
   Hashverfahren als SHA-256 für den Abdruck, Token ohne `certReq` (das Zeitstempel-Zertifikat muss im Token
   liegen). Das sind abgelehnte Fälle, keine stillen Annahmen.
 - **Inhalt des TSTInfo und der Algorithmus-Kennungen:** Eine kritische, unbekannte Erweiterung in `TSTInfo`
@@ -110,7 +110,7 @@ Unerwartetes, das nicht eindeutig gelesen werden kann, wird abgelehnt und nie al
 Prüfung beantwortet im Zweifel mit einem Fehlercode.
 
 Beim Aufbau der Kette werden alle brauchbaren Zertifikate mit passendem Namen und gültiger Signatur als
-Aussteller probiert (begrenzt: Tiefe 6, höchstens 8 brauchbare Kandidaten je Schritt, höchstens 64
+Aussteller probiert (begrenzt: Tiefe 6, das sind höchstens 5 Zwischenzertifikate und `chainLength` höchstens 7 mit dem Anker; höchstens 8 brauchbare Kandidaten je Schritt, höchstens 64
 Signaturprüfungen für die ganze Suche, dazu die eine Prüfung der Signatur des Zeitstempel-Zertifikats; ein Token
 trägt höchstens 16 Zertifikate). Die
 billigen Prüfungen kommen vor der Signaturprüfung: Ein namensgleiches Zertifikat mit unbekannter kritischer

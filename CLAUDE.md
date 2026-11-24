@@ -34,7 +34,7 @@ security-reviewed by a human; library tested under Node; in a browser only once,
   header `X-Zeitstempel-Auth: v2.<kid>.<ts>.<sig>`. The private key stays in the app and is never sent; the
   relay's key file holds public keys only (not a secret, but its integrity counts: start warns if group/others can
   write it). It starts only with `RELAY_KEYS_FILE` or an explicit `RELAY_AUTH=off`.
-- **Never log what a request carries** (no address, hash, token, key id, MAC). Counters only.
+- **Never log what a request carries** (no address, hash, token, key id, signature). Counters only.
 - Nothing is published to npm, tagged, rolled out or deployed without Tobias' OK. No qualified service
   contract and no credentials ever in the repo.
 - Every rule keeps its test; a verification rule is checked against `openssl ts -verify` where possible.
@@ -99,7 +99,8 @@ npm run spike   # by hand, needs the network (see manual_tests/)
 ## Known Limitations
 
 - **Browser: checked once, in headless Chromium 157 only, without the relay authentication (`signRelayRequest` not run in a browser)** (2026-11-23, `node scripts/browser-check.mjs`, by
-  hand, needs Playwright with Chromium, which is not a dependency): the four recorded tokens verify (ECDSA P-384
+  hand, needs Playwright with Chromium, which is not a dependency; the script starts its own relay with `keys: 'off'`
+  inside the script: no environment variable, no key): the four recorded tokens verify (ECDSA P-384
   and RSA-4096 signers), wrong hash / wrong anchor / changed bytes are refused, and a cross-origin call to the
   relay (preflight included) works. Firefox and Safari were not run. In an insecure context (plain http, not
   localhost) `crypto.subtle` is missing and verification answers `unsupported-signature`.
@@ -111,10 +112,9 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   `requireCriticalEku` a boolean, `now`/`at` a real valid `Date`, `maxSkewMs` a number >= 0, otherwise `bad-options` (never a silently skipped check; only `undefined`
   means "not given"). A `Uint8Array` of another realm (iframe, worker, `vm`) is refused (`bad-hash` / `bad-options`; a token: `malformed`; the nonce of `buildTimestampRequest`: `bad-nonce`): pass `new Uint8Array(x)`; `readTimestampResponse` and `readToken` check no `instanceof` and accept such bytes. The chain search tries every signature-valid issuer candidate (bounded), so a look-alike
   certificate cannot block a valid token. A negative serial number makes a certificate unreadable (`malformed`).
-  The relay's server limits the open connections (256) and the time for a whole request, headers included
-  (5 s) (`relay/limits.ts`).
-- **No revocation check, no name or path-length constraints, no policy check** (`docs/grenzen.md`). RSA-PSS,
-  SHA-1 and BER are refused.
+- **No revocation check, no name or path-length constraints, no policy check** (`docs/grenzen.md`). RSA-PSS and
+  BER are refused; SHA-1 is accepted only as the certificate hash in the `signingCertificate` (v1) attribute, anywhere
+  else it is refused.
 - **The free services are not qualified** (eIDAS): limited legal weight. Terms of use read from public pages on
   2026-11-23, not legally checked, operators not asked: only FreeTSA allows general use explicitly (1 request/s per
   IP, so for the whole relay); Sectigo and DigiCert unclear; Certum probably needs a contract (`docs/dienste.md`).
@@ -124,16 +124,32 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   operator pages and the system trust store (network only; FreeTSA has no second source, Sectigo's download is
   http). The tests judge certificate validity at the stamped time, so the recorded answers stay valid after their
   certificates expire.
-- **The relay's counters are global and per key id** (it knows no addresses). Not rolled out, no image, no
-  authentication towards a paid (qualified) service.
+- **Relay (not rolled out, no image, no authentication towards a paid (qualified) service).** The relay knows no
+  addresses: a reverse proxy with a connection and rate limit per address is mandatory for operation. Its server
+  limits the open connections (256) and the time for a whole request, headers included (5 s) (`relay/limits.ts`).
+  The counters are global (all services, each service) and per key id; they live in memory only. With the shipped
+  services (4 requests per minute each) one valid key with 4 requests per minute locks a service for all other
+  keys: there is no fairness per key at a service's budget. `perMinutePerKey` (20) and `perMinuteTotal` (60) are
+  not reached with the shipped services (they bite only when the service limits add up to more). Counters cap
+  future timestamps at `now` (a clock set back does not lock the budget). `refused` has `request-timeout` and
+  `client-aborted`; the 408/431/400 answers of the server are closed hard after 1 s even if the client never reads;
+  `nowMs` must be milliseconds >= 1e11; key file errors name the entry index (`keys[i]`, no content).
 - **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
-  2026-11-23 ran without it; `scripts/browser-check.mjs` needs a key or `RELAY_AUTH=off`). A private key in a web
+  2026-11-23 ran without it, with `keys: 'off'` in the script). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key
-  rotation. Anyone who can write the key file can add a key. The relay knows no addresses: a reverse proxy with a connection and rate limit per address is mandatory for operation. `refused` has `request-timeout` and `client-aborted`; the 408/431/400 answers of the server are closed hard after 1 s even if the client never reads; `nowMs` must be milliseconds >= 1e11; key file errors name the entry index (`keys[i]`, no content); the package holds only `dist`, `services.json` and `anchors` (the relay and the tools need a clone). `prepare` builds on a Git install; `exports` has `./services.json` and `./anchors/*.pem`; the CI actions are pinned by tag, not by SHA. Tests with files use `mkdtemp`; git-dependent tests are skipped visibly; the openssl comparison uses `-attime` and needs OpenSSL 3+ (visible skip otherwise); `accuracyMs` may have fractions; an install without typescript builds no `dist` (a type error makes `prepare` fail loudly). Counters cap future timestamps at `now` (a clock set back does not lock the budget); `refused` has `client-aborted`. Certificate times are read without a fraction (`bad-time`), `genTime` keeps up to 9 digits and is cut to milliseconds. Replay cache (digest of the signed message, at most
+  rotation. Anyone who can write the key file can add a key. Replay cache (digest of the signed message, at most
   180 entries by the limits) and counters live in memory only (empty after a restart; a head with `ts` from the start on, up to +60 s when the app clock runs ahead, can be replayed after a restart until its window ends, i.e. up to 120 s after the relay start: `ts` <= start + 60 s plus the 60 s window; the replay cache is empty then; no code fix); client and relay clocks
-  must agree within ±60 s. `perMinutePerKey` 20 of `perMinuteTotal` 60: three keys can use up the total.
-- Fixtures are real tokens of 2026-11-23; if a service rotates its certificates, new fixtures must be recorded
-  with `scripts/make-request.ts` (the old ones stay valid for the tests).
+  must agree within ±60 s.
+- **Package and build:** the package holds `dist`, `services.json` and `anchors` (plus README, LICENSE, `package.json`);
+  the relay and the tools need a clone. `prepare` builds on a Git install (an install without typescript builds no
+  `dist`; a type error makes `prepare` fail loudly); `exports` has `./services.json` and `./anchors/*.pem`; the CI
+  actions are pinned by tag, not by SHA. Tests with files use `mkdtemp`; git-dependent tests are skipped visibly; the
+  openssl comparison uses `-attime` and needs OpenSSL 3+ (visible skip otherwise). `accuracyMs` may have fractions.
+  Certificate times are read without a fraction (`bad-time`), `genTime` keeps up to 9 digits and is cut to
+  milliseconds.
+- Fixtures are real tokens of 2026-11-23; if a service rotates its certificates, new fixtures must be recorded:
+  `scripts/make-request.ts` writes only the request (.tsq); the answer (.tsr) is fetched from the service (the old
+  fixtures stay valid for the tests).
 - Not on npm; consumers take it by Git tag (none yet).
 
 _Last updated: 2026-11-23 (run 7: inputs copied by length never iterated, `trust` at most 64 anchors, token in a SharedArrayBuffer verifies, start rule: `startMs` only ever falls (lowered on every request), heads from before it are refused, `signRelayRequest` never throws; round 5: honest "never throws" statement, hostile proxies, `trust` must be an array, chain search cut short by a limit always `untrusted-chain`, mutation guards, README/FEATURES aligned with the ECDSA authentication)_

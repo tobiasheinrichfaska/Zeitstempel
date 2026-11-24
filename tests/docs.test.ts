@@ -193,7 +193,9 @@ describe('key files stay out of the repository', () => {
     expect(relayDoc).toContain('Anfragen, die nicht zählen');
     expect(relayDoc).toContain('höchstens 180 Einträge');
     expect(relayDoc).toContain('Obergrenze');
-    expect(relayDoc).toContain('Drei');
+    // the lock-out limit: the service counters are global, one valid key can lock a service for all others
+    expect(relayDoc).toContain('**Aussperren:** Die Dienst-Zähler gelten **global**');
+    expect(relayDoc).toContain('nie erreicht');
   });
   it('relay.md names client-aborted, the clock set back and the reverse proxy; grenzen.md the time rules', () => {
     expect(relayDoc).toContain('client-aborted');

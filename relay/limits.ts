@@ -15,10 +15,10 @@ export const RELAY_LIMITS = {
   /** Requests per minute over all services and clients: nothing is counted per client. */
   perMinuteTotal: 60,
   /**
-   * Requests per minute for one key id (on top of the total): a third of the total, so that one key
-   * cannot use it up and at least three keys are needed to lock out the others. A legitimate app stays
-   * below it anyway: the services' own limits (4 per minute each at 15 s) add up to 16 for the four
-   * shipped services.
+   * Requests per minute for one key id (on top of the total). With the four shipped services (4 per
+   * minute each at 15 s, 16 together) neither this limit nor the total is ever reached: the per-service
+   * counters, which are global and not per key, bite first, so one valid key can use up a service for all
+   * others. There is no fairness per key at a service's budget (a known limit, docs/relay.md).
    */
   perMinutePerKey: 20,
   /** Allowed difference (seconds) between the time in a signed request and the relay's clock. */
@@ -35,7 +35,7 @@ export const RELAY_LIMITS = {
   authReplayKeyShare: 0.5,
   /** Window of the counters. */
   windowMs: 60_000,
-  /** Allowed difference between a token's time and the relay's clock. */
+  /** How far a token's time may be ahead of the relay's clock (the future only; a token from the past is not limited by it). */
   maxSkewMs: 5 * 60_000,
   /** Largest number of origins that may be configured. */
   maxOrigins: 16,

@@ -95,7 +95,7 @@ min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging d
    dort wieder das volle ±60-s-Fenster. Der Wiederholungsspeicher liegt nur im Speicher und ist nach einem Neustart leer; ohne diese Regel ließe sich ein
    mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: **nach einem
    Neustart sind Köpfe aus der Zeit davor ungültig** (die App signiert ohnehin jeden Versuch neu). **Widerruf
-   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen und das Relay neu starten. **Grenzen:** (a) Geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur ersten Anfrage nach der Korrektur geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). (b) Geht sie beim Start **vor**, werden Köpfe von vor der ersten Anfrage nach der Korrektur abgelehnt (die App signiert ohnehin jeden Versuch neu); Köpfe von vor dem echten Neustart bleiben abgelehnt, weil der echte Start nie nach dem ersten korrigierten Zeitpunkt liegt. (c) Die Startzeit sinkt nur bei Anfragen an einen Dienst; setzt jemand die Uhr nach dem Start zurück, gelten Köpfe bis zum niedrigsten dabei beobachteten Zeitpunkt, nie weiter zurück. Die Uhr der App muss also auf etwa eine halbe Minute genau gehen. (d) Ein Kopf mit `ts` ab dem Start (bis +60 s; geht die Uhr der App vor, ist das möglich) bleibt nach einem Neustart bis zum Ende seines Fensters wiederholbar, also bis zu 120 s nach dem Start des Relays (`ts` ≤ Start + 60 s, dazu das Fenster von 60 s), weil der Wiederholungsspeicher dann leer ist; gegen einen Mitschnitt dieser Art schützt das Relay nicht (kein Codefix). (e) Eine Uhrablesung, die nicht endlich ist (`NaN`, `±Infinity`), wird bei Anfragen ignoriert und senkt die Startzeit nicht; ist die Uhr schon beim Start nicht endlich, **bricht der Start ab** (Fehler `relay clock is not finite at start`, kein Inhalt). Das Fenster wird **nach** dem Lesen
+   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen und das Relay neu starten. **Grenzen:** (a) Geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur ersten Anfrage nach der Korrektur geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). (b) Geht sie beim Start **vor**, werden Köpfe von vor der ersten Anfrage nach der Korrektur abgelehnt (die App signiert ohnehin jeden Versuch neu); Köpfe von vor dem echten Neustart bleiben abgelehnt, weil der echte Start nie nach dem ersten korrigierten Zeitpunkt liegt. (c) Die Startzeit sinkt nur bei Anfragen an einen Dienst; setzt jemand die Uhr nach dem Start zurück, gelten Köpfe bis zum niedrigsten dabei beobachteten Zeitpunkt, nie weiter zurück. Die Uhr der App muss also auf etwa eine Minute genau gehen (±60 s). (d) Ein Kopf mit `ts` ab dem Start (bis +60 s; geht die Uhr der App vor, ist das möglich) bleibt nach einem Neustart bis zum Ende seines Fensters wiederholbar, also bis zu 120 s nach dem Start des Relays (`ts` ≤ Start + 60 s, dazu das Fenster von 60 s), weil der Wiederholungsspeicher dann leer ist; gegen einen Mitschnitt dieser Art schützt das Relay nicht (kein Codefix). (e) Eine Uhrablesung, die nicht endlich ist (`NaN`, `±Infinity`), wird bei Anfragen ignoriert und senkt die Startzeit nicht; ist die Uhr schon beim Start nicht endlich, **bricht der Start ab** (Fehler `relay clock is not finite at start`, kein Inhalt). Das Fenster wird **nach** dem Lesen
    des Körpers noch einmal geprüft (ein langsamer Körper rettet keinen veralteten Kopf).
 2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Das Relay führt **für jeden wohlgeformten
    Kopf genau eine** Prüfung aus, auch bei unbekannter Kennung (gegen einen je Prozess zufällig erzeugten
@@ -190,11 +190,13 @@ base64url) und `RELAY_KEY_ID` aus der Umgebung und signiert damit.
 **Grenze:** Der private Schlüssel liegt in der App. Eine Web-App, die ihn im Browser hält, kann ihn nicht vor ihren
 eigenen Besuchern verbergen; der Schlüssel schützt das Relay vor fremden Apps und Skripten, nicht vor den Nutzern
 einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus der Datei, Relay neu starten).
-**Aussperren:** Das Budget je Kennung (`perMinutePerKey` = 20) liegt bei einem Drittel des gemeinsamen Budgets
-(`perMinuteTotal` = 60). **Drei** Kennungen (oder drei gestohlene Schlüssel) können das gemeinsame Budget also
-ausschöpfen und damit alle übrigen Kennungen für den Rest des Zeitfensters aussperren; eine oder zwei können es
-nicht. Mehr als 20 Anfragen je Minute braucht eine einzelne App nicht: die Dienstgrenzen der vier mitgelieferten
-Dienste ergeben zusammen 16 (4 je Dienst bei 15 s).
+**Aussperren:** Die Dienst-Zähler gelten **global**, nicht je Kennung. Mit den mitgelieferten Diensten (je 4
+Anfragen je Minute bei 15 s) sperrt ein einziger gültiger Schlüssel mit 4 Anfragen in einer Minute einen Dienst für
+alle anderen Kennungen bis zum Ende des Zeitfensters. `perMinutePerKey` (20) und `perMinuteTotal` (60) werden mit
+den mitgelieferten Diensten nie erreicht (die vier Dienstgrenzen ergeben zusammen nur 16 je Minute); sie greifen
+erst, wenn die Dienstgrenzen zusammen mehr ergeben. Das Relay verteilt das Budget eines Dienstes nicht fair auf die
+Kennungen: Wer einen gültigen Schlüssel hat (auch einen gestohlenen), kann einen Dienst für alle übrigen
+aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen (Eintrag entfernen, Relay neu starten).
 
 ### Browser (CORS)
 
@@ -325,21 +327,21 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 
 ## Grenzen (`relay/limits.ts`)
 
-| Name                 | Wert   | Bedeutung                                                          |
-| -------------------- | ------ | ------------------------------------------------------------------ |
-| `bodyBytes`          | 512    | Größter Körper einer Anfrage                                       |
-| `upstreamBytes`      | 65536  | Größte Antwort eines Dienstes                                      |
-| `upstreamTimeoutMs`  | 10000  | Frist für den ganzen Aufruf beim Dienst                            |
-| `requestTimeoutMs`   | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)       |
-| `perMinuteTotal`     | 60     | Anfragen je Minute über alle Dienste                               |
-| `windowMs`           | 60000  | Zeitfenster der Zähler                                             |
-| `perMinutePerKey`    | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)         |
-| `authWindowSeconds`  | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr     |
-| `authReplayEntries`  | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429` |
-| `authReplayKeyShare` | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält              |
-| `maxSkewMs`          | 300000 | Erlaubter Unterschied zwischen Token-Zeit und Uhr des Relays       |
-| `maxOrigins`         | 16     | Zahl der einstellbaren Herkünfte                                   |
-| `maxConnections`     | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab      |
+| Name                 | Wert   | Bedeutung                                                               |
+| -------------------- | ------ | ----------------------------------------------------------------------- |
+| `bodyBytes`          | 512    | Größter Körper einer Anfrage                                            |
+| `upstreamBytes`      | 65536  | Größte Antwort eines Dienstes                                           |
+| `upstreamTimeoutMs`  | 10000  | Frist für den ganzen Aufruf beim Dienst                                 |
+| `requestTimeoutMs`   | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)            |
+| `perMinuteTotal`     | 60     | Anfragen je Minute über alle Dienste                                    |
+| `windowMs`           | 60000  | Zeitfenster der Zähler                                                  |
+| `perMinutePerKey`    | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)              |
+| `authWindowSeconds`  | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr          |
+| `authReplayEntries`  | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`      |
+| `authReplayKeyShare` | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                   |
+| `maxSkewMs`          | 300000 | Erlaubter Vorsprung der Token-Zeit vor der Uhr des Relays (nur Zukunft) |
+| `maxOrigins`         | 16     | Zahl der einstellbaren Herkünfte                                        |
+| `maxConnections`     | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab           |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4). `perMinuteTotal` und
 `minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht

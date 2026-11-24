@@ -10,7 +10,7 @@ export interface Service {
   anchors: string[];
   /** False for every service listed so far: a qualified one is a paid contract (see the docs). */
   qualified: boolean;
-  /** Smallest wait between two requests to this service. */
+  /** The budget follows from it: at most 60000 / minIntervalMs requests per minute (not a minimum gap between two requests). */
   minIntervalMs: number;
   intendedUse: string;
   terms: string;

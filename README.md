@@ -47,7 +47,8 @@ im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `respo
 import { fromBase64Url, signRelayRequest, toBase64Url } from 'zeitstempel';
 
 // `scripts/make-key.ts` druckt den privaten Schlüssel als base64url-TEXT; `signRelayRequest` will die Bytes.
-const privateKey = fromBase64Url(privateKeyText); // null bei ungültigem Text
+// `privateKeyText` ist Zeile 1 der Ausgabe von make-key, ohne Zeilenumbruch (daher `.trim()`).
+const privateKey = fromBase64Url(privateKeyText.trim()); // null bei ungültigem Text
 if (!privateKey) throw new Error('privateKeyText is not base64url');
 const path = '/v1/stamp/freetsa';
 const body = new TextEncoder().encode(JSON.stringify({ hash: toBase64Url(sha256) }));

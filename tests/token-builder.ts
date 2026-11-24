@@ -22,6 +22,8 @@ export interface Opts {
   noEku?: boolean; // the signer certificate carries no extended key usage extension at all
   tsaValidity?: [string, string]; // validity of the signer certificate (GeneralizedTime)
   extraTsaExts?: Uint8Array[]; // extra cert extensions
+  /** TSTInfo.accuracy: SEQUENCE of INTEGER seconds, [0] millis, [1] micros (each part optional). */
+  accuracy?: { sec?: number; millis?: number; micros?: number };
   tstExtra?: Uint8Array[]; // extra TSTInfo fields after genTime
   nonceBytes?: Uint8Array; // raw INTEGER content
   nonceRaw?: boolean;
@@ -210,12 +212,24 @@ export function build(o: Opts = {}) {
   );
   const imprint = o.hash ?? sha256(new TextEncoder().encode('x'));
   const nonceField = o.nonceBytes ? [tlv(2, o.nonceBytes)] : [];
+  const uint = (tag: number, n: number) =>
+    tlv(tag, n < 128 ? Uint8Array.of(n) : Uint8Array.of(n >> 8, n & 0xff));
+  const accuracyField = o.accuracy
+    ? [
+        seq(
+          ...(o.accuracy.sec !== undefined ? [uint(2, o.accuracy.sec)] : []),
+          ...(o.accuracy.millis !== undefined ? [uint(0x80, o.accuracy.millis)] : []),
+          ...(o.accuracy.micros !== undefined ? [uint(0x81, o.accuracy.micros)] : []),
+        ),
+      ]
+    : [];
   const tst = seq(
     int(1),
     oidT('1.2.3.4'),
     seq(seq(oidT('2.16.840.1.101.3.4.2.1')), octet(imprint)),
     tlv(2, o.tstSerialRaw ?? Uint8Array.of(9)),
     gt(o.genTime ?? '20260101000000Z'),
+    ...accuracyField,
     ...nonceField,
     ...(o.tstExtra ?? []),
   );

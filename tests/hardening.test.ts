@@ -26,6 +26,24 @@ describe('the token builder', () => {
   });
 });
 
+describe('the accuracy of a token', () => {
+  const accuracyMs = async (accuracy?: Opts['accuracy']) => {
+    const t = build(accuracy ? { accuracy } : {});
+    const r = await verifyTimestampToken(t.token, t.imprint, [t.caPem], {});
+    if (!r.ok) throw new Error(r.reason);
+    return r.value.accuracyMs;
+  };
+  it('adds seconds, milliseconds and microseconds: 1 s + 500 ms + 500 us = 1500.5 ms', async () => {
+    expect(await accuracyMs({ sec: 1, millis: 500, micros: 500 })).toBe(1500.5);
+  });
+  it('reads each part alone and null when the token names none', async () => {
+    expect(await accuracyMs({ sec: 2 })).toBe(2000);
+    expect(await accuracyMs({ millis: 250 })).toBe(250);
+    expect(await accuracyMs({ micros: 500 })).toBe(0.5);
+    expect(await accuracyMs()).toBeNull();
+  });
+});
+
 describe('L1: extended key usage must be exactly id-kp-timeStamping', () => {
   it('refuses timeStamping plus another purpose', async () => {
     expect(await reason({ ekuOids: [TS, '1.3.6.1.5.5.7.3.2'] })).toBe('bad-eku');

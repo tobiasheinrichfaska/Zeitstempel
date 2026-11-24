@@ -400,7 +400,7 @@ export function createRelay(options: RelayOptions): Relay {
     );
   }
 
-  /** One answer for every authentication failure: nothing says whether id, time or MAC was wrong. */
+  /** One answer for every authentication failure: nothing says whether id, time or signature was wrong. */
   function unauthorized(res: ServerResponse, origin: string | null): void {
     send(res, 401, { error: 'unauthorized' }, origin);
   }
@@ -493,7 +493,7 @@ export function createRelay(options: RelayOptions): Relay {
     if (m) {
       if (req.method !== 'POST')
         return send(res, 405, { error: 'method-not-allowed' }, echo, { Allow: 'POST' });
-      // 404 and 405 can come before the MAC check; they tell only public things (which services exist).
+      // 404 and 405 can come before the signature check; they tell only public things (which services exist).
       const service = byId.get(m[1]!);
       if (!service) return send(res, 404, { error: 'unknown-service' }, echo);
       const auth = authRequired ? parseAuth(req) : null;

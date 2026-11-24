@@ -624,7 +624,7 @@ describe('relay: start configuration', () => {
     expect(res.closedByServer).toBe(true);
     await r.close();
   });
-  it('closes the connection of a client that never reads, at the latest about 2 s after the deadline', async () => {
+  it('closes the connection of a client that never reads, at the latest requestTimeoutMs + 1 s grace + 1.5 s after it was seen', async () => {
     const r = await startShort({ requestTimeoutMs: 300 });
     // Many pipelined requests whose answers the client never reads: the answers pile up unsent, so
     // `end()` alone would never finish. Then half a header: the deadline hits this connection.
@@ -644,7 +644,11 @@ describe('relay: start configuration', () => {
         return false;
       };
       expect(await until((n) => n > 0, 10_000), 'the server saw the connection').toBe(true);
+      const seenAt = Date.now();
       expect(await until((n) => n === 0, 10_000), 'the server closed the connection').toBe(true);
+      // 300 ms deadline + 1 s CLOSE_GRACE_MS of relay/server.ts (kept as a literal on purpose: a longer
+      // grace must fail here) + 1.5 s for the server's check interval and the polling.
+      expect(Date.now() - seenAt).toBeLessThan(300 + 1_000 + 1_500);
     } finally {
       c.destroy();
       await r.close();

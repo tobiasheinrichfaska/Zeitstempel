@@ -164,6 +164,8 @@ describe.skipIf(!canJudgeAtTime)('agreement with openssl ts -verify', () => {
       ).ok;
     expect(theirs.ok).toBe(false);
     expect(theirs.stderr).toContain('certificate verify error');
+    // the cause, not just any verify error: the chain ends in a self-signed root that is not the given one
+    expect(theirs.stderr).toContain('self-signed certificate in certificate chain');
     expect(ours).toBe(false);
   });
 });
