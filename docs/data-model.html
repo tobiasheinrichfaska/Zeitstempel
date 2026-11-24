@@ -118,6 +118,8 @@
       <tr><td>parsePemCertificates, parseCertificate</td><td>(pem) → Certificate[] / (der) → Certificate</td><td>Zertifikate strikt lesen (wirft ReaderError)</td></tr>
       <tr><td>nameToString</td><td>(name: Uint8Array) → string</td><td>Lesbarer Name aus der DER-Form</td></tr>
       <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen</td></tr>
+      <tr><td>createRelayClient</td><td>({ relay, fetch, now, trusted, timeoutMs?, verify? }) → RelayClient</td><td>Client des Relays (<code>docs/relay.md</code>): <code>services()</code>, <code>stamp(sha256)</code> (prüft das Token selbst), <code>pausedForMs()</code>; <code>fetch</code> und die monotone Uhr <code>now</code> sind Parameter</td></tr>
+      <tr><td>parseServiceList, parseRelayAnswer</td><td>(value: unknown) → Result&lt;string[]&gt; / Result&lt;RelayAnswer&gt;</td><td>Antworten des Relays strikt lesen</td></tr>
       <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen; strenge Leser geben null bei ungültiger Eingabe</td></tr>
     </table>
 
@@ -159,6 +161,12 @@
       <tr><td>not-a-ca</td><td>Aussteller ist keine Zertifizierungsstelle</td></tr>
       <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker</td></tr>
       <tr><td>chain-too-long</td><td>Kette länger als die Grenze</td></tr>
+      <tr><td>relay-unreachable</td><td>Relay oder Dienst nicht erreichbar (Netzwerkfehler, 502, 504)</td></tr>
+      <tr><td>relay-timeout</td><td>Frist des Aufrufs überschritten</td></tr>
+      <tr><td>relay-refused</td><td>Relay antwortet mit einem anderen Status als 200, 429, 502, 504</td></tr>
+      <tr><td>relay-bad-response</td><td>Antwort des Relays hat nicht die erwartete Form, andere Dienstkennung oder Seriennummer weicht vom Token ab</td></tr>
+      <tr><td>relay-rate-limited</td><td>429 oder laufende Pause; <code>detail</code> nennt die Sekunden</td></tr>
+      <tr><td>no-trusted-service</td><td>Keiner der Dienste des Relays gehört zu den vertrauten Kennungen des Aufrufers</td></tr>
     </table>
 
     <h2>5 Grenzen der Bibliothek</h2>

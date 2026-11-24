@@ -44,6 +44,12 @@ const REASONS: Record<lib.Reason, true> = {
   'not-a-ca': true,
   'untrusted-chain': true,
   'chain-too-long': true,
+  'relay-unreachable': true,
+  'relay-timeout': true,
+  'relay-refused': true,
+  'relay-bad-response': true,
+  'relay-rate-limited': true,
+  'no-trusted-service': true,
 };
 
 describe('docs against the code', () => {
@@ -71,6 +77,9 @@ describe('docs against the code', () => {
       'fromBase64',
       'toHex',
       'equalBytes',
+      'createRelayClient',
+      'parseRelayAnswer',
+      'parseServiceList',
     ];
     for (const name of documented) {
       expect(typeof (lib as Record<string, unknown>)[name], name).toBe('function');
@@ -87,6 +96,11 @@ describe('docs against the code', () => {
     const sent = new Set([...source.matchAll(/error: '([a-z-]+)'/g)].map((m) => m[1]!));
     sent.add('upstream-failed').add('upstream-timeout').add('upstream-too-large'); // `upstream-${kind}`
     for (const code of sent) expect(relayDoc, code).toContain(`\`${code}\``);
+  });
+  it('relay.md lists every client limit with its value', () => {
+    for (const [name, value] of Object.entries(lib.CLIENT_LIMITS)) {
+      expect(relayDoc, name).toMatch(new RegExp(String.raw`\|\s*\`${name}\`\s*\|\s*${value}\s*\|`));
+    }
   });
   it('dienste.md lists every service of services.json', () => {
     const doc = read('dienste.md');

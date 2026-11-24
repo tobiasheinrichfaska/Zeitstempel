@@ -60,21 +60,57 @@ RELAY_ORIGINS=https://app.example npm run relay
 - Eine Seite über **`http`** (nicht `localhost`) hat in Browsern kein WebCrypto; die Prüfung liefert dann
   `unsupported-signature`. Die App sollte über `https` laufen.
 
-### Die App als Client
+### Der Client der Bibliothek
 
-1. Hash der Daten bilden (SHA-256, 32 Byte), `fetch(relay + '/v1/stamp/' + id, {method: 'POST', headers:
-{'Content-Type': 'application/json'}, body: JSON.stringify({hash: toBase64Url(hash)})})`. Keine Anmeldedaten,
-   kein `mode`-Zusatz nötig. Die Frist der App sollte **länger als 12 s** sein (das Relay wartet bis zu 10 s auf
-   den Dienst).
-2. Bei `200`: `fromBase64Url(body.token)` und `verifyTimestampToken(token, hash, [ankerPem…], {now})`
-   **ohne** `expectedNonce` (die Nonce wählt das Relay, die App kennt sie nicht; die Bindung an den Hash
-   prüft `imprint-mismatch`). Die Anker (`anchors/*.pem` des Dienstes aus `services.json`) liefert die App
-   selbst mit; wem sie traut, entscheidet sie. `genTime` des Relays ist nur eine Anzeige: maßgeblich ist
-   `value.genTime` der eigenen Prüfung.
-3. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder fragen. Bei `502`/`504`/Netzwerkfehler: später
-   noch einmal versuchen oder einen anderen Dienst nehmen; ein Fehlschlag ist kein Beweis für etwas.
+`createRelayClient` (`src/lib/client.ts`) setzt die folgenden Schritte um. Er benutzt keinen globalen `fetch`:
+`fetch` und die **monotone** Uhr `now` (z. B. `performance.now()`) werden übergeben. Nichts wirft; Fehler sind
+Codes mit englischem `detail`.
+
+```ts
+const client = createRelayClient({
+  relay: 'https://relay.example',
+  fetch: (url, init) => fetch(url, init),
+  now: () => performance.now(),
+  trusted: new Map([['freetsa', [freetsaRootPem]]]), // Kennung → Anker (PEM), die Entscheidung des Aufrufers
+  wallNow: () => Date.now(), // optional: nur für ein `Retry-After` als HTTP-Datum (siehe 3.)
+});
+const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime, serial, verified }>
+```
+
+1. Der Hash (SHA-256, 32 Byte) geht als `{"hash": "<base64url>"}` an `POST /v1/stamp/<id>`; ohne Anmeldedaten,
+   Referrer, Zwischenspeicher und Weiterleitung; Frist 20 s (das Relay wartet bis zu 10 s auf den Dienst).
+   `GET /v1/services` liefert die Kennungen; nur vertraute werden gefragt, höchstens drei nacheinander.
+2. Bei `200` wird die Antwort strikt gelesen (`parseRelayAnswer`: genau die fünf Felder), die Kennung muss die
+   gefragte sein, das Token wird mit `verifyTimestampToken` gegen Hash und Anker des Dienstes geprüft (ohne
+   `expectedNonce`: die Nonce wählt das Relay) und die Seriennummer mit der des Tokens verglichen. Maßgeblich
+   sind `genTime` und `serial` der eigenen Prüfung, nicht die des Relays.
+3. Bei `429` (auf `GET /v1/services` ebenso wie auf `POST /v1/stamp/<id>`) liest der Client `Retry-After` und
+   sendet bis dahin **nichts**; `pausedForMs()` nennt den Rest. Erlaubt sind ganze Sekunden oder ein
+   HTTP-Datum (RFC 9110); ein Datum wird nur ausgewertet, wenn `wallNow` (Millisekunden seit Epoche) übergeben
+   wurde: Sekunden = aufgerundet (Datum − `wallNow()`). Fehlt der Header, ist er ungültig, ist das Datum
+   vergangen oder fehlt `wallNow`: 60 s; sonst mindestens 1 s und höchstens 3600 s. Die Pause selbst wird auf
+   der monotonen Uhr gemessen; springt diese zurück (Pause länger als das Höchste), wird sie vergessen. Bei
+   `502`/`504`, Netzwerkfehler und Fristüberschreitung (`relay-timeout`) eines Dienstes kommt der nächste
+   Dienst; sind alle (höchstens drei) durch, ist das Ergebnis der letzte Fehler (`relay-unreachable` oder
+   `relay-timeout`). Schlägt schon `GET /v1/services` fehl, endet der Aufruf sofort.
 4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes und Hash aufbewahren; geprüft wird später
    mit denselben Mitteln, ohne das Relay.
+
+Fehlercodes des Clients: `relay-unreachable`, `relay-timeout`, `relay-refused`, `relay-bad-response`,
+`relay-rate-limited`, `no-trusted-service`, `bad-hash` und die Codes der Prüfung (`imprint-mismatch`,
+`signature-invalid`, `untrusted-chain` …), unverändert durchgereicht.
+
+| Name                  | Wert  | Bedeutung                                             |
+| --------------------- | ----- | ----------------------------------------------------- |
+| `timeoutMs`           | 20000 | Frist eines Aufrufs                                   |
+| `defaultRetrySeconds` | 60    | Pause nach 429 ohne brauchbares `Retry-After`         |
+| `maxRetrySeconds`     | 3600  | Längste Pause nach dem Wort des Relays                |
+| `maxServicesTried`    | 3     | Dienste, die bei Ausfall nacheinander versucht werden |
+| `maxServices`         | 32    | Längste gelesene Dienstliste                          |
+| `maxSerialChars`      | 64    | Längste Seriennummer (Hex-Zeichen)                    |
+| `maxTokenChars`       | 12288 | Längstes Token (base64url-Zeichen)                    |
+
+(`CLIENT_LIMITS` in `src/lib/client.ts`.)
 
 Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 

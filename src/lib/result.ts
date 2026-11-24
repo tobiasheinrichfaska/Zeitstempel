@@ -39,7 +39,14 @@ export type Reason =
   | 'bad-eku'
   | 'not-a-ca'
   | 'untrusted-chain'
-  | 'chain-too-long';
+  | 'chain-too-long'
+  // relay client
+  | 'relay-unreachable'
+  | 'relay-timeout'
+  | 'relay-refused'
+  | 'relay-bad-response'
+  | 'relay-rate-limited'
+  | 'no-trusted-service';
 
 export interface Failure {
   ok: false;
