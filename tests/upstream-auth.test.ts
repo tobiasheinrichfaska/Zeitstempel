@@ -806,6 +806,40 @@ describe('the identities: collecting operation keeps credentials apart', () => {
     // B's hash is not in A's tree: A's receipt does not verify for it
     expect((await receiptVerifies(new Response(JSON.stringify(bodies[0])), b[0]!)).ok).toBe(false);
   });
+  it('a type 1 solo request is stamped alone with its own credentials; with the same credentials as a rider it is 403', async () => {
+    h = await start({ batch: { windowMs: 300, max: 100 } });
+    const x = sha256('s1');
+    const apart = await Promise.all([
+      h.post('paid-client', withUpstream('s1', { token: 'tok-A' }, { mode: 'solo' }), {
+        key: KEY_A,
+      }),
+      h.post('paid-client', withUpstream('r1', { token: 'tok-B' })),
+    ]);
+    // two lanes, two windows: the solo request is alone in its own, the rider has a tree of one
+    expect(apart.map((r) => r.status)).toEqual([200, 200]);
+    const bodies = (await Promise.all(apart.map((r) => r.json()))) as {
+      batch?: { size: number };
+    }[];
+    expect(bodies[0]!.batch).toBeUndefined();
+    expect(bodies[1]!.batch?.size).toBe(1);
+    expect(h.calls).toHaveLength(2);
+    const direct = h.calls.filter((c) => Buffer.from(c.imprint).equals(Buffer.from(x)));
+    expect(direct).toHaveLength(1); // the unchanged hash went to the service ...
+    expect(direct[0]!.creds).toEqual({ kind: 'bearer', token: 'tok-A' }); // ... with its own credentials
+    const tree = h.calls.filter((c) => !Buffer.from(c.imprint).equals(Buffer.from(x)));
+    expect((tree[0]!.creds as { token: string }).token).toBe('tok-B');
+    // the same credentials: one window, the solo request is not alone
+    h.calls.length = 0;
+    const same = await Promise.all([
+      h.post('paid-client', withUpstream('s2', { token: 'tok-A' }, { mode: 'solo' }), {
+        key: KEY_A,
+      }),
+      h.post('paid-client', withUpstream('r2', { token: 'tok-A' })),
+    ]);
+    expect(same.map((r) => r.status)).toEqual([403, 200]);
+    expect(h.calls).toHaveLength(1);
+    expect(Buffer.from(h.calls[0]!.imprint).equals(Buffer.from(sha256('s2')))).toBe(false);
+  });
   it('the relay own credentials and a client identity of an either service are separate lanes too', async () => {
     h = await start({ batch: { windowMs: 300, max: 100 } });
     const sent = await Promise.all([

@@ -181,6 +181,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   and a slot is booked at the time of the STAMP (a window holds its slot from opening on, booked for opening plus window
   length, or the real time when it closes full), so the service never sees more than that many calls in any sliding
   minute, mixed window and solo operation included. There is still no minimum spacing between two stamps (open decision of the owner).
+  Type-1 solo is best effort only: any valid key that sends a normal request in every window turns every type-1 solo of other keys into 403 (4 requests per minute are enough at 15 s windows, below `perMinutePerKey`); an aborted rider stays in the tree and still counts; a reliable solo needs type 2. A full window (`RELAY_BATCH_MAX`) answers the 403 at once, and the refused solo still takes one place in that window (matters only for a small max).
 - **Credentials of paid services (optional; `auth` in `services.json`, none for the four free ones):** `kind` none, basic,
   bearer or header (header name strict, no forbidden or hop-by-hop name), `source` relay, client or either; credentials
   only for https addresses (reader, relay start and `relay/upstream.ts` each refuse http). The signed body may carry

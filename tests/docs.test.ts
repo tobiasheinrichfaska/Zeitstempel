@@ -431,6 +431,16 @@ describe('key types, solo stamps and the key file read again are written down wh
     expect(source).toContain('function splitWindow');
     expect(source).not.toContain('function laneBusy');
   });
+  it('type 1 solo is best effort (a rider in every window blocks it), a full window answers the 403 at once', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('**Nur nach bestem Bemühen:**');
+    expect(doc).toContain('macht jedes Solo der Art 1 anderer Schlüssel zu `403`');
+    expect(doc).toContain('Ein verlässliches Solo gibt es nur mit der Schlüsselart 2.');
+    expect(doc).toContain('das `403` kommt sofort, nicht erst nach der Sammelzeit');
+    expect(doc).not.toContain('nie sofort');
+    expect(flat(limitsDoc)).toContain('Das gilt nur nach bestem Bemühen');
+    expect(flat(limitsDoc)).toContain('Ein verlässliches Solo braucht die Schlüsselart 2.');
+  });
   it('relay.md: one relay instance per key file, and the proxy limit per address stays far below the key budget', () => {
     const doc = flat(relayDoc);
     expect(doc).toContain('**Genau eine Relay-Instanz je Schlüsseldatei.**');

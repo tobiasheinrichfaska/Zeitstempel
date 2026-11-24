@@ -32,6 +32,9 @@ const KEYS: RelayKey[] = [
   asRelayKey(KEY_B, true),
   asRelayKey(KEY_F, false),
 ];
+const KEY_C = makeTestKey('app-c'); // type 2
+const KEY_D = makeTestKey('app-d'); // type 2
+const KEY_G = makeTestKey('app-g'); // type 1
 
 const genTimeText = (ms: number) =>
   new Date(ms)
@@ -282,6 +285,34 @@ describe('key type 1 asks for solo: alone in the window it is stamped directly a
     const t = await h.timed(x, { key: KEY_A, body: solo(x) });
     expect(t.res.status).toBe(403); // not 429: it joined the open window
     expect((await n).status).toBe(200);
+  });
+
+  it('the queue limit of solo stamps is for type 2 only: a full queue does not turn type 1 solo requests away with 503 busy', async () => {
+    const max = RELAY_LIMITS.soloQueueMax;
+    h = await start({
+      batch: { windowMs: 100, max: 100 },
+      minIntervalMs: 200,
+      budgetWindowMs: 200,
+      maxWaitMs: 8000,
+      keys: [...KEYS, asRelayKey(KEY_C, true), asRelayKey(KEY_D, true), asRelayKey(KEY_G, false)],
+    });
+    const type2 = [KEY_B, KEY_C, KEY_D];
+    // one type 2 stamp takes the slot, `max` wait in the queue of the service: the queue is full
+    const queued = Array.from({ length: max + 1 }, (_, i) => {
+      const x = sha256(`full${i}`);
+      return h.stamp(x, { key: type2[i % type2.length]!, body: solo(x) });
+    });
+    await sleep(60);
+    // more type 1 solo requests than the queue holds (`max` + 2, from two keys, each within its own solo limit)
+    const type1 = Array.from({ length: max + 2 }, (_, i) => {
+      const x = sha256(`t1-${i}`);
+      return h.stamp(x, { key: i % 2 === 0 ? KEY_A : KEY_G, body: solo(x) });
+    });
+    const statuses = (await Promise.all(type1)).map((r) => r.status);
+    expect(statuses).not.toContain(503);
+    expect(statuses.every((st) => st === 200 || st === 403)).toBe(true);
+    expect(h.stats().refused['busy']).toBeUndefined();
+    expect((await Promise.all(queued)).map((r) => r.status)).toEqual(Array(max + 1).fill(200));
   });
 
   it('type 2 is unchanged: at once, a direct stamp, also while a window is open', async () => {

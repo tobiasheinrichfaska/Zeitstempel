@@ -381,7 +381,19 @@ describe('relay/main.ts as a process', () => {
 
   it('listenErrorMessage names the cause in German, by code only', () => {
     expect(listenErrorMessage('EADDRINUSE', 8080, '127.0.0.1')).toMatch(/^Port 8080 .*EADDRINUSE/);
-    expect(listenErrorMessage('EACCES', 80, '127.0.0.1')).toMatch(/Port 80 .*EACCES/);
+    expect(listenErrorMessage('EACCES', 80, '127.0.0.1')).toBe(
+      'Keine Berechtigung für Port 80 (EACCES); Ports unter 1024 brauchen besondere Rechte',
+    );
+    expect(listenErrorMessage('EADDRINUSE', 8080, '127.0.0.1')).toBe(
+      'Port 8080 ist schon belegt (EADDRINUSE); ein anderes Programm oder eine zweite Relay-Instanz nutzt ihn',
+    );
+    expect(listenErrorMessage('EADDRNOTAVAIL', 8080, '10.9.8.7')).toBe(
+      'Die Adresse 10.9.8.7 ist auf diesem Rechner nicht vorhanden (EADDRNOTAVAIL, RELAY_HOST prüfen)',
+    );
+    expect(listenErrorMessage('EADDRNOTAVAIL', 8080, undefined)).toContain('(alle)');
+    expect(listenErrorMessage('EMFILE', 8080, undefined)).toBe(
+      'Der Server konnte nicht auf Port 8080 lauschen (EMFILE)',
+    );
     expect(listenErrorMessage('EADDRNOTAVAIL', 8080, '10.9.8.7')).toContain('10.9.8.7');
     expect(listenErrorMessage('EMFILE', 8080, undefined)).toContain('EMFILE');
     expect(listenErrorMessage(undefined, 8080, undefined)).toContain('unbekannt');

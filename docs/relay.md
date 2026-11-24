@@ -650,11 +650,19 @@ ein PDF-Dokumentzeitstempel, `docs/recherche.md` §5). Die App prüft sie mit `v
    Solo-Limit je Schlüssel (`soloPerMinutePerKey`) werden bei der Annahme verbraucht, auch bei Art 1. **Ein `403` nach
    dem Warten hat sie verbraucht** (nichts wird zurückgegeben). Das Dienstbudget braucht nur die Anfrage, die ein Fenster
    öffnet (wie jede normale).
-4. **Latenz und Fristen:** ein Solo der Art 1 antwortet erst nach der Sammelzeit (nie sofort, auch nicht bei leerem
-   Fenster). Frist der App und Lese-Timeout des Proxys wie im Sammelbetrieb: mindestens **Fenster + 17 s** (mit Warten auf
+4. **Latenz und Fristen:** ein Solo der Art 1 antwortet erst nach der Sammelzeit (auch bei leerem Fenster; einzige
+   Ausnahme ist ein **volles** Fenster, siehe unten). Frist der App und Lese-Timeout des Proxys wie im Sammelbetrieb: mindestens **Fenster + 17 s** (mit Warten auf
    einen Platz zusätzlich `RELAY_MAX_WAIT_MS`). Nur Art 2 kommt mit Wartegrenze + 17 s aus.
 5. **Nebenwirkung:** die Antwortart (`200` oder `403`) verrät einem Schlüssel der Art 1 grob, ob in diesem Fenster ein
    anderer Hash wartete.
+   **Nur nach bestem Bemühen:** ein beliebiger gültiger Schlüssel, der in jedem Fenster eine normale Anfrage mitschickt,
+   macht jedes Solo der Art 1 anderer Schlüssel zu `403` (nachgestellt: drei Fenster hintereinander; bei Fenstern von 15 s
+   genügen 4 Anfragen je Minute, weit unter `perMinutePerKey`). Ein Mitfahrer, der abbricht, bleibt im Baum und zählt
+   weiter. Ein verlässliches Solo gibt es nur mit der Schlüsselart 2.
+   **Volles Fenster:** erreicht das Fenster `RELAY_BATCH_MAX` Einträge, schließt es sofort und das `403` kommt sofort, nicht
+   erst nach der Sammelzeit. Das Solo zählt dabei als Platz im Fenster, obwohl es nicht in den Baum kommt: bei kleinem
+   `RELAY_BATCH_MAX` verdrängt es einen Mitfahrer (er wartet auf den nächsten Platz). Mit dem Standard 128 und
+   `soloPerMinutePerKey` 4 ist das praktisch ohne Bedeutung.
 6. Zusätzlich gilt für jedes Solo (Art 1 und 2) die **eigene niedrige Grenze je Schlüssel** `soloPerMinutePerKey` (4 je
    Minute, nur im Arbeitsspeicher): die fünfte Anfrage in der Minute ist `429` mit `Retry-After`. Diese Zahl steht **nicht
    im Log** (keine Zahlen je Schlüssel im Betreiberlog); die Zähler unten sind Summen.
