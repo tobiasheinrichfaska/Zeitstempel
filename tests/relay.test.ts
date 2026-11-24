@@ -931,24 +931,81 @@ describe('relay: start configuration', () => {
     expect(server.headersTimeout).toBe(RELAY_LIMITS.requestTimeoutMs);
     expect(RELAY_LIMITS.requestTimeoutMs).toBe(5_000);
   });
-  it('keeps idle connections open for 65 s (longer than a proxy idle timeout of 60 s), but not the other limits looser', () => {
-    const { server } = createRelayServer({
-      services: SERVICES,
-      origins: [ORIGIN],
-      allowPlainHttp: false,
-      upstream: networkUpstream,
-      random: () => FREETSA_NONCE,
-      now: () => NOW,
-      keys: 'off',
-    });
-    expect(server.keepAliveTimeout).toBe(RELAY_LIMITS.keepAliveTimeoutMs);
-    expect(RELAY_LIMITS.keepAliveTimeoutMs).toBe(65_000);
-    expect(server.keepAliveTimeout).toBeGreaterThan(60_000);
-    // the deadline of a request and the number of connections stay as they were
-    expect(server.requestTimeout).toBe(5_000);
-    expect(server.headersTimeout).toBe(5_000);
-    expect(server.maxConnections).toBe(256);
+  /** A server with the shipped limits and the given binding / keep-alive setting. */
+  function serverFor(limits: Parameters<typeof createRelayServer>[1]) {
+    return createRelayServer(
+      {
+        services: SERVICES,
+        origins: [ORIGIN],
+        allowPlainHttp: false,
+        upstream: networkUpstream,
+        random: () => FREETSA_NONCE,
+        now: () => NOW,
+        keys: 'off',
+      },
+      limits,
+    ).server;
+  }
+  it('keeps idle connections open for 65 s on a loopback binding (a proxy on the same machine), the other limits unchanged', () => {
+    for (const host of ['127.0.0.1', '::1', 'localhost']) {
+      const server = serverFor({ host });
+      expect(server.keepAliveTimeout, host).toBe(RELAY_LIMITS.keepAliveProxyMs);
+      expect(server.keepAliveTimeout).toBeGreaterThan(60_000);
+      expect(server.requestTimeout).toBe(5_000);
+      expect(server.headersTimeout).toBe(5_000);
+      expect(server.maxConnections).toBe(256);
+    }
+    expect(RELAY_LIMITS.keepAliveProxyMs).toBe(65_000);
   });
+  it('keeps idle connections open for 5 s on any other binding, and when no binding is named', () => {
+    for (const host of ['0.0.0.0', '::', '10.0.0.5', 'example.org', undefined]) {
+      const server = serverFor(host === undefined ? {} : { host });
+      expect(server.keepAliveTimeout, String(host)).toBe(RELAY_LIMITS.keepAliveDirectMs);
+    }
+    expect(RELAY_LIMITS.keepAliveDirectMs).toBe(RELAY_LIMITS.requestTimeoutMs);
+    expect(RELAY_LIMITS.keepAliveDirectMs).toBe(5_000);
+  });
+  it('RELAY_KEEPALIVE_MS replaces the keep-alive of both bindings', () => {
+    expect(serverFor({ host: '127.0.0.1', keepAliveMs: 2_000 }).keepAliveTimeout).toBe(2_000);
+    expect(serverFor({ host: '0.0.0.0', keepAliveMs: 90_000 }).keepAliveTimeout).toBe(90_000);
+    expect(serverFor({ keepAliveMs: 3_000 }).keepAliveTimeout).toBe(3_000);
+  });
+  it('one client that fills all 256 places with idle connections does not hold them: free after at most 8 s on a non-loopback binding, a legitimate client is served', async () => {
+    const server = serverFor({ host: '0.0.0.0' });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const count = () => new Promise<number>((r) => server.getConnections((_e, n) => r(n)));
+    const socks: net.Socket[] = [];
+    let answered = 0;
+    try {
+      for (let i = 0; i < 256; i += 1) {
+        const s = net.connect(port, '127.0.0.1');
+        s.on('data', (d) => {
+          if (String(d).startsWith('HTTP/1.1')) answered += 1;
+        });
+        s.on('error', () => undefined);
+        s.write('GET /health HTTP/1.1\r\nHost: x\r\n\r\n');
+        socks.push(s);
+      }
+      for (let i = 0; i < 50 && (answered < 256 || (await count()) < 256); i += 1) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(answered).toBe(256);
+      expect(await count()).toBe(256); // all places held, every connection idle after its answer
+      const start = Date.now();
+      let n = 256;
+      while (n > 0 && Date.now() - start < 8_000) {
+        await new Promise((r) => setTimeout(r, 250));
+        n = await count();
+      }
+      expect(n).toBe(0);
+      const res = await fetch(`http://127.0.0.1:${port}/health`);
+      expect(res.status).toBe(200);
+    } finally {
+      for (const s of socks) s.destroy();
+      await new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
+    }
+  }, 20_000);
   it('slowloris on a kept-alive connection: the long keep-alive does not lengthen the request deadline', async () => {
     const r = await startShort({ requestTimeoutMs: 300 });
     try {

@@ -47,10 +47,21 @@ export const RELAY_LIMITS = {
   /** Open connections at the same time; further ones are refused by the server. */
   maxConnections: 256,
   /**
-   * How long an idle connection stays open between two requests. Longer than the idle timeout of usual reverse
-   * proxies (60 s is common), so the proxy, not the relay, closes a pooled connection (else a request can hit a
-   * connection that is just being closed). An idle connection holds one of the `maxConnections` places for this
-   * long; `requestTimeoutMs` still applies to every request on it (docs/relay.md).
+   * Idle time of a connection between two requests when the relay listens on a loopback address only
+   * (127.0.0.1, ::1, localhost): then only a reverse proxy on the same machine can connect, and it pools
+   * connections. Longer than the idle timeout of usual proxies (60 s is common), so the proxy, not the relay,
+   * closes a pooled connection (else a request can hit a connection that is just being closed).
    */
-  keepAliveTimeoutMs: 65_000,
+  keepAliveProxyMs: 65_000,
+  /**
+   * Idle time between two requests for any other binding (RELAY_HOST names another address): clients may
+   * connect directly, and one client could hold all `maxConnections` places with idle connections for as long
+   * as this lasts. So it is as short as the deadline of a request (`requestTimeoutMs`). A proxy on another
+   * machine must then keep its idle timeout below this value or set RELAY_KEEPALIVE_MS (docs/relay.md).
+   */
+  keepAliveDirectMs: 5_000,
+  /** RELAY_KEEPALIVE_MS: smallest accepted value. */
+  keepAliveMinMs: 1_000,
+  /** RELAY_KEEPALIVE_MS: largest accepted value. */
+  keepAliveMaxMs: 120_000,
 } as const;

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { parsePemCertificates, readServices } from '../src/index.ts';
 import { loadServices } from '../relay/load.ts';
-import { readSettings } from '../relay/main.ts';
+import { readSettings, serverLimits } from '../relay/main.ts';
 
 const file = JSON.parse(readFileSync(new URL('../services.json', import.meta.url), 'utf8')) as {
   services: Record<string, unknown>[];
@@ -103,6 +103,45 @@ describe('relay settings', () => {
     );
     expect(readSettings({ RELAY_KEYS_FILE: '/x/k.json', RELAY_HOST: '  ' }).host).toBe('127.0.0.1');
     expect(readSettings({ RELAY_KEYS_FILE: '/x/k.json' }).keysFile).toBe('/x/k.json');
+  });
+  it('RELAY_KEEPALIVE_MS: unset or empty means the binding decides; a whole number from 1000 to 120000 is taken', () => {
+    expect(readSettings({}).keepAliveMs).toBeUndefined();
+    expect(readSettings({ RELAY_KEEPALIVE_MS: '' }).keepAliveMs).toBeUndefined();
+    expect(readSettings({ RELAY_KEEPALIVE_MS: '1000' }).keepAliveMs).toBe(1000);
+    expect(readSettings({ RELAY_KEEPALIVE_MS: '65000' }).keepAliveMs).toBe(65000);
+    expect(readSettings({ RELAY_KEEPALIVE_MS: '120000' }).keepAliveMs).toBe(120000);
+  });
+  it('RELAY_KEEPALIVE_MS: anything else is a German configuration error that names the variable', () => {
+    for (const v of [
+      '999',
+      '120001',
+      '0',
+      '-5000',
+      '1e4',
+      '5000.5',
+      '5000ms',
+      ' 5000',
+      '5000 ',
+      '+5000',
+      '0x1388',
+      'abc',
+      'NaN',
+      'Infinity',
+      '99999999999999',
+    ]) {
+      expect(() => readSettings({ RELAY_KEEPALIVE_MS: v }), v).toThrow(
+        /^RELAY_KEEPALIVE_MS: ungültig \(ganze Zahl von 1000 bis 120000 erwartet\)$/,
+      );
+    }
+  });
+  it('the settings reach the server: the host and an explicit keep-alive, nothing else', () => {
+    expect(serverLimits(readSettings({}))).toEqual({ host: '127.0.0.1' });
+    expect(
+      serverLimits(readSettings({ RELAY_HOST: '0.0.0.0', RELAY_KEEPALIVE_MS: '7000' })),
+    ).toEqual({
+      host: '0.0.0.0',
+      keepAliveMs: 7000,
+    });
   });
   it('refuses origins that are not exact, plain-http origins other than localhost, and bad ports', () => {
     for (const o of [

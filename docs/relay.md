@@ -21,15 +21,16 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 Exit-Code 1, die Meldung nennt die möglichen Kennungen aus `services.json`). Wer wählt, liest vorher die
 Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich.
 
-| Einstellung              | Bedeutung                                                                                       | Vorgabe     |
-| ------------------------ | ----------------------------------------------------------------------------------------------- | ----------- |
-| `PORT`                   | Port                                                                                            | 8080        |
-| `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`) | keine       |
-| `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                              | aus         |
-| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)    | keine       |
-| `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`         | keine       |
-| `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                  | aus         |
-| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt      | `127.0.0.1` |
+| Einstellung              | Bedeutung                                                                                                                                   | Vorgabe                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `PORT`                   | Port                                                                                                                                        | 8080                                         |
+| `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                             | keine                                        |
+| `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                                                                          | aus                                          |
+| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                | keine                                        |
+| `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`                                                     | keine                                        |
+| `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                                                              | aus                                          |
+| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt                                                  | `127.0.0.1`                                  |
+| `RELAY_KEEPALIVE_MS`     | Leerlauf einer Verbindung zwischen zwei Anfragen in ms, ganze Zahl 1000 bis 120000 (übersteuert beide Werte, siehe „Leerlauf-Verbindungen“) | nach Bindung: 65000 bei Loopback, sonst 5000 |
 
 **Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
 `RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
@@ -419,22 +420,25 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 
 ## Grenzen (`relay/limits.ts`)
 
-| Name                 | Wert  | Bedeutung                                                                                                                       |
-| -------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `bodyBytes`          | 512   | Größter Körper einer Anfrage                                                                                                    |
-| `upstreamBytes`      | 65536 | Größte Antwort eines Dienstes                                                                                                   |
-| `upstreamTimeoutMs`  | 10000 | Frist für den ganzen Aufruf beim Dienst                                                                                         |
-| `requestTimeoutMs`   | 5000  | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)                                                                    |
-| `perMinuteTotal`     | 60    | Anfragen je Minute über alle Dienste                                                                                            |
-| `windowMs`           | 60000 | Zeitfenster der Zähler                                                                                                          |
-| `perMinutePerKey`    | 20    | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                      |
-| `authWindowSeconds`  | 60    | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                  |
-| `authReplayEntries`  | 512   | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                              |
-| `authReplayKeyShare` | 0.5   | Anteil des Speichers, den eine Kennung höchstens hält                                                                           |
-| `genTimeSlackMs`     | 60000 | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`) |
-| `maxOrigins`         | 16    | Zahl der einstellbaren Herkünfte                                                                                                |
-| `maxConnections`     | 256   | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab                                                                   |
-| `keepAliveTimeoutMs` | 65000 | Leerlauf einer offenen Verbindung zwischen zwei Anfragen (länger als der Leerlauf-Timeout üblicher Proxys, 60 s)                |
+| Name                 | Wert   | Bedeutung                                                                                                                                                      |
+| -------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bodyBytes`          | 512    | Größter Körper einer Anfrage                                                                                                                                   |
+| `upstreamBytes`      | 65536  | Größte Antwort eines Dienstes                                                                                                                                  |
+| `upstreamTimeoutMs`  | 10000  | Frist für den ganzen Aufruf beim Dienst                                                                                                                        |
+| `requestTimeoutMs`   | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)                                                                                                   |
+| `perMinuteTotal`     | 60     | Anfragen je Minute über alle Dienste                                                                                                                           |
+| `windowMs`           | 60000  | Zeitfenster der Zähler                                                                                                                                         |
+| `perMinutePerKey`    | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                                                     |
+| `authWindowSeconds`  | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                                                 |
+| `authReplayEntries`  | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                                                             |
+| `authReplayKeyShare` | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                                                                                                          |
+| `genTimeSlackMs`     | 60000  | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`)                                |
+| `maxOrigins`         | 16     | Zahl der einstellbaren Herkünfte                                                                                                                               |
+| `maxConnections`     | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab                                                                                                  |
+| `keepAliveProxyMs`   | 65000  | Leerlauf einer Verbindung zwischen zwei Anfragen bei Loopback-Bindung (`127.0.0.1`, `::1`, `localhost`; länger als der Leerlauf-Timeout üblicher Proxys, 60 s) |
+| `keepAliveDirectMs`  | 5000   | Leerlauf bei jeder anderen Bindung (entspricht `requestTimeoutMs`)                                                                                             |
+| `keepAliveMinMs`     | 1000   | `RELAY_KEEPALIVE_MS`: kleinster Wert                                                                                                                           |
+| `keepAliveMaxMs`     | 120000 | `RELAY_KEEPALIVE_MS`: größter Wert                                                                                                                             |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4). `perMinuteTotal` und
 `minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht
@@ -454,16 +458,32 @@ genannten `Retry-After`-Wert, nicht für den Speicher selbst: seine Einträge bl
 ihrem **echten** Ablauf erhalten (der Wiederholungsschutz bleibt also bestehen); nur die Wartezeit, die das Relay
 nennt, wird begrenzt.
 
-**Leerlauf-Verbindungen (`keepAliveTimeoutMs`):** Der Leerlauf einer Verbindung zwischen zwei Anfragen beträgt 65 s
-(früher 5 s). Ein Reverse-Proxy hält Verbindungen zum Relay meist offen und schließt sie nach 60 s Leerlauf selbst; läge
-der Wert des Relays darunter, träfe eine Anfrage eine Verbindung, die das Relay gerade schließt (Fehler `502` am
-Proxy). **Wechselwirkung:** Eine Leerlauf-Verbindung belegt einen der `maxConnections` (256) Plätze bis zu 65 s statt
-5 s. Das ändert das Bild gegenüber einem bösartigen Client wenig (er konnte schon bisher 256 Verbindungen mit einer
-halben Anfrage jeweils 5 s halten und sofort neu öffnen, also dauerhaft), schwächt aber nichts ab: die Frist für eine
-**Anfrage** (`requestTimeoutMs`, 5 s, auch für die Kopfzeilen) gilt unverändert auch auf einer Verbindung, die schon
-benutzt wurde (ein Test belegt es: eine halbe zweite Anfrage endet mit `408`), und `maxConnections` ist unverändert 256.
-Mit einem Reverse-Proxy sieht das Relay nur dessen wenige Verbindungen; der Schutz vor vielen Verbindungen eines Clients
-ist Sache des Proxys (Verbindungs- und Ratenlimit je Adresse).
+**Leerlauf-Verbindungen (`keepAliveProxyMs`, `keepAliveDirectMs`, `RELAY_KEEPALIVE_MS`):** Der Leerlauf einer
+Verbindung zwischen zwei Anfragen hängt von der Bindung ab:
+
+- **Loopback-Bindung** (Vorgabe `127.0.0.1`; auch `::1` und `localhost`): 65 s (`keepAliveProxyMs`). Verbinden kann nur
+  ein Proxy auf demselben Rechner; er bündelt viele Clients auf wenige Verbindungen und schließt unbenutzte nach
+  seinem eigenen Leerlauf-Timeout (60 s ist üblich). Läge der Wert des Relays darunter, träfe eine Anfrage eine
+  Verbindung, die das Relay gerade schließt (Fehler `502` am Proxy). **Ein Proxy mit Leerlauf-Timeout T braucht ein
+  Relay-keepAlive größer als T**; bei einem größeren T als 60 s `RELAY_KEEPALIVE_MS` entsprechend setzen.
+- **Jede andere Bindung** (`RELAY_HOST` nennt eine andere Adresse, z. B. `0.0.0.0` im Container): 5 s
+  (`keepAliveDirectMs`, so lang wie die Frist für eine Anfrage). Mit 65 s könnte ein einzelner Client alle
+  `maxConnections` (256) Plätze mit Leerlauf-Verbindungen füllen und sie über eine Minute halten, ohne eine Anfrage
+  halb zu schicken; mit 5 s sind sie nach höchstens etwa 8 s frei (ein Test belegt es: 256 Verbindungen mit je einer
+  Anfrage, danach wird ein weiterer Client bedient). Bei dieser Bindung ist der Proxy (oder die Infrastruktur davor)
+  selbst für **Verbindungsgrenzen je Adresse** zuständig; das Relay kennt keine Adressen. Steht der Proxy auf einem
+  anderen Rechner und hält Verbindungen länger als 5 s offen, trifft er gelegentlich eine schon geschlossene
+  Verbindung (`502`): dann `RELAY_KEEPALIVE_MS` setzen (größer als sein Leerlauf-Timeout) und dafür sorgen, dass nur der
+  Proxy das Relay erreicht (Netzwerkregel).
+- **`RELAY_KEEPALIVE_MS`** (ganze Zahl von 1000 bis 120000, streng gelesen: ungültig bricht den Start mit einer Zeile
+  `config-error` ab) übersteuert beide Werte. Wer ihn bei einer Nicht-Loopback-Bindung hoch setzt, übernimmt das
+  Risiko oben bewusst.
+
+Die Frist für eine **Anfrage** (`requestTimeoutMs`, 5 s, auch für die Kopfzeilen) gilt unverändert auch auf einer
+Verbindung, die schon benutzt wurde (ein Test belegt es: eine halbe zweite Anfrage endet mit `408`), und
+`maxConnections` ist unverändert 256. Mit einem Reverse-Proxy auf demselben Rechner sieht das Relay nur dessen wenige
+Verbindungen; der Schutz vor vielen Verbindungen eines Clients ist Sache des Proxys (Verbindungs- und Ratenlimit je
+Adresse).
 
 **Verbindungen und Betrieb:** Das Relay kennt keine Adressen und führt keinen Zähler je Adresse (es protokolliert
 auch keine). Ein einzelner Client kann daher bis zu 256 Verbindungen (`maxConnections`) für etwa 5 bis 6 s belegen

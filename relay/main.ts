@@ -10,6 +10,8 @@
 //   RELAY_HOST               address to listen on (default: 127.0.0.1, behind a reverse proxy on the same
 //                            machine; a container or another machine needs RELAY_HOST=0.0.0.0 on purpose;
 //                            with RELAY_AUTH=off only a loopback address is accepted)
+//   RELAY_KEEPALIVE_MS       idle time of a connection between two requests, 1000 to 120000 (default: 65 s
+//                            for a loopback binding, 5 s for any other; docs/relay.md)
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -19,9 +21,7 @@ import { loadKeys, type RelayKey } from './keys.ts';
 import type { RelayService } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { networkUpstream } from './upstream.ts';
-import { createRelayServer } from './server.ts';
-
-const LOOPBACK = ['127.0.0.1', '::1', 'localhost'];
+import { createRelayServer, LOOPBACK_HOSTS } from './server.ts';
 
 export function readSettings(env: NodeJS.ProcessEnv) {
   const origins = (env.RELAY_ORIGINS ?? '')
@@ -60,16 +60,29 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     throw new Error('RELAY_AUTH=off und RELAY_KEYS_FILE schließen sich aus');
   }
   const hostEnv = (env.RELAY_HOST ?? '').trim();
-  if (authOff && hostEnv !== '' && !LOOPBACK.includes(hostEnv)) {
+  if (authOff && hostEnv !== '' && !LOOPBACK_HOSTS.includes(hostEnv)) {
     throw new Error('RELAY_AUTH=off erlaubt nur eine Loopback-Adresse in RELAY_HOST');
   }
   // Loopback unless the operator names an address: with authentication too (a relay that is reachable from the
   // network must be made so on purpose, e.g. RELAY_HOST=0.0.0.0 in a container)
   const host: string | undefined = hostEnv || '127.0.0.1';
+  const keepAliveRaw = env.RELAY_KEEPALIVE_MS ?? '';
+  let keepAliveMs: number | undefined;
+  if (keepAliveRaw !== '') {
+    keepAliveMs = /^[0-9]{1,9}$/.test(keepAliveRaw) ? Number(keepAliveRaw) : NaN;
+    if (!(
+      keepAliveMs >= RELAY_LIMITS.keepAliveMinMs && keepAliveMs <= RELAY_LIMITS.keepAliveMaxMs
+    )) {
+      throw new Error(
+        `RELAY_KEEPALIVE_MS: ungültig (ganze Zahl von ${RELAY_LIMITS.keepAliveMinMs} bis ${RELAY_LIMITS.keepAliveMaxMs} erwartet)`,
+      );
+    }
+  }
   return {
     origins,
     port,
     host,
+    keepAliveMs,
     allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
     only,
     authOff,
@@ -178,6 +191,17 @@ export function listenOn(
   else server.listen(port, host, done);
 }
 
+/** What the server needs from the settings: the binding (it decides the keep-alive) and an explicit keep-alive. */
+export function serverLimits(settings: {
+  host: string | undefined;
+  keepAliveMs?: number | undefined;
+}) {
+  return {
+    ...(settings.host === undefined ? {} : { host: settings.host }),
+    ...(settings.keepAliveMs === undefined ? {} : { keepAliveMs: settings.keepAliveMs }),
+  };
+}
+
 function main(): void {
   let config: ReturnType<typeof readConfig>;
   try {
@@ -189,15 +213,18 @@ function main(): void {
   }
   const { settings, services, keys, warnings } = config;
   for (const message of warnings) console.error(JSON.stringify({ event: 'warning', message }));
-  const { server, relay } = createRelayServer({
-    services,
-    origins: settings.origins,
-    allowPlainHttp: settings.allowPlainHttp,
-    upstream: networkUpstream,
-    random: (n) => new Uint8Array(randomBytes(n)),
-    now: () => Date.now(),
-    keys,
-  });
+  const { server, relay } = createRelayServer(
+    {
+      services,
+      origins: settings.origins,
+      allowPlainHttp: settings.allowPlainHttp,
+      upstream: networkUpstream,
+      random: (n) => new Uint8Array(randomBytes(n)),
+      now: () => Date.now(),
+      keys,
+    },
+    serverLimits(settings),
+  );
   listenOn(server, settings.port, settings.host, () => {
     console.log(JSON.stringify(startEvent(settings.port, services, keys)));
   });

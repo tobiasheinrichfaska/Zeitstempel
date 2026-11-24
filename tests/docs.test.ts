@@ -193,7 +193,14 @@ describe('the audit fixes are written down where a reader looks (Befunde 1-12)',
     expect(doc).toContain('`/health` ruft keinen Dienst auf');
     expect(doc).toContain('`upstream-invalid` ist ein Alarmzeichen');
     expect(doc).toContain('Relay- und App-Stand müssen zusammenpassen');
-    expect(doc).toContain('keepAliveTimeoutMs');
+    for (const name of ['keepAliveProxyMs', 'keepAliveDirectMs', 'RELAY_KEEPALIVE_MS']) {
+      expect(doc, name).toContain(name);
+    }
+    expect(doc).toContain(
+      'Ein Proxy mit Leerlauf-Timeout T braucht ein Relay-keepAlive größer als T',
+    );
+    expect(doc).toContain('Verbindungsgrenzen je Adresse');
+    expect(relayDoc).toMatch(/\|\s*`RELAY_KEEPALIVE_MS`\s*\|/); // the settings table has a row for it
   });
   it('grenzen.md: freshness is not checked without minGenTime, the long-term statement, the leap second, ESSCertIDv2', () => {
     const doc = flat(limitsDoc);
