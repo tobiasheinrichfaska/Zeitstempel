@@ -44,7 +44,11 @@ const verified = await verifyTimestampToken(response.value.token, sha256, [ancho
 abgelaufenem oder gestohlenem Schlüssel könnte rückdatieren (`docs/grenzen.md`). Das Ergebnis nennt auch
 `signerNotAfter`: nach diesem Zeitpunkt oder bei Kompromittierung des Dienstschlüssels verfällt die Beweiskraft
 (rechtzeitig neu stempeln, mehrere Dienste; `docs/grenzen.md`, „Langzeitaussage“). Der Stempel ist **nicht qualifiziert**, es gibt **keine Sperrprüfung**, und die Anker bestimmt der
-Aufrufer (`docs/grenzen.md`). Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime` ist
+Aufrufer (`docs/grenzen.md`). **Die mitgelieferten Anker sind Wurzeln:** die Prüfung akzeptiert jedes
+Zeitstempel-Zertifikat, das unter dem übergebenen Anker steht, auch das einer anderen Zeitstempel-Stelle derselben
+Hierarchie. „Dienst X hat bestätigt“ ist also stärker als das Geprüfte. Wer enger vertrauen will, übergibt selbst eine
+Zwischen-CA oder das Zertifikat des Signierers als Anker (für einen Anker gilt die Ausnahme in `docs/grenzen.md`).
+Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime` ist
 im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `response.value.info` dagegen eine Zahl
 (Millisekunden seit 1970).
 
@@ -87,7 +91,8 @@ Dienstliste und Anker): dafür das Repository klonen. Einzelheiten und „Lokal 
 Betriebshinweise (Einzelheiten im Abschnitt „Betrieb hinter einem Reverse-Proxy“ von `docs/relay.md`): Das Relay und der Dienst
 sehen den **Hash**; bei ratbarem Inhalt einen gesalzenen Hash oder eine Merkle-Wurzel stempeln. Jeder Dienst erlaubt nur
 wenige Stempel je Minute für alle zusammen (mitgeliefert: 4 je Dienst), auch ein Fehlschlag kostet davon; `/health` prüft
-keinen Dienst; ein Anstieg von `upstream-invalid` in den Zählern ist ein Alarmzeichen. Das Relay lauscht ohne `RELAY_HOST`
+keinen Dienst; ein Anstieg von `upstream-invalid` in den Zählern ist ein Alarmzeichen. Die Dienste wählt der Betreiber ausdrücklich
+(`RELAY_SERVICES`, Pflicht: ohne Angabe startet das Relay nicht; Bedingungen in `docs/dienste.md`). Das Relay lauscht ohne `RELAY_HOST`
 nur auf `127.0.0.1` (ein Container braucht `RELAY_HOST=0.0.0.0`) und gehört hinter einen Reverse-Proxy.
 
 Die Kernfunktionen (`buildTimestampRequest`, `readTimestampResponse`, `verifyTimestampToken`, `readServices`,

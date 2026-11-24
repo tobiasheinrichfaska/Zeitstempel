@@ -110,7 +110,9 @@ Schnelltest (`npm run spike`).
   `genTime` als ISO-Text kann bis knapp unter 1 ms früher sein als im Token. Die Gültigkeit von Zertifikaten
   (`notBefore`, `notAfter`) wird dagegen **ohne Nachkommastellen** gelesen (RFC 5280 verbietet sie): ein Zertifikat mit
   Bruchteil in der Gültigkeit ist ungültig gelesen (`bad-time`): ein Anker macht die Eingabe ungültig, ein Zusatzzertifikat im Token wird übersprungen (s. „Bewusst streng“).
-- **Die Anker selbst:** Wem man vertraut, entscheidet der Aufrufer. Die mitgelieferten Anker stammen aus
+- **Die Anker selbst:** Wem man vertraut, entscheidet der Aufrufer. Die mitgelieferten Anker sind **Wurzeln**: Die
+  Prüfung akzeptiert jedes Zeitstempel-Zertifikat unter ihnen, auch das einer anderen Stelle derselben Hierarchie.
+  Eine engere Wahl (Zwischen-CA oder Signierer als Anker) trifft der Aufrufer selbst; kein Pinning im Paket. Die mitgelieferten Anker stammen aus
   einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke (`docs/dienste.md`) wurden am
   2026-11-23 mit öffentlichen Betreiberseiten und dem System-Trust-Store abgeglichen (Netzabgleich, keine
   Rückfrage bei den Betreibern, keine menschliche Prüfung).
@@ -241,7 +243,9 @@ folgt ehrlich:
 „Ein Dienst, dessen Zertifikatskette bei einem übergebenen Anker endet, hat bestätigt: diesen Hash gab es
 spätestens zur angegebenen Zeit.“ Mehr nicht. Genauer: **„Ein Zeitstempel-Zertifikat unter einem der Anker hat
 diese Aussage signiert“**; welcher Betreiber dahinter steht, sagt die Prüfung nicht (der Anker bestimmt nur die
-Wurzel, nicht den einzelnen Dienst). Und die Aussage über die **Zeit** gilt nur, wenn die Frische geprüft wurde
+Wurzel, nicht den einzelnen Dienst). Die mitgelieferten Anker sind Wurzeln: auch das Zeitstempel-Zertifikat einer anderen Stelle derselben Hierarchie
+besteht. „Dienst X bestätigt“ ist stärker als das Geprüfte. Wer enger vertrauen will, übergibt selbst eine
+Zwischen-CA oder den Signierer als Anker (die Anker-Ausnahme erlaubt das). Und die Aussage über die **Zeit** gilt nur, wenn die Frische geprüft wurde
 (`minGenTime`) und das Zertifikat nicht kompromittiert war (s. „Langzeitaussage“).
 
 - Die **Zeit stammt vom Dienst.** Die Bibliothek kennt keine eigene Zeitquelle; nur die Prüfung „nicht in der

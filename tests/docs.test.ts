@@ -222,6 +222,39 @@ describe('the audit fixes are written down where a reader looks (Befunde 1-12)',
   });
 });
 
+describe('owner decisions: roots as anchors, RELAY_SERVICES required, clock skew recipe', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  it('README, dienste.md and grenzen.md say the shipped anchors are roots and how to trust narrower', () => {
+    for (const doc of [flat(readme), flat(read('dienste.md')), flat(read('grenzen.md'))]) {
+      expect(doc).toContain('Wurzeln');
+      expect(doc).toContain('anderen');
+      expect(doc).toContain('Zwischen-CA');
+      expect(doc).toContain('Signierer');
+      expect(doc).toContain('stärker als das');
+    }
+  });
+  it('relay.md and README make RELAY_SERVICES required and name the config-error', () => {
+    const doc = flat(relayDoc);
+    expect(relayDoc).toMatch(/\| `RELAY_SERVICES`\s+\|[^|]*\*\*Pflicht\*\*[^|]*\|\s*keine\s+\|/);
+    expect(doc).toContain('nicht ohne `RELAY_SERVICES`');
+    expect(doc).toContain('`config-error`');
+    expect(doc).toContain('nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich');
+    expect(relayDoc).not.toContain('alle passenden');
+    expect(flat(readme)).toContain('`RELAY_SERVICES`, Pflicht');
+  });
+  it('relay.md exposes Date with Retry-After and gives the one-time clock fix recipe', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('Access-Control-Expose-Headers: Retry-After, Date');
+    expect(doc).toContain('Date.parse(date) - Date.now()');
+    expect(doc).toContain('nowMs = Date.now() + versatz');
+    expect(doc).toContain('genau einmal');
+    expect(doc).toContain('liegt es am Schlüssel oder an der Kennung, nicht an der Uhr');
+    expect(doc).toContain('mindestens 1 s warten');
+    expect(relayDoc).toContain('stampWithClockFix');
+  });
+});
+
 describe('key files stay out of the repository', () => {
   const PATTERNS = ['relay-keys*.json', '*.keys.json', '*keys*.json'];
   const NAMES = [

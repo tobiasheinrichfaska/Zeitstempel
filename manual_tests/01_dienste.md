@@ -46,17 +46,19 @@ nur für diesen Lauf). Nur mit `--relay <url>` (ein laufendes Relay, das signier
 
 **Schritte**
 
-1. `RELAY_AUTH=off RELAY_ORIGINS=http://localhost:5178 npm run relay` (Windows PowerShell:
-   `$env:RELAY_AUTH='off'; $env:RELAY_ORIGINS='http://localhost:5178'; npm run relay`). Das Relay lauscht nur auf
-   `127.0.0.1` und warnt beim Start auf stderr (`auth off, loopback only`).
+1. `RELAY_AUTH=off RELAY_SERVICES=freetsa,sectigo RELAY_ORIGINS=http://localhost:5178 npm run relay` (Windows
+   PowerShell: `$env:RELAY_AUTH='off'; $env:RELAY_SERVICES='freetsa,sectigo'; $env:RELAY_ORIGINS='http://localhost:5178';
+npm run relay`). Das Relay lauscht nur auf `127.0.0.1` und warnt beim Start auf stderr (`auth off, loopback only`).
+   Ohne `RELAY_SERVICES` bricht der Start mit einer `config-error`-Zeile ab, die die möglichen Kennungen nennt.
 2. Im Browser `http://localhost:8080/health` öffnen.
 3. Im Terminal einen unsignierten POST senden:
    `curl -i -X POST -H "Content-Type: application/json" -d "{\"hash\":\"abc\"}" http://127.0.0.1:8080/v1/stamp/freetsa`
 
 **Erwartet**
 
-- Schritt 2 zeigt `{"ok":true,"services":["freetsa","sectigo"]}`; `digicert` und `certum` fehlen, weil sie nur
-  über http antworten und das Relay sie ohne `RELAY_ALLOW_PLAIN_HTTP=1` nicht anbietet.
+- Schritt 2 zeigt `{"ok":true,"services":["freetsa","sectigo"]}`. `digicert` und `certum` antworten nur über http:
+  mit `RELAY_SERVICES=digicert` bricht der Start ohne `RELAY_ALLOW_PLAIN_HTTP=1` ab (`config-error`, die Kennung
+  wird genannt).
 - Schritt 3 antwortet `400` mit `{"error":"bad-hash"}`: Es ging nichts an den Dienst (ohne Anmeldung wird der Körper
   gleich geprüft).
 
@@ -75,7 +77,8 @@ nur für diesen Lauf). Nur mit `--relay <url>` (ein laufendes Relay, das signier
 
 2. Eine Schlüsseldatei **außerhalb des Repos** (oder mit einem Namen, den `.gitignore` abdeckt, z. B.
    `relay-keys.json`) anlegen: `{"version": 2, "keys": [<Zeile 2>]}`.
-3. `RELAY_KEYS_FILE=relay-keys.json RELAY_ORIGINS=http://localhost:5178 npm run relay` starten.
+3. `RELAY_KEYS_FILE=relay-keys.json RELAY_SERVICES=freetsa,sectigo RELAY_ORIGINS=http://localhost:5178 npm run relay`
+   starten.
 4. Im Browser `http://localhost:8080/health` öffnen.
 5. Unsignierten POST senden (wie oben, Adresse `http://localhost:8080/v1/stamp/freetsa`).
 

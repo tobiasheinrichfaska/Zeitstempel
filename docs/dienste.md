@@ -31,6 +31,13 @@ Deutschland aus, mit dem SHA-256 eines kurzen Testtexts. Jeder Dienst bekam je L
 Die Anker liegen als Dateien unter `anchors/`; **wer ihnen vertraut, entscheidet der Betreiber** (die
 Bibliothek bekommt sie als Parameter). Herkunft und Fingerabdruck (SHA-256):
 
+**Die Anker sind Wurzeln, keine einzelnen Dienste.** Die Prüfung akzeptiert jedes Zeitstempel-Zertifikat, dessen
+Kette bei dem übergebenen Anker endet, also auch das einer anderen Zeitstempel-Stelle derselben Hierarchie (etwa
+unter der Wurzel von Sectigo oder DigiCert). „Dienst X hat bestätigt“ ist deshalb stärker als das, was geprüft wird:
+geprüft wird „ein Zeitstempel-Zertifikat unter diesem Anker“. Wer enger vertrauen will, übergibt statt der Wurzel
+selbst eine Zwischen-CA oder das Zertifikat des Signierers als Anker (die Anker-Ausnahme erlaubt das, siehe
+`docs/grenzen.md`); die mitgelieferten Dateien tun das nicht.
+
 | Datei                             | Herkunft                                                                    | Fingerabdruck                                                                                   | gültig bis |
 | --------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- |
 | `freetsa-root.pem`                | `https://freetsa.org/files/cacert.pem`                                      | A6:37:9E:7C:EC:C0:5F:AA:3C:BF:07:60:13:D7:45:E3:27:BB:BA:A3:8C:0B:9A:F2:24:69:D4:70:1D:18:AA:BC | 2041-03-07 |

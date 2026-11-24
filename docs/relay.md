@@ -21,15 +21,15 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 Exit-Code 1, die Meldung nennt die möglichen Kennungen aus `services.json`). Wer wählt, liest vorher die
 Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich.
 
-| Einstellung              | Bedeutung                                                                                       | Vorgabe        |
-| ------------------------ | ----------------------------------------------------------------------------------------------- | -------------- |
-| `PORT`                   | Port                                                                                            | 8080           |
-| `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`) | keine          |
-| `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                              | aus            |
-| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)    | keine          |
-| `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`         | keine          |
-| `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                  | aus            |
-| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt      | `127.0.0.1`    |
+| Einstellung              | Bedeutung                                                                                       | Vorgabe     |
+| ------------------------ | ----------------------------------------------------------------------------------------------- | ----------- |
+| `PORT`                   | Port                                                                                            | 8080        |
+| `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`) | keine       |
+| `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                              | aus         |
+| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)    | keine       |
+| `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`         | keine       |
+| `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                  | aus         |
+| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt      | `127.0.0.1` |
 
 **Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
 `RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
@@ -297,19 +297,38 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    ```ts
    import { signRelayRequest } from 'zeitstempel';
 
-   type Send = (header: string) => Promise<Response>;
-
    /** Sends once; after a 401 corrects the clock by the relay's `Date` and signs and sends exactly once more. */
-   export async function sendWithClockFix(
-     sign: (nowMs: number) => Promise<string>, // z. B. `signRelayRequest(…)`, das `.value` (siehe oben)
-     send: Send,
-   ): Promise<{ res: Response; offsetMs: number }> {
-     const first = await send(await sign(Date.now()));
-     const date = first.headers.get('Date');
-     const relayMs = date === null ? Number.NaN : Date.parse(date);
-     if (first.status !== 401 || Number.isNaN(relayMs)) return { res: first, offsetMs: 0 };
-     const offsetMs = relayMs - Date.now();
-     return { res: await send(await sign(Date.now() + offsetMs)), offsetMs }; // dann: now = new Date(Date.now() + offsetMs)
+   export async function stampWithClockFix(
+     relay: string,
+     id: string,
+     privateKey: Uint8Array,
+     keyId: string,
+     hash: string, // base64url
+   ): Promise<{ res: Response; offsetMs: number; sentMs: number }> {
+     const path = '/v1/stamp/' + id;
+     const body = new TextEncoder().encode(JSON.stringify({ hash }));
+     const attempt = async (offsetMs: number) => {
+       const sentMs = Date.now() + offsetMs; // die Uhr des Relays, soweit bekannt
+       const signed = await signRelayRequest({
+         privateKey,
+         keyId,
+         method: 'POST',
+         path,
+         body,
+         nowMs: sentMs,
+       });
+       if (!signed.ok) throw new Error(signed.reason);
+       const res = await fetch(relay + path, {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json', 'X-Zeitstempel-Auth': signed.value },
+         body,
+       });
+       return { res, offsetMs, sentMs };
+     };
+     const first = await attempt(0);
+     const relayMs = Date.parse(first.res.headers.get('Date') ?? '');
+     if (first.res.status !== 401 || Number.isNaN(relayMs)) return first;
+     return attempt(relayMs - Date.now()); // genau einmal; danach `now: new Date(Date.now() + offsetMs)`, `minGenTime: new Date(sentMs - 60_000)`
    }
    ```
 
@@ -322,6 +341,7 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    angenommen) deshalb **mindestens 1 s warten**, bevor man erneut signiert und sendet. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder
    fragen. Bei `502`/`504`/Netzwerkfehler: später
    noch einmal versuchen oder einen anderen Dienst nehmen; ein Fehlschlag ist kein Beweis für etwas.
+
 4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes, Hash und dem Ergebnis der Prüfung
    (`signerNotAfter`!) aufbewahren; die **Rechnung** (Hash, Signatur, Kette zur `genTime`) lässt sich später mit denselben
    Mitteln ohne das Relay wiederholen, die **Aussage** wird aber schwächer: nach `signerNotAfter` des
@@ -360,7 +380,7 @@ mitgelieferte `services.json` unverändert bleibt):
 2. In der Kopie von `services.json` die Adresse eines Dienstes auf den Stub setzen (`http://127.0.0.1:<port>/`)
    und unter `anchors` die PEM-Datei der eigenen Wurzel eintragen; diese Datei liegt in `anchors/`.
 3. Das Relay mit `RELAY_ALLOW_PLAIN_HTTP=1` starten (der Stub spricht http), mit `RELAY_AUTH=off` (nur Loopback)
-   oder mit einer Schlüsseldatei wie oben; dazu keine neuen Einstellungen: es sind dieselben wie im Betrieb.
+   oder mit einer Schlüsseldatei wie oben und mit `RELAY_SERVICES` (Pflicht, auch hier); dazu keine neuen Einstellungen: es sind dieselben wie im Betrieb.
 
 Der Test-Harness `tests/relay.test.ts` ist ein Beispiel für den Aufbau im selben Prozess: er ersetzt den Dienst
 durch eine Funktion (`upstream`) und legt die Nonce fest (`random`), damit die aufgezeichnete Antwort passt; für
