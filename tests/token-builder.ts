@@ -37,6 +37,8 @@ export interface Opts {
   nonceRaw?: boolean;
   serialRaw?: Uint8Array; // TSA cert serial INTEGER content
   signerSerialRaw?: Uint8Array;
+  /** Signs the attributes with another hash and names it in the SignerInfo's signature OID (digestAlgorithm stays SHA-256). */
+  signatureAlg?: { oid: string; hash: 'sha384' | 'sha512' | 'sha256' };
   sigMangle?: (derSig: Uint8Array) => Uint8Array;
   crl?: Uint8Array; // content for [1]
   hash?: Uint8Array;
@@ -267,7 +269,7 @@ export function build(o: Opts = {}) {
     seq(oidT('1.2.840.113549.1.9.16.2.47'), set(seq(seq(seq(octet(sha256(tsaCert))))))),
   ];
   const attrsSet = set(...attrs);
-  let sig: Uint8Array = u(sign('sha256', attrsSet, tsa.privateKey));
+  let sig: Uint8Array = u(sign(o.signatureAlg?.hash ?? 'sha256', attrsSet, tsa.privateKey));
   if (o.sigMangle) {
     sig = o.sigMangle(sig);
   }
@@ -281,7 +283,7 @@ export function build(o: Opts = {}) {
     ),
     seq(oidT('2.16.840.1.101.3.4.2.1')),
     attrCtx,
-    ecdsa256,
+    o.signatureAlg ? seq(oidT(o.signatureAlg.oid)) : ecdsa256,
     octet(sig),
   );
   const sd = seq(

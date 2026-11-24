@@ -187,6 +187,16 @@ describe.skipIf(!canJudgeAtTime)('agreement with openssl ts -verify', () => {
       { tsaIssuerName: { tag: 0x13, text: 'cb' }, sidIssuerName: { tag: 0x13, text: 'cb' } },
       false,
     ],
+    [
+      'ecdsa-with-SHA384 named, digestAlgorithm SHA-256, signed with SHA-384 (hash of the OID differs)',
+      { signatureAlg: { oid: '1.2.840.10045.4.3.3', hash: 'sha384' } },
+      false,
+    ],
+    [
+      'a bare id-ecPublicKey signature OID takes the hash of the digestAlgorithm',
+      { signatureAlg: { oid: '1.2.840.10045.2.1', hash: 'sha256' } },
+      true,
+    ],
     ['a v1 root without extensions as anchor', { rootV1: true }, true],
     ['an anchor with cA=false', { rootNotCa: true }, false],
     [

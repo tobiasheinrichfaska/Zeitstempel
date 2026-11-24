@@ -11,9 +11,16 @@ Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 4. Der Hash des Inhalts stimmt mit dem signierten Attribut überein, der Inhaltstyp ist `TSTInfo`.
 5. Das Attribut zum Zeitstempel-Zertifikat (`signingCertificate` oder `signingCertificateV2`) passt zum
    verwendeten Zertifikat.
-6. Die Signatur (RSA PKCS#1 v1.5 oder ECDSA P-256/P-384/P-521, mit SHA-256/384/512) stimmt.
+6. Die Signatur (RSA PKCS#1 v1.5 oder ECDSA P-256/P-384/P-521, mit SHA-256/384/512) stimmt. Nennt die
+   Signatur-OID ihren Hash (z. B. `ecdsa-with-SHA384`, `sha256WithRSAEncryption`), muss er zum `digestAlgorithm`
+   des Unterzeichner-Eintrags passen, sonst `signature-invalid` (wie bei `openssl ts -verify`: `signature failure`).
+   Eine nackte OID (`rsaEncryption`, `id-ecPublicKey`) nimmt den Hash des `digestAlgorithm`.
 7. Das Zeitstempel-Zertifikat erlaubt Zeitstempel (erweiterte Schlüsselverwendung mit genau dem einen Zweck
-   `id-kp-timeStamping`, standardmäßig kritisch verlangt) und die Signatur-Verwendung.
+   `id-kp-timeStamping`, standardmäßig kritisch verlangt) und die Signatur-Verwendung. **Schlüsselverwendung
+   (`keyUsage`):** verlangt wird nur, dass `digitalSignature` oder `nonRepudiation` gesetzt ist, wenn die
+   Erweiterung vorhanden ist; **zusätzliche Bits** (z. B. `keyEncipherment`, `keyAgreement`, `keyCertSign`,
+   `cRLSign`) neben `digitalSignature` werden angenommen. `openssl ts -verify` lehnt solche Zertifikate ab. Ob das
+   verschärft werden soll, ist eine Entscheidung des Besitzers (derzeit nicht).
 8. Alle Zertifikate der Kette waren **zur bestätigten Zeit** gültig, kein Zertifikat der Kette (Anker ausgenommen) trägt eine
    kritische, unbekannte Erweiterung, die Aussteller sind
    Zertifizierungsstellen und erlauben das Ausstellen von Zertifikaten, und die Kette endet bei einem der
@@ -33,7 +40,7 @@ für Codesignatur oder nur für Server-Authentifizierung kann also keinen Zeitst
 
 - Punkt 9 (erweiterte Schlüsselverwendung einer Zwischen-CA, s. o.).
 - **Bruchteil in Zertifikatszeiten:** `notBefore` und `notAfter` mit Sekundenbruchteil gelten als ungültig gelesen
-  (`bad-time`, s. „Zeiten“), openssl liest sie.
+  (`bad-time`, s. „Zeiten“). Ob openssl sie liest, hängt von der Version ab; hier (OpenSSL 3.0.13) lehnen beide ab.
 - **Nullen am Ende des Sekundenbruchteils in `genTime`** (z. B. `20260101000000.50Z`, `…00.000Z`): RFC 3161 § 2.4.2
   verbietet sie (Sekundenbruchteil ohne Nullen am Ende); diese Bibliothek folgt dem, openssl ist hier lockerer.
   Ein Dienst, der so stempelt, wird abgelehnt.
@@ -47,6 +54,18 @@ Das gilt für das `issuer`-Feld eines Zertifikats gegen das `subject` des Ausste
 Unterzeichner-Eintrag (`sid`) gegen das Zeitstempel-Zertifikat. Eine lockerere Namensübereinstimmung macht die
 Grenzen nicht leichter erreichbar: Ein Zwilling, der sich nur in der Schreibweise unterscheidet, zählt wie ein
 namensgleicher gegen die 8 Kandidaten und die 64 Signaturprüfungen (Zwillinge ohne CA-Recht usw. kosten weiter nichts).
+
+**Lockerer als `openssl ts -verify`** (eine falsche Annahme gegenüber openssl, die Entscheidung der Bibliothek
+folgt dem RFC):
+
+- **Zusätzliche `keyUsage`-Bits** des Signierers (Punkt 7, s. o.).
+- **Gültigkeit inklusive:** Die Gültigkeit eines Zertifikats schließt `notBefore` und `notAfter` ein (RFC 5280
+  § 4.1.2.5). Ist die Stempelzeit genau `notAfter`, gilt das Zertifikat noch; `openssl` 3.0.13 lehnt in diesem
+  Fall ab.
+- **Nicht gelesene Felder:** `crls` im SignedData und der Inhalt der TSTInfo-Felder `[0]` (`tsa`) und `[1]`
+  (Erweiterungen) werden nur auf das Tag geprüft, nicht gelesen; Müll darin wird angenommen. Das hat keine
+  Auswirkung auf die Entscheidung (`crls` sind nicht signiert und werden nicht benutzt, die Felder werden nicht
+  ausgewertet), das Token ist dort aber verformbar.
 
 Gegengeprüft wird mit `openssl ts -verify` an den aufgezeichneten Antworten von vier Diensten und beim
 Schnelltest (`npm run spike`).

@@ -452,6 +452,13 @@ async function verifyChecked(
     );
     if (!signer) throw new ReaderError('signer-certificate-missing');
     await checkSigningCertificate(token, signer);
+    // A signature OID that names its hash (ecdsa-with-SHA384 ...) must agree with the digestAlgorithm of the
+    // SignerInfo (RFC 5652 § 5.3, openssl: "signature failure"); a bare OID takes the digestAlgorithm's hash.
+    // SHA-1 stays `unsupported-signature` (refused in verifyWithKey).
+    const namedHash = SIGNATURES[token.signer.signatureOid]?.hash;
+    if (namedHash && namedHash !== 'SHA-1' && namedHash !== digestHash) {
+      throw new ReaderError('signature-invalid');
+    }
     if (
       !(await verifyWithKey(
         signer,

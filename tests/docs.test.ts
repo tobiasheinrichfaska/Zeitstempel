@@ -76,6 +76,14 @@ describe('docs against the code', () => {
       expect(model, name).toMatch(new RegExp(`<td>${name}</td><td>${value}</td>`));
     }
   });
+  it('grenzen.md names where this library differs from openssl (E1-E4)', () => {
+    expect(limitsDoc).toContain('ecdsa-with-SHA384');
+    expect(limitsDoc).toContain('signature failure');
+    expect(limitsDoc).toContain('keyEncipherment');
+    expect(limitsDoc).toContain('Gültigkeit inklusive');
+    expect(limitsDoc).toContain('3.0.13');
+    expect(limitsDoc).toContain('`crls`');
+  });
   it('grenzen.md states every chain search limit with its value', () => {
     // one phrase per limit; a new limit in VERIFY_LIMITS does not compile until it has one
     const phrase: Record<keyof typeof VERIFY_LIMITS, string> = {

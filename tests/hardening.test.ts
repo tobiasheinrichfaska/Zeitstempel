@@ -27,6 +27,28 @@ describe('the token builder', () => {
   });
 });
 
+describe('E1: a named signature OID must agree with the digestAlgorithm of the SignerInfo', () => {
+  it('refuses ecdsa-with-SHA384 next to digestAlgorithm SHA-256 although the signature is a valid SHA-384 one', async () => {
+    expect(await reason({ signatureAlg: { oid: '1.2.840.10045.4.3.3', hash: 'sha384' } })).toBe(
+      'signature-invalid',
+    );
+    expect(await reason({ signatureAlg: { oid: '1.2.840.10045.4.3.4', hash: 'sha512' } })).toBe(
+      'signature-invalid',
+    );
+  });
+  it('accepts the matching named OID (ecdsa-with-SHA256) and a bare id-ecPublicKey', async () => {
+    expect(await reason({ signatureAlg: { oid: '1.2.840.10045.4.3.2', hash: 'sha256' } })).toBe(
+      'ok',
+    );
+    expect(await reason({ signatureAlg: { oid: '1.2.840.10045.2.1', hash: 'sha256' } })).toBe('ok');
+  });
+  it('a named OID of another hash with a SHA-256 signature is refused as well', async () => {
+    expect(await reason({ signatureAlg: { oid: '1.2.840.10045.4.3.3', hash: 'sha256' } })).toBe(
+      'signature-invalid',
+    );
+  });
+});
+
 describe('the accuracy of a token', () => {
   const accuracyMs = async (accuracy?: Opts['accuracy']) => {
     const t = build(accuracy ? { accuracy } : {});
