@@ -148,8 +148,15 @@ Preis, Bedingungen) und braucht meist eine Anmeldung (Benutzer und Passwort oder
 }
 ```
 
-Offen: Das Relay kann **keine Anmeldung** gegenüber dem Dienst. Sie müsste aus der Umgebung des Betreibers
-kommen (nie aus dem Repo) und ist ein eigener Schritt, wenn ein Vertrag besteht.
+**Anmeldung beim Dienst (neu, nicht gegen einen echten Dienst getestet):** Ein bezahlter Dienst darf ein Feld `auth`
+bekommen (`{"kind": "basic" | "bearer" | "header", "source": "relay" | "client" | "either"}`, bei `header` mit
+`"header": "<Name>"`; nur für `https`). Die Zugangsdaten liefert das Relay aus seiner Umgebung
+(`RELAY_UPSTREAM_AUTH_<ID>`, nie aus dem Repo) oder die App selbst im signierten Körper (`upstream`); Einzelheiten,
+Fehlercodes und Warnungen in `docs/relay.md`, „Zugangsdaten zu bezahlten Diensten“. **Nicht abgedeckt:** Dienste mit
+IP-Freigabe (z. B. SK) und Dienste mit Zertifikat (z. B. Disig, D-Trust); Privatschlüssel von Zertifikaten werden nicht
+übertragen. Verträge wie InfoCert Art. 7 und Certum untersagen die Weitergabe von Zugangsdaten an Dritte: für die eigene
+App ist das Relay kein Dritter, für fremde Apps schon (nicht rechtlich geprüft). Der Eintrag oben bekäme dann z. B.
+`"auth": {"kind": "basic", "source": "client"}`.
 
 ## Selbst nachmessen
 

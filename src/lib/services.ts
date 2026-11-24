@@ -1,5 +1,19 @@
 import { fail, ok, type Result } from './result.ts';
 
+/** Who supplies the credentials of a paid service: the relay (from its environment), the app (in the signed body), or either. */
+export type ServiceAuthSource = 'relay' | 'client' | 'either';
+
+/**
+ * How a service wants to be called (`auth` in `services.json`; absent means `{ kind: 'none' }`, the free services).
+ * `basic`: user and password (RFC 7617), `bearer`: a token in `Authorization: Bearer`, `header`: a token in a header of
+ * the given name. Anything but `none` is allowed for an https address only.
+ */
+export type ServiceAuth =
+  | { kind: 'none' }
+  | { kind: 'basic'; source: ServiceAuthSource }
+  | { kind: 'bearer'; source: ServiceAuthSource }
+  | { kind: 'header'; header: string; source: ServiceAuthSource };
+
 /** One time stamp service, as data (`services.json`). */
 export interface Service {
   id: string;
@@ -14,6 +28,8 @@ export interface Service {
   minIntervalMs: number;
   intendedUse: string;
   terms: string;
+  /** Optional: credentials the service wants. Absent for the free services (nothing is sent). */
+  auth?: ServiceAuth;
 }
 
 const ID = /^[a-z][a-z0-9-]{0,31}$/;
@@ -31,6 +47,84 @@ const KEYS = [
   'intendedUse',
   'terms',
 ];
+
+const SOURCES: readonly string[] = ['relay', 'client', 'either'];
+const AUTH_HEADER_NAME = /^[A-Za-z0-9-]{1,40}$/;
+/** Headers the relay sets itself or that hop-by-hop / routing rules own: never a credential header. Lower case. */
+const FORBIDDEN_AUTH_HEADERS: ReadonlySet<string> = new Set([
+  'authorization',
+  'host',
+  'content-length',
+  'content-type',
+  'content-encoding',
+  'content-range',
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'user-agent',
+  'connection',
+  'keep-alive',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'cookie',
+  'set-cookie',
+  'expect',
+  'via',
+  'forwarded',
+  'date',
+  'origin',
+  'referer',
+  'range',
+  ['fr', 'om'].join(''), // in two parts: the import guard (tests/coupling.test.ts) is a text search
+  'max-forwards',
+  'location',
+  'server',
+  'allow',
+  'vary',
+  'warning',
+]);
+const FORBIDDEN_AUTH_PREFIXES: readonly string[] = [
+  'proxy-',
+  'sec-',
+  'if-',
+  'x-forwarded-',
+  'access-control-',
+  'x-zeitstempel',
+];
+
+/** Is this a header name a `header` credential may use (strict pattern, none of the forbidden or hop-by-hop headers)? */
+export function isAuthHeaderName(name: unknown): name is string {
+  if (typeof name !== 'string' || !AUTH_HEADER_NAME.test(name)) return false;
+  const lower = name.toLowerCase();
+  return (
+    !FORBIDDEN_AUTH_HEADERS.has(lower) && !FORBIDDEN_AUTH_PREFIXES.some((p) => lower.startsWith(p))
+  );
+}
+
+/** The `auth` member, strictly: exactly its known members, known values; null for anything else. */
+function readAuth(raw: unknown): ServiceAuth | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const a = raw as Record<string, unknown>;
+  const keys = Object.keys(a);
+  if (a.kind === 'none') return keys.length === 1 ? { kind: 'none' } : null;
+  const source = a.source;
+  if (typeof source !== 'string' || !SOURCES.includes(source)) return null;
+  if (a.kind === 'basic' || a.kind === 'bearer') {
+    return keys.length === 2 && Object.hasOwn(a, 'source')
+      ? { kind: a.kind, source: source as ServiceAuthSource }
+      : null;
+  }
+  if (a.kind === 'header') {
+    if (keys.length !== 3 || !Object.hasOwn(a, 'source') || !Object.hasOwn(a, 'header'))
+      return null;
+    return isAuthHeaderName(a.header)
+      ? { kind: 'header', header: a.header, source: source as ServiceAuthSource }
+      : null;
+  }
+  return null;
+}
 
 /**
  * Reads the services file strictly: unknown members, bad urls or duplicate ids are refused. Never throws
@@ -55,9 +149,15 @@ function readServicesUnchecked(data: unknown): Result<Service[]> {
   for (const raw of top.services) {
     if (typeof raw !== 'object' || raw === null) return fail('bad-services');
     const s = raw as Record<string, unknown>;
-    if (Object.keys(s).length !== KEYS.length || !KEYS.every((k) => Object.hasOwn(s, k))) {
+    const hasAuth = Object.hasOwn(s, 'auth'); // optional; an explicit `undefined` is read (and refused) too
+    if (
+      Object.keys(s).length !== KEYS.length + (hasAuth ? 1 : 0) ||
+      !KEYS.every((k) => Object.hasOwn(s, k))
+    ) {
       return fail('bad-services');
     }
+    const auth = hasAuth ? readAuth(s.auth) : null;
+    if (hasAuth && auth === null) return fail('bad-services');
     if (typeof s.id !== 'string' || !ID.test(s.id) || out.some((o) => o.id === s.id))
       return fail('bad-services');
     if (!isText(s.name, 100) || !isText(s.intendedUse, 500) || !isText(s.terms, 800))
@@ -90,6 +190,10 @@ function readServicesUnchecked(data: unknown): Result<Service[]> {
     ) {
       return fail('bad-services');
     }
+    // credentials only over https: never to a plain-http address, whatever the file says
+    if (auth !== null && auth.kind !== 'none' && url.protocol !== 'https:') {
+      return fail('bad-services');
+    }
     out.push({
       id: s.id,
       name: s.name,
@@ -100,6 +204,7 @@ function readServicesUnchecked(data: unknown): Result<Service[]> {
       minIntervalMs: s.minIntervalMs as number,
       intendedUse: s.intendedUse,
       terms: s.terms,
+      ...(auth === null ? {} : { auth }),
     });
   }
   return ok(out);

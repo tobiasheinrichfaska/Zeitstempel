@@ -21,19 +21,20 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 Exit-Code 1, die Meldung nennt die möglichen Kennungen aus `services.json`). Wer wählt, liest vorher die
 Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich.
 
-| Einstellung              | Bedeutung                                                                                                                                                                      | Vorgabe                                      |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
-| `PORT`                   | Port                                                                                                                                                                           | 8080                                         |
-| `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                                                                | keine                                        |
-| `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                                                                                                             | aus                                          |
-| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                                                   | keine                                        |
-| `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`                                                                                        | keine                                        |
-| `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                                                                                                 | aus                                          |
-| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt                                                                                     | `127.0.0.1`                                  |
-| `RELAY_KEEPALIVE_MS`     | Leerlauf einer Verbindung zwischen zwei Anfragen in ms, ganze Zahl 1000 bis 120000 (übersteuert beide Werte, siehe „Leerlauf-Verbindungen“)                                    | nach Bindung: 65000 bei Loopback, sonst 5000 |
-| `RELAY_BATCH_MS`         | Sammelbetrieb: Fenster in ms, ganze Zahl 1000 bis 60000; leer oder `0` = aus (jede Anfrage bekommt einen eigenen Stempel); siehe „Sammelbetrieb“                               | aus                                          |
-| `RELAY_BATCH_MAX`        | Sammelbetrieb: höchstens so viele Anfragen in einem Fenster, ganze Zahl 2 bis 1024; ein volles Fenster schließt sofort                                                         | 128                                          |
-| `RELAY_MAX_WAIT_MS`      | Sammelbetrieb: längste Wartezeit einer Anfrage auf einen freien Platz beim Dienst in ms, ganze Zahl 1000 bis 60000; danach `503 busy`; siehe „Schlüsselarten und Solo-Stempel“ | 30000                                        |
+| Einstellung                | Bedeutung                                                                                                                                                                                                                                                                                               | Vorgabe                                      |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `PORT`                     | Port                                                                                                                                                                                                                                                                                                    | 8080                                         |
+| `RELAY_ORIGINS`            | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                                                                                                                                                                                         | keine                                        |
+| `RELAY_ALLOW_PLAIN_HTTP`   | `1` erlaubt Dienste, die nur über `http` antworten                                                                                                                                                                                                                                                      | aus                                          |
+| `RELAY_SERVICES`           | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                                                                                                                                                                            | keine                                        |
+| `RELAY_KEYS_FILE`          | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`                                                                                                                                                                                                                 | keine                                        |
+| `RELAY_AUTH`               | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                                                                                                                                                                                                                          | aus                                          |
+| `RELAY_HOST`               | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt                                                                                                                                                                                                              | `127.0.0.1`                                  |
+| `RELAY_KEEPALIVE_MS`       | Leerlauf einer Verbindung zwischen zwei Anfragen in ms, ganze Zahl 1000 bis 120000 (übersteuert beide Werte, siehe „Leerlauf-Verbindungen“)                                                                                                                                                             | nach Bindung: 65000 bei Loopback, sonst 5000 |
+| `RELAY_BATCH_MS`           | Sammelbetrieb: Fenster in ms, ganze Zahl 1000 bis 60000; leer oder `0` = aus (jede Anfrage bekommt einen eigenen Stempel); siehe „Sammelbetrieb“                                                                                                                                                        | aus                                          |
+| `RELAY_BATCH_MAX`          | Sammelbetrieb: höchstens so viele Anfragen in einem Fenster, ganze Zahl 2 bis 1024; ein volles Fenster schließt sofort                                                                                                                                                                                  | 128                                          |
+| `RELAY_UPSTREAM_AUTH_<ID>` | Zugangsdaten eines bezahlten Dienstes, die das Relay selbst hält (`<ID>`: Kennung in Großbuchstaben, `-` als `_`); `Benutzer:Passwort` bei `basic`, sonst das Token; **Pflicht** für einen gewählten Dienst mit Quelle `relay`, **freiwillig** bei `either`; siehe „Zugangsdaten zu bezahlten Diensten“ | keine                                        |
+| `RELAY_MAX_WAIT_MS`        | Sammelbetrieb: längste Wartezeit einer Anfrage auf einen freien Platz beim Dienst in ms, ganze Zahl 1000 bis 60000; danach `503 busy`; siehe „Schlüsselarten und Solo-Stempel“                                                                                                                          | 30000                                        |
 
 **Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
 `RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
@@ -51,23 +52,23 @@ ohne Anmeldung ist so nicht von außen erreichbar.
 
 ## Schnittstelle
 
-| Anfrage                                                                                                                                                                                                     | Antwort                                                                                                                            |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/stamp/<dienst>` mit `{"hash": "<base64url>"}` oder `{"hash": "<base64url>", "mode": "solo"}` (`application/json`) oder 32 Rohbytes (`application/octet-stream`) und dem Kopf `X-Zeitstempel-Auth` | 200 `{service, genTime, accuracyMs, serial, token}`; `token` ist das Token (DER) in base64url; im Sammelbetrieb zusätzlich `batch` |
-| `GET /v1/services` (ohne Anmeldung)                                                                                                                                                                         | Liste der angebotenen Dienste (Kennung, Name, `qualified`, Verwendungszweck)                                                       |
-| `GET /health` (ohne Anmeldung)                                                                                                                                                                              | `{ok: true, services: [...]}` (der Prozess läuft; **kein Dienst wird geprüft**, siehe „Betrieb“)                                   |
-| `OPTIONS …`                                                                                                                                                                                                 | Vorabfrage (CORS) für die konfigurierten Herkünfte                                                                                 |
+| Anfrage                                                                                                                                                                                                                                                                                                    | Antwort                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/stamp/<dienst>` mit `{"hash": "<base64url>"}` oder `{"hash": "<base64url>", "mode": "solo"}` (`application/json`; bei einem bezahlten Dienst dazu `"upstream": {…}`, siehe „Zugangsdaten zu bezahlten Diensten“) oder 32 Rohbytes (`application/octet-stream`) und dem Kopf `X-Zeitstempel-Auth` | 200 `{service, genTime, accuracyMs, serial, token}`; `token` ist das Token (DER) in base64url; im Sammelbetrieb zusätzlich `batch` |
+| `GET /v1/services` (ohne Anmeldung)                                                                                                                                                                                                                                                                        | Liste der angebotenen Dienste (Kennung, Name, `qualified`, Verwendungszweck; bei bezahlten Diensten `auth`)                        |
+| `GET /health` (ohne Anmeldung)                                                                                                                                                                                                                                                                             | `{ok: true, services: [...]}` (der Prozess läuft; **kein Dienst wird geprüft**, siehe „Betrieb“)                                   |
+| `OPTIONS …`                                                                                                                                                                                                                                                                                                | Vorabfrage (CORS) für die konfigurierten Herkünfte                                                                                 |
 
 ### Formate
 
 - **`hash`** ist der SHA-256 (32 Byte) als **base64url ohne Auffüllzeichen** (`=`), also 43 Zeichen. Der JSON-Körper
-  hat genau ein Feld, im Sammelbetrieb darf ein zweites Feld `mode` dazukommen (nur der Wert `"solo"`, siehe „Schlüsselarten und Solo-Stempel“; jeder andere Wert ist `400 bad-mode`); Rohbytes gehen nur mit `Content-Type: application/octet-stream` (genau 32 Byte).
+  hat genau ein Feld, im Sammelbetrieb darf ein zweites Feld `mode` dazukommen (nur der Wert `"solo"`, siehe „Schlüsselarten und Solo-Stempel“; jeder andere Wert ist `400 bad-mode`), bei einem bezahlten Dienst darf `upstream` dazukommen (siehe „Zugangsdaten zu bezahlten Diensten“; `400 bad-upstream`); Rohbytes gehen nur mit `Content-Type: application/octet-stream` (genau 32 Byte).
   Ein `charset`-Zusatz im `Content-Type` wird ignoriert. Mehr als 512 Byte Körper werden abgelehnt.
 - **200:** `service` (Kennung), `genTime` (ISO 8601, UTC, mit Millisekunden, z. B. `2026-11-23T13:05:56.000Z`;
   die Zeit des Dienstes, sekundengenau), `accuracyMs` (Zahl, kann Bruchteile haben, z. B. `0.5`, oder `null`), `serial` (Kleinbuchstaben-Hex),
   `token` (base64url ohne Auffüllzeichen, das Token als DER, so wie es `readToken`/`verifyTimestampToken` der
   Bibliothek erwarten).
-- **`GET /v1/services`:** `{"services": [{"id", "name", "qualified", "intendedUse"}]}`. Die Reihenfolge ist die der Datei
+- **`GET /v1/services`:** `{"services": [{"id", "name", "qualified", "intendedUse"}]}`; ein Dienst mit Zugangsdaten hat zusätzlich `auth` (`{"kind", "source"}`, bei `header` auch `"header"`: was die App senden muss, nie ein Wert, nie ob das Relay selbst Zugangsdaten hält). Die Reihenfolge ist die der Datei
   `services.json`; es gibt keine Vorgabe, die App wählt eine Kennung (eine Einstellung der App, nicht des Relays).
 - **`GET /health`:** `{"ok": true, "services": ["<id>", …]}`. Das heißt nur: der Prozess läuft und diese Dienste sind
   eingerichtet. **`/health` ruft keinen Dienst auf** und sagt nichts darüber, ob ein Dienst erreichbar ist oder gültige
@@ -356,25 +357,26 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
 
 Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 
-| Status | Code                                                                            | Bedeutung                                                                                                                                                           |
-| ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                                                                      |
-| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                                                                        |
-| 400    | `bad-request`                                                                   | Anfrageziel ist keine gültige Adresse (z. B. `//`, `//[`) oder nicht gleich dem kanonischen Pfad (`./`, `\`, Absolutform)                                           |
-| 400    | `bad-mode`                                                                      | `mode` im JSON-Körper hat einen anderen Wert als `"solo"` (nur nach bestandener Anmeldung)                                                                          |
-| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich                                           |
-| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                                                                    |
-| 403    | `solo-not-allowed`                                                              | Schlüsselart 1 verlangte `mode: "solo"`, während für den Dienst andere Anfragen warten (nur im Sammelbetrieb)                                                       |
-| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                                                                    |
-| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                                                          |
-| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit                                                 |
-| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                                                          |
-| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                                                                |
-| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                                                         |
-| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`)                                        |
-| 503    | `shutting-down`                                                                 | Nur im Sammelbetrieb: das Relay wird beendet; die Anfrage war nicht (mehr) in einem Fenster, die App versucht es später neu                                         |
-| 503    | `busy`                                                                          | Nur im Sammelbetrieb: kein freier Platz beim Dienst innerhalb von `RELAY_MAX_WAIT_MS`, oder die Solo-Warteschlange des Dienstes ist voll; `Retry-After` in Sekunden |
-| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                                                                 |
+| Status | Code                                                                            | Bedeutung                                                                                                                                                                                                                                                        |
+| ------ | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                                                                                                                                                                   |
+| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                                                                                                                                                                     |
+| 400    | `bad-request`                                                                   | Anfrageziel ist keine gültige Adresse (z. B. `//`, `//[`) oder nicht gleich dem kanonischen Pfad (`./`, `\`, Absolutform)                                                                                                                                        |
+| 400    | `bad-mode`                                                                      | `mode` im JSON-Körper hat einen anderen Wert als `"solo"` (nur nach bestandener Anmeldung)                                                                                                                                                                       |
+| 400    | `bad-upstream`                                                                  | `upstream` passt nicht zum Dienst: vorhanden, wo der Dienst keines nimmt (Quelle `relay`, keine `auth`), fehlend, wo die App eines liefern muss, falsche Form, Zeichen oder Länge (nur nach bestandener Anmeldung)                                               |
+| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich                                                                                                                                        |
+| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                                                                                                                                                                 |
+| 403    | `solo-not-allowed`                                                              | Schlüsselart 1 verlangte `mode: "solo"`, während für den Dienst andere Anfragen warten (nur im Sammelbetrieb)                                                                                                                                                    |
+| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                                                                                                                                                                 |
+| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                                                                                                                                                       |
+| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit                                                                                                                                              |
+| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                                                                                                                                                       |
+| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                                                                                                                                                             |
+| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                                                                                                                                                      |
+| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`)                                                                                                                                     |
+| 503    | `shutting-down`                                                                 | Nur im Sammelbetrieb: das Relay wird beendet; die Anfrage war nicht (mehr) in einem Fenster, die App versucht es später neu                                                                                                                                      |
+| 503    | `busy`                                                                          | Im Sammelbetrieb: kein freier Platz beim Dienst innerhalb von `RELAY_MAX_WAIT_MS`, oder die Solo-Warteschlange des Dienstes ist voll; immer: die Tabelle der Zugangsdaten-Identitäten des Dienstes ist voll (`upstreamIdentitiesMax`); `Retry-After` in Sekunden |
+| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                                                                                                                                                              |
 
 ## Sammelbetrieb
 
@@ -696,6 +698,120 @@ Solo-Limit je Schlüssel begrenzt den Schaden, und ein missbrauchter Schlüssel 
 gesperrt (wirkt nach spätestens `keyFileCheckMs`, sobald die Datei gespeichert ist). Wer einen Solo-Schlüssel
 hat, kann die Solo-Plätze eines Dienstes bis zu dessen Kapazität belegen (siehe „Kapazität“).
 
+## Zugangsdaten zu bezahlten Diensten
+
+Ein bezahlter Dienst will Zugangsdaten sehen. Die App darf sie **selbst mitliefern** (wie sie ihren Relay-Schlüssel
+selbst verwahrt), oder das Relay hält sie. Die vier mitgelieferten freien Dienste haben kein Feld `auth` und ändern
+sich nicht: für sie wird nichts gesendet, und ein `upstream` in der Anfrage ist `400 bad-upstream`.
+
+### Arten und Quellen (`auth` in `services.json`)
+
+`auth: {"kind": …, "source": …}`; ohne das Feld gilt `{"kind": "none"}`. Der Leser ist streng: unbekannte Felder und Werte,
+ein fehlendes Feld, falsche Typen ergeben `bad-services`.
+
+| `kind`   | Was das Relay dem Dienst schickt                                                                 | `upstream` im Körper der App     |
+| -------- | ------------------------------------------------------------------------------------------------ | -------------------------------- |
+| `none`   | nichts (kein Feld `source`)                                                                      | nicht erlaubt                    |
+| `basic`  | `Authorization: Basic <base64(Benutzer:Passwort)>` (RFC 7617)                                    | `{"user": "…", "password": "…"}` |
+| `bearer` | `Authorization: Bearer <Token>`                                                                  | `{"token": "…"}`                 |
+| `header` | `<Name>: <Token>`; `Name` steht in `services.json` (`"header": "X-Api-Key"`), nie in der Anfrage | `{"token": "…"}`                 |
+
+Der Headername muss `[A-Za-z0-9-]{1,40}` sein und darf keiner der verbotenen oder Hop-by-hop-Köpfe sein (`Authorization`
+(dafür gibt es `basic` und `bearer`), `Host`, `Content-Type`, `Content-Length`, `Transfer-Encoding`, `Connection`,
+`Upgrade`, `TE`, `Cookie`, `Set-Cookie`, `User-Agent`, `Accept`, `Date`, `Origin`, Köpfe mit `Proxy-`, `Sec-`, `If-`,
+`X-Forwarded-`, `Access-Control-`, `X-Zeitstempel`, …; ohne Rücksicht auf Groß- und Kleinschreibung). **`basic`, `bearer`
+und `header` sind nur für `https`-Adressen erlaubt:** der Leser lehnt eine `http`-Adresse mit `auth` ab (`bad-services`), das
+Relay startet nicht damit, und `relay/upstream.ts` baut vor jeder Verbindung keine Anfrage mit Zugangsdaten an einen
+`http`-Dienst auf (`upstream-failed`, ohne Verbindung).
+
+| `source` | Wer liefert                                                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `relay`  | nur das Relay, aus seiner Umgebung (`RELAY_UPSTREAM_AUTH_<ID>`); ein `upstream` der App ist `400 bad-upstream`; fehlt der Wert, startet das Relay nicht (`config-error`) |
+| `client` | nur die App; `upstream` ist **Pflicht**, sonst `400 bad-upstream`; das Relay hält nichts (eine Variable dafür ist ein Fehler beim Start)                                 |
+| `either` | die App, wenn sie `upstream` mitschickt (**Vorrang**), sonst die Werte des Relays, sonst `400 bad-upstream`                                                              |
+
+### Der Körper und seine Grenzen
+
+```ts
+const body = JSON.stringify({
+  hash: toBase64Url(hash),
+  upstream: { user: 'konto', password: '…' }, // basic; bei bearer und header: { token: '…' }
+}); // optional zusätzlich mode: 'solo'
+const header = await signRelayRequest({
+  privateKey,
+  keyId,
+  method: 'POST',
+  path,
+  body: new TextEncoder().encode(body),
+  nowMs: Date.now(),
+});
+```
+
+`signRelayRequest` bleibt unverändert: die App baut den Körper selbst und signiert ihn. **`upstream` steht im signierten
+Körper**, ist also durch die Signatur gebunden: ein nachträglich geänderter, hinzugefügter oder entfernter Wert ändert den
+Körper-Hash und endet mit `401` (Tests belegen es). Ohne gültigen Relay-Schlüssel gibt es weiterhin keine Anfrage und
+damit auch keine Weitergabe von Zugangsdaten.
+
+Strenge Prüfung (`400 bad-upstream` bei jedem Verstoß, nach bestandener Anmeldung): genau die Mitglieder der Art, nur
+Strings; **druckbares ASCII** (0x20 bis 0x7E; beim Token ohne Leerzeichen, `"` und `\`), also keine Steuerzeichen, kein
+CR/LF (Header-Einschleusung), kein NUL, kein Nicht-ASCII; der Benutzername bei `basic` ohne `:` (RFC 7617), das Passwort darf
+`:` enthalten; leere Werte sind abgelehnt; Längen `upstreamUserMax` (64), `upstreamPasswordMax` (128), `upstreamTokenMax` (384).
+Auch im ungünstigsten Fall (jedes Zeichen maskiert) passt der Körper mit `hash`, `mode` und `upstream` in die 512 Byte, die
+`signRelayRequest` höchstens signiert (ein Test belegt es). Die Prüfung läuft ein zweites Mal, bevor das Relay den Kopf an
+den Dienst baut (`relay/upstream.ts`).
+
+### Sammelbetrieb, Solo, Planer und Budget je Identität
+
+Die **Identität** der Zugangsdaten ist ein SHA-256-Digest über Art und Felder (nur im Arbeitsspeicher, **nie ausgegeben,
+nie ins Protokoll, in keinen Zähler und in keinen Fehlertext**); die Zugangsdaten des Relays und ein Dienst ohne `auth`
+haben die Identität „der Dienst selbst“, wie bisher. **Fenster, Plätze, Warteschlangen und das Dienstbudget (`minIntervalMs`)
+gelten je (Dienst, Identität).** Hashes mit verschiedenen Zugangsdaten landen **nie** im selben Fenster und nie im selben
+Baum (der Dienst sähe sonst Hashes unter fremden Zugangsdaten gebündelt); ob einem Schlüssel der Art 1 ein Solo-Stempel erlaubt
+ist (wartet sonst jemand?), wird **je Spur der Identität** entschieden.
+
+- **Obergrenze:** höchstens `upstreamIdentitiesMax` (64) Identitäten je Dienst gleichzeitig. Eine Identität wird verworfen,
+  wenn sie ein ganzes Fenster (60 s) ruhig war und nichts mehr für sie wartet (Fenster, Warteschlange, laufender Aufruf);
+  dann fallen auch ihre Zähler weg. Eine **weitere neue** Identität bekommt `503 busy` mit `Retry-After` (die Sekunden bis
+  zum Verfall der ersten); bekannte Identitäten gehen weiter. Eine abgelehnte Anfrage hinterlässt nichts.
+- **Das Budget des Relays als Ganzes bleibt:** `perMinuteTotal` (60) und `perMinutePerKey` (20) zählen **jede** Anfrage
+  über alle Dienste und Identitäten und ändern sich nicht. Ein Stempel beim Dienst setzt mindestens eine angenommene
+  Anfrage voraus; die Zahl der Aufrufe bei Diensten (alle mit der IP des Relays) ist daher höchstens `perMinuteTotal` je
+  Minute, auch wenn jede Identität ein eigenes Dienstbudget hat. Das Dienstbudget je Identität schützt das **Konto** bei
+  einem Anbieter mit Kontolimit; ein **IP-Limit** des Anbieters schützt es nicht (das Relay hat nur eine Adresse), dafür
+  steht `perMinuteTotal`.
+- **Offen:** die Tabelle der Identitäten ist je Dienst für alle Schlüssel gemeinsam; ein Schlüssel mit vielen verschiedenen
+  (auch falschen) Zugangsdaten kann sie füllen, bis die ersten ablaufen (`perMinutePerKey` bremst ihn auf 20 je Minute, mit
+  mehreren Schlüsseln nicht). Falsche Zugangsdaten kosten einen Aufruf beim Dienst, der sie mit `401` ablehnt (`502
+upstream-refused`).
+
+### Was das Relay sieht
+
+Die Zugangsdaten der App (im signierten Körper, im Arbeitsspeicher, solange eine Anfrage, ein Fenster oder die Spur der
+Identität sie braucht) und beim Dienst den fertigen Kopf; **nie im Protokoll, nie in Zählern (`stats()`), nie in
+Fehlerantworten.** Die Fehlerantworten nennen nur Codes (`bad-upstream`, `upstream-refused` …); ein Test setzt einen
+Markierungswert in die Zugangsdaten und prüft Antwortkörper, Köpfe, `stats()`, Konsole und Prozessströme bei Erfolg und
+bei jedem Fehler des Dienstes (Zeitüberschreitung, `failed`, `401`, ungültige Antwort). Das Relay folgt keiner
+Weiterleitung, die Zugangsdaten gehen also nie an eine andere Adresse als die in `services.json`; Adresse, Pfad, Methode
+und Zielhost kommen weiter nur von dort (kein offener Proxy). Der Betreiber sieht Zugangsdaten **im Speicher des
+Prozesses** und, falls er sie dort ablegt, in der Umgebung (`RELAY_UPSTREAM_AUTH_<ID>`; das Relay entfernt die Variablen
+nach dem Lesen aus `process.env`). Eigene Werte des Relays nie in das Repository, nie in ein Image.
+
+### Warnungen und Grenzen
+
+- **Zugangsdaten im Speicher eines Browsers** (`localStorage`, `IndexedDB`, im Quelltext der Seite) sind **für die Nutzer
+  dieses Browsers auslesbar** und bei Cross-Site-Scripting offen; wie ein privater Relay-Schlüssel in der App. Wer sie dort
+  hält, tut es nur für Zugänge, die diesen Nutzern gehören oder deren Missbrauch begrenzt ist (Kontolimit, Zugang nur für
+  Stempel, widerrufbar).
+- **Verträge:** Bezahlte Dienste (z. B. InfoCert Art. 7, Certum) untersagen die Weitergabe von Zugangsdaten an Dritte. Für die
+  **eigene** App ist das Relay kein Dritter; für Zugangsdaten **fremder** Apps oder Kunden gilt das nicht, das ist vorher
+  zu klären. Diese Aussage ist nicht rechtlich geprüft.
+- **Nicht abgedeckt:** Dienste, die über die **IP-Freigabe** zugelassen werden (z. B. SK) oder ein **Zertifikat** verlangen
+  (z. B. Disig, D-Trust), passen nicht zu diesem Verfahren; **Privatschlüssel von Zertifikaten werden nicht übertragen**.
+  Es gibt nur `basic`, `bearer` und einen Namenskopf.
+- Nicht ausgerollt, gegen keinen echten bezahlten Dienst getestet (kein Netz; Stubs im Test, ein TLS-Stub für den
+  Weg nach draußen), nicht von einem Menschen geprüft, nicht im Browser getestet. Mitgelieferte Dienste haben kein `auth`:
+  es gibt noch **keinen** Eintrag in `services.json`, der es nutzt.
+
 ## Lokal testen
 
 Ohne Netz und ohne echten Dienst, im geklonten Repository (am besten in einer eigenen Kopie, damit die
@@ -719,7 +835,8 @@ einen Stub über http gilt die Anleitung oben.
 
 - **Kein offener Proxy:** Der Aufrufer nennt nur die Kennung eines Dienstes aus `services.json`. Adresse,
   Anfrage und Nonce baut das Relay selbst. Der Aufrufer kann nichts in die Anfrage einschleusen, außer dem
-  Hash.
+  Hash und, bei einem bezahlten Dienst, den Zugangsdaten (streng geprüft, nur als ein Kopf nach `https`, siehe
+  „Zugangsdaten zu bezahlten Diensten“).
 - **Die Antwort wird geprüft**, bevor sie weitergegeben wird: Hash, Nonce, Signatur, Kette zu den Ankern des
   Dienstes und die **Zeit**: `genTime` muss in [Zeitpunkt der Anfrage an den Dienst − `genTimeSlackMs`, Uhr des
   Relays nach der Antwort + `genTimeSlackMs`] liegen (je 60 s; früher galt nur eine Obergrenze von 5 Minuten, nach unten
@@ -751,36 +868,40 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 
 ## Grenzen (`relay/limits.ts`)
 
-| Name                  | Wert   | Bedeutung                                                                                                                                                      |
-| --------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bodyBytes`           | 512    | Größter Körper einer Anfrage                                                                                                                                   |
-| `upstreamBytes`       | 65536  | Größte Antwort eines Dienstes                                                                                                                                  |
-| `upstreamTimeoutMs`   | 10000  | Frist für den ganzen Aufruf beim Dienst                                                                                                                        |
-| `requestTimeoutMs`    | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)                                                                                                   |
-| `perMinuteTotal`      | 60     | Anfragen je Minute über alle Dienste                                                                                                                           |
-| `windowMs`            | 60000  | Zeitfenster der Zähler                                                                                                                                         |
-| `perMinutePerKey`     | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                                                     |
-| `authWindowSeconds`   | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                                                 |
-| `authReplayEntries`   | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                                                             |
-| `authReplayKeyShare`  | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                                                                                                          |
-| `genTimeSlackMs`      | 60000  | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`)                                |
-| `maxOrigins`          | 16     | Zahl der einstellbaren Herkünfte                                                                                                                               |
-| `maxConnections`      | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab                                                                                                  |
-| `keepAliveProxyMs`    | 65000  | Leerlauf einer Verbindung zwischen zwei Anfragen bei Loopback-Bindung (`127.0.0.1`, `::1`, `localhost`; länger als der Leerlauf-Timeout üblicher Proxys, 60 s) |
-| `keepAliveDirectMs`   | 5000   | Leerlauf bei jeder anderen Bindung (entspricht `requestTimeoutMs`)                                                                                             |
-| `keepAliveMinMs`      | 1000   | `RELAY_KEEPALIVE_MS`: kleinster Wert                                                                                                                           |
-| `keepAliveMaxMs`      | 120000 | `RELAY_KEEPALIVE_MS`: größter Wert                                                                                                                             |
-| `batchMsMin`          | 1000   | `RELAY_BATCH_MS`: kleinster Wert (0 oder leer schaltet den Sammelbetrieb aus)                                                                                  |
-| `batchMsMax`          | 60000  | `RELAY_BATCH_MS`: größter Wert                                                                                                                                 |
-| `batchMaxDefault`     | 128    | `RELAY_BATCH_MAX`: Wert ohne Angabe                                                                                                                            |
-| `batchMaxMin`         | 2      | `RELAY_BATCH_MAX`: kleinster Wert                                                                                                                              |
-| `batchMaxMax`         | 1024   | `RELAY_BATCH_MAX`: größter Wert (so große Bäume prüft die Bibliothek, `MAX_SIZE`)                                                                              |
-| `soloPerMinutePerKey` | 4      | Solo-Anfragen je Minute für eine Schlüsselkennung (zusätzlich zu `perMinutePerKey`; nur im Arbeitsspeicher, nicht im Log)                                      |
-| `soloQueueMax`        | 6      | Solo-Anfragen, die je Dienst auf einen Platz warten dürfen; eine weitere bekommt `503 busy`                                                                    |
-| `maxWaitDefaultMs`    | 30000  | `RELAY_MAX_WAIT_MS`: Wert ohne Angabe                                                                                                                          |
-| `maxWaitMinMs`        | 1000   | `RELAY_MAX_WAIT_MS`: kleinster Wert                                                                                                                            |
-| `maxWaitMaxMs`        | 60000  | `RELAY_MAX_WAIT_MS`: größter Wert (Proxy- und Client-Fristen dann mindestens Wartegrenze + 17 s)                                                               |
-| `keyFileCheckMs`      | 5000   | Abstand, in dem das Relay die Änderungszeit der Schlüsseldatei prüft                                                                                           |
+| Name                    | Wert   | Bedeutung                                                                                                                                                      |
+| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bodyBytes`             | 512    | Größter Körper einer Anfrage                                                                                                                                   |
+| `upstreamBytes`         | 65536  | Größte Antwort eines Dienstes                                                                                                                                  |
+| `upstreamTimeoutMs`     | 10000  | Frist für den ganzen Aufruf beim Dienst                                                                                                                        |
+| `requestTimeoutMs`      | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)                                                                                                   |
+| `perMinuteTotal`        | 60     | Anfragen je Minute über alle Dienste                                                                                                                           |
+| `windowMs`              | 60000  | Zeitfenster der Zähler                                                                                                                                         |
+| `perMinutePerKey`       | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                                                     |
+| `authWindowSeconds`     | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                                                 |
+| `authReplayEntries`     | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                                                             |
+| `authReplayKeyShare`    | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                                                                                                          |
+| `genTimeSlackMs`        | 60000  | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`)                                |
+| `maxOrigins`            | 16     | Zahl der einstellbaren Herkünfte                                                                                                                               |
+| `maxConnections`        | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab                                                                                                  |
+| `keepAliveProxyMs`      | 65000  | Leerlauf einer Verbindung zwischen zwei Anfragen bei Loopback-Bindung (`127.0.0.1`, `::1`, `localhost`; länger als der Leerlauf-Timeout üblicher Proxys, 60 s) |
+| `keepAliveDirectMs`     | 5000   | Leerlauf bei jeder anderen Bindung (entspricht `requestTimeoutMs`)                                                                                             |
+| `keepAliveMinMs`        | 1000   | `RELAY_KEEPALIVE_MS`: kleinster Wert                                                                                                                           |
+| `keepAliveMaxMs`        | 120000 | `RELAY_KEEPALIVE_MS`: größter Wert                                                                                                                             |
+| `batchMsMin`            | 1000   | `RELAY_BATCH_MS`: kleinster Wert (0 oder leer schaltet den Sammelbetrieb aus)                                                                                  |
+| `batchMsMax`            | 60000  | `RELAY_BATCH_MS`: größter Wert                                                                                                                                 |
+| `batchMaxDefault`       | 128    | `RELAY_BATCH_MAX`: Wert ohne Angabe                                                                                                                            |
+| `batchMaxMin`           | 2      | `RELAY_BATCH_MAX`: kleinster Wert                                                                                                                              |
+| `batchMaxMax`           | 1024   | `RELAY_BATCH_MAX`: größter Wert (so große Bäume prüft die Bibliothek, `MAX_SIZE`)                                                                              |
+| `soloPerMinutePerKey`   | 4      | Solo-Anfragen je Minute für eine Schlüsselkennung (zusätzlich zu `perMinutePerKey`; nur im Arbeitsspeicher, nicht im Log)                                      |
+| `soloQueueMax`          | 6      | Solo-Anfragen, die je Dienst auf einen Platz warten dürfen; eine weitere bekommt `503 busy`                                                                    |
+| `maxWaitDefaultMs`      | 30000  | `RELAY_MAX_WAIT_MS`: Wert ohne Angabe                                                                                                                          |
+| `maxWaitMinMs`          | 1000   | `RELAY_MAX_WAIT_MS`: kleinster Wert                                                                                                                            |
+| `maxWaitMaxMs`          | 60000  | `RELAY_MAX_WAIT_MS`: größter Wert (Proxy- und Client-Fristen dann mindestens Wartegrenze + 17 s)                                                               |
+| `upstreamUserMax`       | 64     | Zugangsdaten der App: längster Benutzername bei `basic` (druckbares ASCII, ohne `:`)                                                                           |
+| `upstreamPasswordMax`   | 128    | längstes Passwort bei `basic` (druckbares ASCII)                                                                                                               |
+| `upstreamTokenMax`      | 384    | längstes Token bei `bearer` und `header` (druckbares ASCII ohne Leerzeichen, `"` und `\`)                                                                      |
+| `upstreamIdentitiesMax` | 64     | gleichzeitig bekannte Zugangsdaten-Identitäten je Dienst (nur Arbeitsspeicher); eine weitere neue bekommt `503 busy`                                           |
+| `keyFileCheckMs`        | 5000   | Abstand, in dem das Relay die Änderungszeit der Schlüsseldatei prüft                                                                                           |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4, bei FreeTSA mit 5 s: 12). `perMinuteTotal` und
 `minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { credentialHeader, type UpstreamCredentials } from './credentials.ts';
 import { RELAY_LIMITS } from './limits.ts';
 
 /** What the relay needs to know about a service to call it. */
@@ -13,8 +14,15 @@ export interface UpstreamAnswer {
   body: Uint8Array;
 }
 
-/** Posts a request to a service. Rejects with an `UpstreamError`; never follows a redirect. */
-export type Upstream = (target: UpstreamTarget, body: Uint8Array) => Promise<UpstreamAnswer>;
+/**
+ * Posts a request to a service. Rejects with an `UpstreamError`; never follows a redirect. The optional credentials
+ * go out in one header and only to an https address (anything else is `failed` before a connection is made).
+ */
+export type Upstream = (
+  target: UpstreamTarget,
+  body: Uint8Array,
+  credentials?: UpstreamCredentials,
+) => Promise<UpstreamAnswer>;
 
 export class UpstreamError extends Error {
   readonly kind: 'timeout' | 'failed' | 'too-large';
@@ -29,8 +37,12 @@ export class UpstreamError extends Error {
  * deadline and a size cap. The target comes from the allow-list, never from a client.
  */
 export const makeNetworkUpstream =
-  (timeoutMs: number = RELAY_LIMITS.upstreamTimeoutMs): Upstream =>
-  (target, body) =>
+  (
+    timeoutMs: number = RELAY_LIMITS.upstreamTimeoutMs,
+    /** For tests only: an additional trust anchor (PEM) for the TLS check of the service; the relay never sets it. */
+    tls: { ca?: string } = {},
+  ): Upstream =>
+  (target, body, credentials) =>
     new Promise((resolve, rejectRaw) => {
       // The request is made BEFORE the timer: a throw from `new URL` or `request` then leaves no timer
       // behind that would later reach for a `req` that does not exist.
@@ -38,11 +50,17 @@ export const makeNetworkUpstream =
       try {
         const url = new URL(target.url);
         const lib = url.protocol === 'https:' ? https : http;
+        // Credentials never go to plain http, and the header is built (and checked) before anything is connected.
+        if (credentials !== undefined && url.protocol !== 'https:')
+          throw new Error('no credentials over http');
+        const credential = credentials === undefined ? [] : [credentialHeader(credentials)];
         req = lib.request(
           url,
           {
             method: 'POST',
+            ...(tls.ca === undefined || url.protocol !== 'https:' ? {} : { ca: tls.ca }),
             headers: {
+              ...Object.fromEntries(credential), // first: nothing of the fixed headers below can be replaced by it
               'Content-Type': 'application/timestamp-query',
               Accept: 'application/timestamp-reply',
               'Content-Length': String(body.length),

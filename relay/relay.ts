@@ -16,6 +16,13 @@ import {
   type VerifiedTimestamp,
 } from '../src/index.ts';
 import { buildBatch } from './batch.ts';
+import {
+  credentialIdentity,
+  credentialsFromClient,
+  validCredentials,
+  type UpstreamCredentials,
+} from './credentials.ts';
+import { isAuthHeaderName } from '../src/lib/services.ts';
 import { publicKeyObject, type RelayKey } from './keys.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { UpstreamError, type Upstream } from './upstream.ts';
@@ -58,6 +65,13 @@ export interface RelayOptions {
   maxWaitMs?: number;
   /** Window of the budget counters in ms (default `RELAY_LIMITS.windowMs`); a parameter so a test need not wait a minute. */
   budgetWindowMs?: number;
+  /**
+   * Credentials the relay holds itself, by service id (read from its environment by `main.ts`; memory only). Allowed
+   * only for a service whose `auth.source` is `relay` or `either`; a service with `source: 'relay'` must have them.
+   */
+  upstreamAuth?: ReadonlyMap<string, UpstreamCredentials>;
+  /** Identities (credentials of the app) known at once per service (default `RELAY_LIMITS.upstreamIdentitiesMax`); a parameter for tests. */
+  upstreamIdentities?: number;
 }
 
 /** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
@@ -88,6 +102,8 @@ const JSON_TYPE = 'application/json';
 const EXPOSED_HEADERS = 'Retry-After, Date';
 const AUTH_FORM = /^v2\.([a-z][a-z0-9-]{0,31})\.(0|[1-9][0-9]{0,11})\.([A-Za-z0-9_-]{86})$/;
 const AUTH_PREFIX = 'zeitstempel-auth-v2';
+/** The member sets of a JSON body (sorted, joined by a comma): `hash`, plus `mode` and `upstream` when given. */
+const BODY_KEYS = ['hash', 'hash,mode', 'hash,upstream', 'hash,mode,upstream'];
 const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
 
 export interface Relay {
@@ -119,6 +135,40 @@ export function createRelay(options: RelayOptions): Relay {
     (s) => options.allowPlainHttp || new URL(s.url).protocol === 'https:',
   );
   const byId = new Map(usable.map((s) => [s.id, s]));
+  // Paid services: checked again here (the file reader checked them once): https only, a sound header name, and the
+  // credentials of the relay present exactly where the service says the relay holds them. Throws at start, no content.
+  const relayCredentials = new Map<string, UpstreamCredentials>();
+  for (const s of usable) {
+    const a = s.auth ?? { kind: 'none' as const };
+    const given = options.upstreamAuth?.get(s.id);
+    if (a.kind === 'none') {
+      if (given !== undefined) throw new Error(`relay: ${s.id} takes no credentials`);
+      continue;
+    }
+    if (new URL(s.url).protocol !== 'https:')
+      throw new Error(`relay: ${s.id} wants credentials but is not https`);
+    if (a.kind === 'header' && !isAuthHeaderName(a.header))
+      throw new Error(`relay: ${s.id} has a bad header name`);
+    if (a.source === 'client' && given !== undefined) {
+      throw new Error(`relay: ${s.id} takes its credentials from the client only`);
+    }
+    if (given === undefined) {
+      if (a.source === 'relay') throw new Error(`relay: ${s.id} has no credentials of the relay`);
+      continue;
+    }
+    if (
+      given.kind !== a.kind ||
+      (given.kind === 'header' && a.kind === 'header' && given.header !== a.header) ||
+      !validCredentials(given)
+    ) {
+      throw new Error(`relay: the credentials of ${s.id} do not fit its auth`);
+    }
+    relayCredentials.set(s.id, { ...given });
+  }
+  for (const id of options.upstreamAuth?.keys() ?? []) {
+    if (!byId.has(id))
+      throw new Error(`relay: credentials for a service that is not offered: ${id}`);
+  }
   const batch = options.batch;
   if (
     batch !== undefined &&
@@ -134,7 +184,8 @@ export function createRelay(options: RelayOptions): Relay {
   }
   const stats: RelayStats = { stamped: 0, refused: {}, ...(batch ? { batched: 0 } : {}) };
   const timedOut = new WeakSet<Duplex>(); // connections the server itself ended for being too slow
-  const windows = new Map<string, number[]>(); // service id → request times in the window
+  // lane key (the service id; for credentials of the client `<id>#<digest>`) → times of the service's requests/slots in the window
+  const windows = new Map<string, number[]>();
   const keyWindows = new Map<string, number[]>(); // key id → request times in the window (memory only)
   let total: number[] = [];
   const buildKeys = (keys: readonly RelayKey[]) => {
@@ -223,7 +274,7 @@ export function createRelay(options: RelayOptions): Relay {
    * that long is not refused by another limit), and `spend` to count the request once it is served.
    */
   function budget(
-    serviceId: string,
+    laneKey: string,
     minIntervalMs: number,
     kid: string | null,
     /**
@@ -239,9 +290,10 @@ export function createRelay(options: RelayOptions): Relay {
     const fresh = (times: number[]): number[] =>
       times.filter((t) => now - t < bw).map((t) => Math.min(t, now));
     total = fresh(total);
-    const own = fresh(windows.get(serviceId) ?? []);
+    const own = fresh(windows.get(laneKey) ?? []);
     const mine = kid === null ? [] : fresh(keyWindows.get(kid) ?? []);
-    windows.set(serviceId, own);
+    // an identity not known yet leaves nothing behind when the request is refused (written by `spend`)
+    if (windows.has(laneKey)) windows.set(laneKey, own);
     if (kid !== null) keyWindows.set(kid, mine);
     const ownLimit = Math.max(1, Math.floor(bw / minIntervalMs));
     // the slot that frees first is the (length - limit + 1)-th oldest entry
@@ -262,7 +314,10 @@ export function createRelay(options: RelayOptions): Relay {
       slotMs,
       spend: () => {
         total.push(now);
-        if (forService === true) own.push(now);
+        if (forService === true) {
+          own.push(now);
+          windows.set(laneKey, own);
+        }
         if (kid !== null) mine.push(now);
       },
     };
@@ -402,9 +457,15 @@ export function createRelay(options: RelayOptions): Relay {
   function hashFrom(
     type: string,
     body: Uint8Array,
-  ): { hash: Uint8Array; solo: boolean } | 'unsupported' | 'bad' | 'bad-mode' {
+  ):
+    | { hash: Uint8Array; solo: boolean; upstream: unknown; hasUpstream: boolean }
+    | 'unsupported'
+    | 'bad'
+    | 'bad-mode' {
     if (type === 'application/octet-stream') {
-      return body.length === 32 ? { hash: body, solo: false } : 'bad';
+      return body.length === 32
+        ? { hash: body, solo: false, upstream: undefined, hasUpstream: false }
+        : 'bad';
     }
     if (type !== JSON_TYPE) return 'unsupported';
     try {
@@ -412,12 +473,14 @@ export function createRelay(options: RelayOptions): Relay {
       if (typeof data !== 'object' || data === null || Array.isArray(data)) return 'bad';
       const keys = Object.keys(data).sort().join();
       const hash = (data as { hash?: unknown }).hash;
-      if ((keys !== 'hash' && keys !== 'hash,mode') || typeof hash !== 'string') return 'bad';
+      if (!BODY_KEYS.includes(keys) || typeof hash !== 'string') return 'bad';
       const bytes = fromBase64Url(hash);
       if (!bytes || bytes.length !== 32) return 'bad';
-      if (keys === 'hash') return { hash: bytes, solo: false };
+      const hasUpstream = keys.endsWith('upstream');
+      const upstream = hasUpstream ? (data as { upstream?: unknown }).upstream : undefined;
+      if (!keys.includes('mode')) return { hash: bytes, solo: false, upstream, hasUpstream };
       return (data as { mode?: unknown }).mode === 'solo'
-        ? { hash: bytes, solo: true }
+        ? { hash: bytes, solo: true, upstream, hasUpstream }
         : 'bad-mode';
     } catch {
       return 'bad';
@@ -457,24 +520,37 @@ export function createRelay(options: RelayOptions): Relay {
     if (parsed === 'bad') return send(res, 400, { error: 'bad-hash' }, origin);
     if (parsed === 'bad-mode') return send(res, 400, { error: 'bad-mode' }, origin);
     const hash = parsed.hash;
+    // The credentials of a paid service: from the client, from the relay, or `bad-upstream`. The identity (a digest,
+    // memory only) keeps the windows, slots and budgets of different credentials apart.
+    const wanted = credentialsFor(service, parsed.hasUpstream, parsed.upstream);
+    if (wanted === 'bad-upstream') return send(res, 400, { error: 'bad-upstream' }, origin);
+    const creds = wanted.creds;
+    const tracked = wanted.identity !== null; // credentials of the client: each its own lane, limited in number
+    const lk = tracked ? `${service.id}#${wanted.identity}` : service.id;
 
     // Without collecting operation every request is a direct stamp already: `mode: "solo"` changes nothing
     // and the key type is not looked at.
     const wantsSolo = batch !== undefined && parsed.solo;
     if (batch && closed) return send(res, 503, { error: 'shutting-down' }, origin);
-    if (wantsSolo && !(auth !== null && soloKids.has(auth.kid)) && laneBusy(service.id)) {
+    if (wantsSolo && !(auth !== null && soloKids.has(auth.kid)) && laneBusy(lk)) {
       // key type 1: a solo stamp only for a service nobody else waits for (a solo stamp takes a whole slot)
       stats.soloDenied = (stats.soloDenied ?? 0) + 1;
       return send(res, 403, { error: 'solo-not-allowed' }, origin);
     }
     // Collecting operation: a window that is open already takes this request without touching the service's
     // budget (one stamp per window); the budget of a key and the total still count every request.
-    const open = batch ? openWindows.get(service.id) : undefined;
+    const open = batch ? openWindows.get(lk) : undefined;
     const joinsOpen = open !== undefined && !wantsSolo;
+    // A new identity needs a place in the table of this service (dropped identities make room; else `503 busy`).
+    if (tracked && !known.has(lk)) {
+      const full = identitiesFullWait(service.id);
+      if (full !== null)
+        return send(res, 503, { error: 'busy' }, origin, { 'Retry-After': String(full) });
+    }
     // Look at the budget and at the replay cache first, spend and write only if both let the request
     // pass: a 429 never costs budget and never leaves an entry. (No await between look and write.)
     const budgetNow = budget(
-      service.id,
+      lk,
       service.minIntervalMs,
       auth?.kid ?? null,
       batch ? (joinsOpen ? false : 'defer') : true,
@@ -493,7 +569,7 @@ export function createRelay(options: RelayOptions): Relay {
         'Retry-After': String(Math.max(...waits)),
       });
     }
-    if (wantsSolo && laneOf(service.id).solo.length >= RELAY_LIMITS.soloQueueMax) {
+    if (wantsSolo && (lanes.get(lk)?.solo.length ?? 0) >= RELAY_LIMITS.soloQueueMax) {
       return send(res, 503, { error: 'busy' }, origin, {
         'Retry-After': String(Math.max(1, Math.ceil(budgetNow.slotMs / 1000))),
       });
@@ -501,20 +577,97 @@ export function createRelay(options: RelayOptions): Relay {
     budgetNow.spend();
     soloNow?.spend();
     if (auth && signedId !== null) remember(signedId, auth);
-
-    if (batch) {
-      // The answer comes when the window is closed and the service has answered (the 5 s request deadline
-      // is over by now: it only governs the reading of the request).
-      const reply = joinsOpen
-        ? await joinOpen(open, hash)
-        : await enqueue(service, hash, wantsSolo);
-      if (res.destroyed) return countAborted(req, res);
-      return send(res, reply.status, reply.body, origin, reply.headers);
+    const entry = tracked ? touchIdentity(lk, service.id) : null;
+    if (entry) entry.pending += 1;
+    try {
+      if (batch) {
+        // The answer comes when the window is closed and the service has answered (the 5 s request deadline
+        // is over by now: it only governs the reading of the request).
+        const reply = joinsOpen
+          ? await joinOpen(open, hash)
+          : await enqueue(service, lk, creds, hash, wantsSolo);
+        if (res.destroyed) return countAborted(req, res);
+        return send(res, reply.status, reply.body, origin, reply.headers);
+      }
+      const got = await obtain(service, hash, creds);
+      if (!got.ok) return send(res, got.status, got.body, origin);
+      stats.stamped += 1;
+      return send(res, 200, stampBody(service, got), origin);
+    } finally {
+      if (entry) {
+        entry.pending -= 1;
+        entry.lastMs = options.now(); // the identity lives a whole window after its last answer
+      }
     }
-    const got = await obtain(service, hash);
-    if (!got.ok) return send(res, got.status, got.body, origin);
-    stats.stamped += 1;
-    return send(res, 200, stampBody(service, got), origin);
+  }
+
+  // ---- Credentials of paid services ----
+
+  /** The identities of the app known now: lane key -> service, last activity, requests in flight. Memory only, never output. */
+  const identitiesMax = options.upstreamIdentities ?? RELAY_LIMITS.upstreamIdentitiesMax;
+  const known = new Map<string, { serviceId: string; lastMs: number; pending: number }>();
+
+  /**
+   * What the request must send to the service: the credentials (or none) and the identity (null: the relay's own or
+   * none, the lane of the service itself). `bad-upstream` for any mismatch with the service's `auth`: a value where none
+   * is taken, none where the client must give one, a value that is not well formed.
+   */
+  function credentialsFor(
+    service: RelayService,
+    given: boolean,
+    value: unknown,
+  ): 'bad-upstream' | { creds: UpstreamCredentials | undefined; identity: string | null } {
+    const a = service.auth ?? { kind: 'none' as const };
+    if (a.kind === 'none' || a.source === 'relay') {
+      return given ? 'bad-upstream' : { creds: relayCredentials.get(service.id), identity: null };
+    }
+    if (!given) {
+      const own = relayCredentials.get(service.id);
+      return a.source === 'either' && own !== undefined
+        ? { creds: own, identity: null }
+        : 'bad-upstream';
+    }
+    const mine = credentialsFromClient(a, value);
+    return mine === null ? 'bad-upstream' : { creds: mine, identity: credentialIdentity(mine) };
+  }
+
+  /** Is an identity gone for good: idle for a whole window and nothing in flight? */
+  const expired = (e: { lastMs: number; pending: number }, now: number): boolean =>
+    e.pending === 0 && now - Math.min(e.lastMs, now) >= bw;
+
+  /**
+   * Drops the identities of a service that are expired, then: null when there is room for one more, else the seconds
+   * until the first one expires (at least 1).
+   */
+  function identitiesFullWait(serviceId: string): number | null {
+    const now = options.now();
+    let count = 0;
+    let soonest = Infinity;
+    for (const [key, e] of known) {
+      if (e.serviceId !== serviceId) continue;
+      if (expired(e, now)) {
+        known.delete(key);
+        windows.delete(key);
+        lanes.delete(key);
+        continue;
+      }
+      count += 1;
+      soonest = Math.min(
+        soonest,
+        e.pending > 0 ? 1 : Math.max(1, Math.ceil((bw - (now - Math.min(e.lastMs, now))) / 1000)),
+      );
+    }
+    return count >= identitiesMax ? soonest : null;
+  }
+
+  function touchIdentity(key: string, serviceId: string) {
+    let e = known.get(key);
+    if (e === undefined) {
+      e = { serviceId, lastMs: options.now(), pending: 0 };
+      known.set(key, e);
+    }
+    e.lastMs = options.now();
+    return e;
   }
 
   /** What a stamp obtained from a service tells the caller (the fields of the 200 answer, without `batch`). */
@@ -537,14 +690,21 @@ export function createRelay(options: RelayOptions): Relay {
    * the service, reads and checks the answer (hash, nonce, signature, chain, and a time around the moment of
    * the request). The same for a single request and for the imprint of a batch.
    */
-  async function obtain(service: RelayService, hash: Uint8Array): Promise<Obtained> {
+  async function obtain(
+    service: RelayService,
+    hash: Uint8Array,
+    creds?: UpstreamCredentials,
+  ): Promise<Obtained> {
     const nonce = options.random(8);
     const request = buildTimestampRequest(hash, nonce);
     if (!request.ok) return { ok: false, status: 500, body: { error: 'internal' } };
     const sentMs = options.now(); // the moment the request goes to the service: the token must not be older
     let answer;
     try {
-      answer = await options.upstream(service, request.value);
+      answer =
+        creds === undefined
+          ? await options.upstream(service, request.value)
+          : await options.upstream(service, request.value, creds);
     } catch (e) {
       const kind = e instanceof UpstreamError ? e.kind : 'failed';
       return {
@@ -598,10 +758,13 @@ export function createRelay(options: RelayOptions): Relay {
   }
   interface Window {
     service: RelayService;
+    /** The lane (service and identity) this window belongs to; windows of different credentials are never merged. */
+    key: string;
+    creds: UpstreamCredentials | undefined;
     waiting: Waiting[];
     timer: ReturnType<typeof setTimeout> | null;
   }
-  const openWindows = new Map<string, Window>(); // service id -> the window that takes requests
+  const openWindows = new Map<string, Window>(); // lane key -> the window that takes requests
   let closed = false;
 
   /** A request that waits for a slot of its service (not yet in a window, not yet stamped). */
@@ -613,34 +776,42 @@ export function createRelay(options: RelayOptions): Relay {
    * `60000 / minIntervalMs` per minute): a window takes one, a solo stamp takes one. They alternate when both wait.
    */
   interface Lane {
+    service: RelayService;
+    key: string;
+    creds: UpstreamCredentials | undefined;
     solo: Queued[];
     normal: Queued[];
     lastWasSolo: boolean;
     timer: ReturnType<typeof setTimeout> | null;
   }
   const lanes = new Map<string, Lane>();
-  const laneOf = (id: string): Lane => {
-    let lane = lanes.get(id);
+  const laneOf = (
+    key: string,
+    service: RelayService,
+    creds: UpstreamCredentials | undefined,
+  ): Lane => {
+    let lane = lanes.get(key);
     if (lane === undefined) {
-      lane = { solo: [], normal: [], lastWasSolo: false, timer: null };
-      lanes.set(id, lane);
+      lane = { service, key, creds, solo: [], normal: [], lastWasSolo: false, timer: null };
+      lanes.set(key, lane);
     }
     return lane;
   };
 
   /** Does anybody wait for this service: in an open window or in the queue? */
-  function laneBusy(id: string): boolean {
-    const lane = laneOf(id);
+  function laneBusy(key: string): boolean {
+    const lane = lanes.get(key);
     return (
-      lane.solo.length + lane.normal.length > 0 || (openWindows.get(id)?.waiting.length ?? 0) > 0
+      (lane !== undefined && lane.solo.length + lane.normal.length > 0) ||
+      (openWindows.get(key)?.waiting.length ?? 0) > 0
     );
   }
 
   /** Milliseconds until the service has a free slot (0: now). */
-  function slotWaitMs(service: RelayService): number {
+  function slotWaitMs(key: string, service: RelayService): number {
     const now = options.now();
-    const own = (windows.get(service.id) ?? []).filter((t) => now - t < bw);
-    windows.set(service.id, own);
+    const own = (windows.get(key) ?? []).filter((t) => now - t < bw);
+    windows.set(key, own);
     const limit = Math.max(1, Math.floor(bw / service.minIntervalMs));
     return own.length >= limit
       ? Math.max(1, bw - (now - Math.min(own[own.length - limit]!, now)))
@@ -648,10 +819,10 @@ export function createRelay(options: RelayOptions): Relay {
   }
 
   /** Takes a slot of the service now. */
-  function takeSlot(service: RelayService): void {
-    const own = windows.get(service.id) ?? [];
+  function takeSlot(key: string): void {
+    const own = windows.get(key) ?? [];
     own.push(options.now());
-    windows.set(service.id, own);
+    windows.set(key, own);
   }
 
   /** A request joins a window that is open (it takes no slot: the window has one). */
@@ -663,10 +834,16 @@ export function createRelay(options: RelayOptions): Relay {
   }
 
   /** Opens the window of a service with the requests that wait for it (the timer starts now). */
-  function openWindowWith(service: RelayService, items: Waiting[]): void {
-    const created: Window = { service, waiting: items, timer: null };
+  function openWindowWith(lane: Lane, items: Waiting[]): void {
+    const created: Window = {
+      service: lane.service,
+      key: lane.key,
+      creds: lane.creds,
+      waiting: items,
+      timer: null,
+    };
     created.timer = setTimeout(() => closeWindow(created), batch!.windowMs);
-    openWindows.set(service.id, created);
+    openWindows.set(lane.key, created);
     if (items.length >= batch!.max) closeWindow(created);
   }
 
@@ -674,9 +851,15 @@ export function createRelay(options: RelayOptions): Relay {
    * A request that needs a slot: it waits in the queue of its service (for the longest `maxWaitMs`, then
    * `503 busy`); `dispatch` serves it at once when a slot is free.
    */
-  function enqueue(service: RelayService, hash: Uint8Array, solo: boolean): Promise<Reply> {
+  function enqueue(
+    service: RelayService,
+    key: string,
+    creds: UpstreamCredentials | undefined,
+    hash: Uint8Array,
+    solo: boolean,
+  ): Promise<Reply> {
     return new Promise((resolve) => {
-      const lane = laneOf(service.id);
+      const lane = laneOf(key, service, creds);
       const item: Queued = { hash, resolve, timer: null };
       item.timer = setTimeout(() => {
         const list = solo ? lane.solo : lane.normal;
@@ -686,45 +869,48 @@ export function createRelay(options: RelayOptions): Relay {
         resolve({
           status: 503,
           body: { error: 'busy' },
-          headers: { 'Retry-After': String(Math.max(1, Math.ceil(slotWaitMs(service) / 1000))) },
+          headers: {
+            'Retry-After': String(Math.max(1, Math.ceil(slotWaitMs(key, service) / 1000))),
+          },
         });
       }, maxWaitMs);
       (solo ? lane.solo : lane.normal).push(item);
-      dispatch(service);
+      dispatch(lane);
     });
   }
 
   /** Gives free slots to the waiting requests: a solo request and a window alternate, so nothing starves. */
-  function dispatch(service: RelayService): void {
-    const lane = laneOf(service.id);
+  function dispatch(lane: Lane): void {
+    const service = lane.service;
     if (lane.timer !== null) clearTimeout(lane.timer);
     lane.timer = null;
     while (!closed && lane.solo.length + lane.normal.length > 0) {
-      const wait = slotWaitMs(service);
+      const wait = slotWaitMs(lane.key, service);
       if (wait > 0) {
-        lane.timer = setTimeout(() => dispatch(service), wait);
+        lane.timer = setTimeout(() => dispatch(lane), wait);
         return;
       }
       const solo = lane.solo.length > 0 && (lane.normal.length === 0 || !lane.lastWasSolo);
-      takeSlot(service);
+      takeSlot(lane.key);
       lane.lastWasSolo = solo;
       if (solo) {
         const item = lane.solo.shift()!;
         if (item.timer !== null) clearTimeout(item.timer);
-        runSolo(service, item);
+        runSolo(lane, item);
       } else {
         // the window takes the requests that wait, up to its size; the others wait for the next slot
         const items = lane.normal.splice(0, batch!.max);
         for (const i of items) if (i.timer !== null) clearTimeout(i.timer);
-        openWindowWith(service, items);
+        openWindowWith(lane, items);
       }
     }
   }
 
   /** A direct stamp of one hash (no tree, no `batch` in the answer). */
-  function runSolo(service: RelayService, item: Waiting): void {
+  function runSolo(lane: Lane, item: Waiting): void {
+    const service = lane.service;
     const done = async (): Promise<void> => {
-      const got = await obtain(service, item.hash);
+      const got = await obtain(service, item.hash, lane.creds);
       if (!got.ok) return item.resolve({ status: got.status, body: got.body });
       stats.stamped += 1;
       stats.solo = (stats.solo ?? 0) + 1;
@@ -738,8 +924,8 @@ export function createRelay(options: RelayOptions): Relay {
   };
 
   function closeWindow(w: Window): void {
-    if (openWindows.get(w.service.id) !== w) return; // closed already (timer and full window meet)
-    openWindows.delete(w.service.id);
+    if (openWindows.get(w.key) !== w) return; // closed already (timer and full window meet)
+    openWindows.delete(w.key);
     if (w.timer !== null) clearTimeout(w.timer);
     flush(w).catch(() => answerAll(w.waiting, { status: 500, body: { error: 'internal' } }));
   }
@@ -775,7 +961,7 @@ export function createRelay(options: RelayOptions): Relay {
       return { hash: x.hash, salt: new Uint8Array(salt) };
     });
     const built = buildBatch(entries, shuffled(waiting.length));
-    const got = await obtain(w.service, new Uint8Array(built.imprint));
+    const got = await obtain(w.service, new Uint8Array(built.imprint), w.creds);
     if (!got.ok) return answerAll(waiting, { status: got.status, body: got.body });
     stats.stamped += 1;
     stats.batched = (stats.batched ?? 0) + waiting.length;
@@ -801,7 +987,7 @@ export function createRelay(options: RelayOptions): Relay {
   function close(): void {
     closed = true;
     for (const w of [...openWindows.values()]) {
-      openWindows.delete(w.service.id);
+      openWindows.delete(w.key);
       if (w.timer !== null) clearTimeout(w.timer);
       answerAll(w.waiting, { status: 503, body: { error: 'shutting-down' } });
     }
@@ -917,6 +1103,8 @@ export function createRelay(options: RelayOptions): Relay {
             name: s.name,
             qualified: s.qualified,
             intendedUse: s.intendedUse,
+            // only the paid ones: what the app has to send (never a value, never whether the relay holds credentials)
+            ...(s.auth === undefined || s.auth.kind === 'none' ? {} : { auth: s.auth }),
           })),
         },
         echo,

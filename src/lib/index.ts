@@ -9,7 +9,7 @@ export { fail, ok } from './result.ts';
 export type { Failure, Reason, Result } from './result.ts';
 export { equalBytes, fromBase64, fromBase64Url, toBase64, toBase64Url, toHex } from './bytes.ts';
 export { readServices } from './services.ts';
-export type { Service } from './services.ts';
+export type { Service, ServiceAuth, ServiceAuthSource } from './services.ts';
 export { signRelayRequest } from './auth.ts';
 export type { SignRelayRequestInput } from './auth.ts';
 export { verifyBatchedTimestamp } from './batch.ts';

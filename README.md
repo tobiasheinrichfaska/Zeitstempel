@@ -104,6 +104,15 @@ entfernen); `restartAfter` beendet das Relay einmal sauber (Prozess-Überwacher 
 [`docs/relay.md`](docs/relay.md) („Schlüsselarten und Solo-Stempel“); Solo-Schlüssel im Browserspeicher sind für die
 Nutzer dieses Browsers auslesbar.
 
+**Zugangsdaten zu bezahlten Diensten (optional, nur für Dienste mit `auth` in `services.json`; die vier freien Dienste
+brauchen nichts):** Die App darf die Zugangsdaten (`basic`: Benutzer und Passwort, `bearer` oder ein Namenskopf: ein Token)
+selbst im signierten Körper mitliefern (`{"hash": "…", "upstream": {…}}`), oder das Relay hält sie
+(`RELAY_UPSTREAM_AUTH_<ID>`); je Dienst legt `auth.source` (`relay`, `client`, `either`) fest, wer liefert. Streng geprüft
+(`400 bad-upstream`), nur nach `https`, nie in Protokoll, Zählern oder Fehlern. Im Sammelbetrieb gelten Fenster, Plätze und
+Dienstbudget je (Dienst, Zugangsdaten-Identität), nie gemischt; höchstens 64 Identitäten je Dienst (`503 busy`). Zugangsdaten
+im Browserspeicher sind für die Nutzer dieses Browsers auslesbar. Nicht für Dienste mit IP-Freigabe oder Zertifikat.
+Einzelheiten in [`docs/relay.md`](docs/relay.md) („Zugangsdaten zu bezahlten Diensten“); nur gegen Stubs getestet.
+
 Betriebshinweise (Einzelheiten im Abschnitt „Betrieb hinter einem Reverse-Proxy“ von `docs/relay.md`): Das Relay und der Dienst
 sehen den **Hash**; bei ratbarem Inhalt einen gesalzenen Hash oder eine Merkle-Wurzel stempeln (oder den Sammelbetrieb nutzen). Jeder Dienst erlaubt nur
 wenige Stempel je Minute für alle zusammen (mitgeliefert: 4 je Dienst, FreeTSA 12), auch ein Fehlschlag kostet davon; `/health` prüft

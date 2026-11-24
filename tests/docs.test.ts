@@ -395,6 +395,98 @@ describe('key types, solo stamps and the key file read again are written down wh
   });
 });
 
+describe('credentials of paid services (upstream, auth) are written down where a reader looks', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
+  const features = readFileSync(new URL('../FEATURES_REQUIRED.md', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  it('relay.md: the section, the kinds, the sources, the setting, the code and the limits', () => {
+    const doc = flat(relayDoc);
+    expect(relayDoc).toContain('## Zugangsdaten zu bezahlten Diensten');
+    expect(relayDoc).toMatch(/\|\s*`RELAY_UPSTREAM_AUTH_<ID>`\s*\|/);
+    expect(relayDoc).toMatch(/\|\s*400\s*\|\s*`bad-upstream`/);
+    expect(source).toContain("error: 'bad-upstream'");
+    for (const word of [
+      '`none`',
+      '`basic`',
+      '`bearer`',
+      '`header`',
+      '`relay`',
+      '`client`',
+      '`either`',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+    for (const name of [
+      'upstreamUserMax',
+      'upstreamPasswordMax',
+      'upstreamTokenMax',
+      'upstreamIdentitiesMax',
+    ]) {
+      expect(relayDoc, name).toMatch(new RegExp(String.raw`\|\s*\`${name}\`\s*\|`));
+    }
+    expect(doc).toContain('`upstream` steht im signierten Körper');
+    expect(doc).toContain('nur für `https`-Adressen erlaubt');
+    expect(doc).toContain('je (Dienst, Identität)');
+    expect(doc).toContain(
+      '`perMinuteTotal` (60) und `perMinutePerKey` (20) zählen **jede** Anfrage',
+    );
+    expect(doc).toContain('nie ausgegeben');
+    expect(doc).toContain('für die Nutzer dieses Browsers auslesbar');
+    expect(doc).toContain('Cross-Site-Scripting');
+    expect(doc).toContain('InfoCert Art. 7');
+    expect(doc).toContain('IP-Freigabe');
+    expect(doc).toContain('Privatschlüssel von Zertifikaten werden nicht übertragen');
+  });
+  it('the limits in the code are the ones the documentation names', () => {
+    expect(RELAY_LIMITS.upstreamUserMax).toBe(64);
+    expect(RELAY_LIMITS.upstreamPasswordMax).toBe(128);
+    expect(RELAY_LIMITS.upstreamTokenMax).toBe(384);
+    expect(RELAY_LIMITS.upstreamIdentitiesMax).toBe(64);
+    const doc = flat(relayDoc);
+    expect(doc).toContain(
+      '`upstreamUserMax` (64), `upstreamPasswordMax` (128), `upstreamTokenMax` (384)',
+    );
+    expect(doc).toContain('`upstreamIdentitiesMax` (64)');
+  });
+  it('data-model.html: the service member auth, the body member upstream and the code', () => {
+    const doc = flat(model);
+    expect(doc).toContain('<tr><td>auth</td>');
+    expect(doc).toContain('<tr><td>Anfrage: <code>upstream</code></td>');
+    expect(doc).toContain('<code>bad-upstream</code> (400)');
+    for (const name of [
+      'upstreamUserMax',
+      'upstreamPasswordMax',
+      'upstreamTokenMax',
+      'upstreamIdentitiesMax',
+    ]) {
+      expect(doc, name).toContain(`<code>${name}</code>`);
+    }
+    expect(doc).toContain(
+      '<code>basic</code>, <code>bearer</code> und <code>header</code> nur mit https-Adresse',
+    );
+  });
+  it('README, dienste.md, FEATURES_REQUIRED.md and CLAUDE.md agree', () => {
+    expect(flat(readme)).toContain('**Zugangsdaten zu bezahlten Diensten');
+    expect(readme).toContain('RELAY_UPSTREAM_AUTH_<ID>');
+    expect(readme).toContain('`400 bad-upstream`');
+    expect(flat(read('dienste.md'))).toContain(
+      'Dienste mit IP-Freigabe (z. B. SK) und Dienste mit Zertifikat',
+    );
+    expect(features).toContain('**Zugangsdaten zu bezahlten Diensten**');
+    expect(claude).toContain('**Credentials of paid services');
+    expect(claude).toContain('`RELAY_UPSTREAM_AUTH_<ID>`');
+  });
+  it('the shipped services.json has no auth member (the four free services are unchanged)', () => {
+    const file = JSON.parse(readFileSync(new URL('../services.json', import.meta.url), 'utf8')) as {
+      services: Record<string, unknown>[];
+    };
+    expect(file.services).toHaveLength(4);
+    for (const s of file.services) expect(Object.hasOwn(s, 'auth')).toBe(false);
+  });
+});
+
 describe('key files stay out of the repository', () => {
   const PATTERNS = ['relay-keys*.json', '*.keys.json', '*keys*.json'];
   const NAMES = [

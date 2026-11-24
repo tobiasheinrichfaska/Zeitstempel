@@ -17,11 +17,17 @@
 //   RELAY_BATCH_MAX          most requests in one window, 2 to 1024 (default 128)
 //   RELAY_MAX_WAIT_MS        collecting operation: the longest a request waits for a free slot of its service,
 //                            1000 to 60000 (default 30000); then 503 busy
+//   RELAY_UPSTREAM_AUTH_<ID>  credentials of a paid service that the relay holds itself (<ID>: the service id in capitals,
+//                            '-' as '_'); `user:password` for basic, the token for bearer and header; mandatory for a
+//                            chosen service with `auth.source` "relay", optional for "either", refused for the others
+//                            (docs/relay.md, "Zugangsdaten zu bezahlten Diensten"). Never logged, never in an error text.
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { loadServices } from './load.ts';
+import type { ServiceAuth } from '../src/index.ts';
+import { credentialsFromText, type UpstreamCredentials } from './credentials.ts';
 import { loadKeys, type RelayKey } from './keys.ts';
 import { createKeyWatcher } from './keywatch.ts';
 import type { RelayService } from './relay.ts';
@@ -159,6 +165,55 @@ export function chooseServices<T extends { id: string; url: string }>(
   return chosen;
 }
 
+/** Prefix of the environment variables that hold the relay's own credentials for paid services. */
+export const UPSTREAM_AUTH_PREFIX = 'RELAY_UPSTREAM_AUTH_';
+
+/** The variable of a service: `RELAY_UPSTREAM_AUTH_` + id in capitals, `-` as `_` (an id has no `_`, so the names are unique). */
+export const upstreamAuthVariable = (id: string): string =>
+  UPSTREAM_AUTH_PREFIX + id.toUpperCase().replaceAll('-', '_');
+
+/**
+ * The credentials the relay holds itself, from the environment: for each chosen service with `auth` of source `relay`
+ * (mandatory) or `either` (optional) the value of its variable. Throws before anything listens: a missing mandatory
+ * value, a value that is not well formed, or a variable that belongs to no chosen service that takes credentials of the
+ * relay (a typo must not pass in silence). The messages name the VARIABLE, never a value or a part of it.
+ */
+export function readUpstreamAuth(
+  env: NodeJS.ProcessEnv,
+  services: readonly { id: string; auth?: ServiceAuth }[],
+): Map<string, UpstreamCredentials> {
+  const out = new Map<string, UpstreamCredentials>();
+  const expected = new Set<string>();
+  for (const s of services) {
+    const a = s.auth;
+    if (a === undefined || a.kind === 'none' || a.source === 'client') continue;
+    const name = upstreamAuthVariable(s.id);
+    expected.add(name);
+    const value = env[name];
+    if (value === undefined || value === '') {
+      if (a.source === 'relay') {
+        throw new Error(`${name} fehlt: der Dienst ${s.id} nimmt nur Zugangsdaten des Relays`);
+      }
+      continue;
+    }
+    const creds = credentialsFromText(a, value);
+    if (creds === null) {
+      throw new Error(
+        `${name}: ungültig (${a.kind === 'basic' ? 'Benutzer:Passwort' : 'Token'}, nur druckbares ASCII, Längen siehe docs/relay.md)`,
+      );
+    }
+    out.set(s.id, creds);
+  }
+  for (const key of Object.keys(env)) {
+    if (key.startsWith(UPSTREAM_AUTH_PREFIX) && !expected.has(key)) {
+      throw new Error(
+        `${key}: gehört zu keinem gewählten Dienst, dessen Zugangsdaten das Relay hält (Quelle "relay" oder "either")`,
+      );
+    }
+  }
+  return out;
+}
+
 /**
  * A warning text when the key file can be written by its group or by others (POSIX; mode & 0o022): whoever
  * can write it can enter a key of their own. Null otherwise, also under Windows (no such modes) and when
@@ -199,10 +254,12 @@ export function readConfig(
       );
     }
   }
+  const upstreamAuth = readUpstreamAuth(env, services);
   if (settings.authOff) {
     return {
       settings,
       services,
+      upstreamAuth,
       keys: 'off' as const,
       warnings: [`auth off, loopback only (${settings.host})`],
     };
@@ -214,7 +271,7 @@ export function readConfig(
   }
   const keys = readKeys(settings.keysFile);
   const warning = checkPermissions(settings.keysFile);
-  return { settings, services, keys, warnings: warning === null ? [] : [warning] };
+  return { settings, services, upstreamAuth, keys, warnings: warning === null ? [] : [warning] };
 }
 
 /** The start line: port, services and whether requests are authenticated. No key data. */
@@ -265,7 +322,9 @@ function main(): void {
     return;
   }
   const startMs = Date.now();
-  const { settings, services, keys, warnings } = config;
+  const { settings, services, keys, warnings, upstreamAuth } = config;
+  // The relay holds the credentials in memory now: they leave the environment (nothing inherits them).
+  for (const s of services) Reflect.deleteProperty(process.env, upstreamAuthVariable(s.id));
   for (const message of warnings) console.error(JSON.stringify({ event: 'warning', message }));
   const { server, relay } = createRelayServer(
     {
@@ -276,6 +335,7 @@ function main(): void {
       random: (n) => new Uint8Array(randomBytes(n)),
       now: () => Date.now(),
       keys,
+      upstreamAuth,
       ...(settings.batchMs === undefined
         ? {}
         : { batch: { windowMs: settings.batchMs, max: settings.batchMax } }),

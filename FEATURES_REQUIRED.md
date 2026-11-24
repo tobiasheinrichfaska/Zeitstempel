@@ -25,6 +25,7 @@
 - [x] **Schlüsseldatei laufend neu gelesen** — neuer Schlüssel gilt, entfernter sofort nicht mehr, ungültige Datei behält den alten Satz, `restartAfter` beendet einmal und die Datei wird nie geschrieben (`tests/solo.test.ts`)
 - [x] **Schlüsselarten und Solo-Stempel** — Art 2 immer, Art 1 nur bei leerem Fenster (`403 solo-not-allowed`), `mode` durch die Signatur gebunden, Planer je Dienst (Solo belegt den Platz, abwechselnd, `503 busy` nach `RELAY_MAX_WAIT_MS`, Warteschlange und Solo-Limit je Schlüssel begrenzt) (`tests/solo.test.ts`; nur gegen einen Stub)
 - [x] **Schlüsseldatei laufend neu gelesen** — neuer Schlüssel gilt, entfernter sofort nicht mehr, ungültige Datei behält den alten Satz, `restartAfter` beendet einmal und die Datei wird nie geschrieben (`tests/solo.test.ts`)
+- [x] **Zugangsdaten zu bezahlten Diensten** — `auth` streng gelesen (nur https), `upstream` im signierten Körper (`400 bad-upstream`, kein CR/LF, kein `:` im Benutzernamen), Quellen `relay`/`client`/`either`, Kopf nur nach https, Fenster und Dienstbudget je Identität nie gemischt, Obergrenze der Identitäten, nichts davon in Protokoll, Zählern oder Fehlern (`tests/upstream-auth.test.ts`, `tests/upstream-network.test.ts`; nur gegen Stubs, nie gegen einen echten bezahlten Dienst)
 - [x] **Grenzen** — Körpergröße, Zähler, Fristen, Größe der Antwort
 - [x] **Echte Dienste** — `npm run probe -- --service freetsa` und `npm run spike` (von Hand, Netz nötig)
 - [ ] **Betrieb** — nicht ausgerollt, kein Image

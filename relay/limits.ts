@@ -88,6 +88,20 @@ export const RELAY_LIMITS = {
   maxWaitMinMs: 1_000,
   /** RELAY_MAX_WAIT_MS: largest accepted value (the proxy and client time-outs must exceed it by 17 s). */
   maxWaitMaxMs: 60_000,
+  /**
+   * Credentials of a paid service sent by the app (`upstream` in the signed body; docs/relay.md, "Zugangsdaten zu
+   * bezahlten Diensten"): longest user name of `basic` (printable ASCII, no colon).
+   */
+  upstreamUserMax: 64,
+  /** Longest password of `basic` (printable ASCII). */
+  upstreamPasswordMax: 128,
+  /** Longest token of `bearer` and `header` (printable ASCII without space, quote and backslash). */
+  upstreamTokenMax: 384,
+  /**
+   * Identities (different credentials of the app) the relay knows at the same time per service, memory only; an identity
+   * that was idle for a window and has nothing waiting is dropped. A further new one gets `503 busy`.
+   */
+  upstreamIdentitiesMax: 64,
   /** How often the relay looks at the modification time of the key file (ms). */
   keyFileCheckMs: 5_000,
 } as const;

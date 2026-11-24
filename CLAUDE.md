@@ -167,6 +167,16 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   cleanly (supervisor needed; the relay never writes the file; a restart empties the replay cache). A solo key in browser
   storage is readable by that browser's users. Tested against stubs only (`tests/solo.test.ts`); `perMinuteTotal` and
   `perMinutePerKey` unchanged. Slots are the sliding-minute budget of the service (`60000 / minIntervalMs` per minute), not fixed time slots.
+- **Credentials of paid services (optional; `auth` in `services.json`, none for the four free ones):** `kind` none, basic,
+  bearer or header (header name strict, no forbidden or hop-by-hop name), `source` relay, client or either; credentials
+  only for https addresses (reader, relay start and `relay/upstream.ts` each refuse http). The signed body may carry
+  `upstream` (`{user,password}` or `{token}`, printable ASCII, no CR/LF, no colon in the basic user, limits in
+  `relay/limits.ts`), else `400 bad-upstream`; the relay's own come from `RELAY_UPSTREAM_AUTH_<ID>` (never logged).
+  Windows, slots, queues and the service budget count per (service, identity), the identity being a SHA-256 digest in
+  memory only (never output, logged or counted); at most 64 identities per service, then `503 busy`; `perMinuteTotal` and
+  `perMinutePerKey` count every request as before. Code: `relay/credentials.ts`. Only against stubs (`tests/upstream-auth.test.ts`,
+  `tests/upstream-network.test.ts`, a TLS stub); credentials in browser storage are readable by that browser's users; no
+  IP-allow-list or certificate services (`docs/relay.md`).
 - **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
   2026-11-23 ran without it, with `keys: 'off'` in the script). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key
