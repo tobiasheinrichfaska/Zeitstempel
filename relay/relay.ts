@@ -661,6 +661,7 @@ export function createRelay(options: RelayOptions): Relay {
         known.delete(key);
         windows.delete(key);
         lastCall.delete(key);
+        lastCallMono.delete(key);
         lanes.delete(key);
         continue;
       }
@@ -816,6 +817,12 @@ export function createRelay(options: RelayOptions): Relay {
   /** The time of the last call to a service per lane (service and identity); memory only, never output. */
   const lastCall = new Map<string, number>();
   /**
+   * The same moment on the monotonic clock of the process (timers run on it, whatever the clock says): a timer that
+   * fires checks the distance against this one, so a stopped or set-back clock cannot hold a window and a loop that
+   * stood still cannot let two timers call together. Memory only.
+   */
+  const lastCallMono = new Map<string, number>();
+  /**
    * A window that is closed but must wait for the minimum distance to the last call of its service before it is
    * stamped; in the order of their stamps.
    */
@@ -832,7 +839,9 @@ export function createRelay(options: RelayOptions): Relay {
    * clock was set back).
    */
   function reservedStamp(key: string, now: number): number[] {
-    const times = (delayedWindows.get(key) ?? []).map((d) => Math.min(d.at, now + batch!.windowMs));
+    const times = (delayedWindows.get(key) ?? []).map((d, i) =>
+      Math.min(d.at, now + (i + 1) * d.w.service.minIntervalMs),
+    );
     const open = openWindows.get(key);
     if (open !== undefined) times.push(Math.min(open.stampAt, now + batch!.windowMs));
     return times.sort((a, b) => a - b);
@@ -841,8 +850,9 @@ export function createRelay(options: RelayOptions): Relay {
   /**
    * Milliseconds until a call to the service of this lane may be made without coming closer than `minIntervalMs` to
    * the one before (0: now): the last call made, and the windows that are delayed and will call before it (all of them,
-   * or only those before `before`). A time in the future (the clock was set back) counts as `now`, a delayed one at
-   * most `minIntervalMs` ahead.
+   * or only those before `before`). A time in the future (the clock was set back) counts as `now`; the k-th delayed
+   * window counts at most k times `minIntervalMs` ahead (the chain of delayed windows lies one distance apart each, so
+   * the k-th is that far ahead at the most; a clock that was set back cannot hold it longer).
    */
   function spacingMs(key: string, minIntervalMs: number, now: number, before?: Delayed): number {
     let last = -Infinity;
@@ -852,11 +862,21 @@ export function createRelay(options: RelayOptions): Relay {
       if (made > now) lastCall.set(key, now);
       last = Math.min(made, now);
     }
+    let position = 0;
     for (const d of delayedWindows.get(key) ?? []) {
       if (d === before) break;
-      last = Math.max(last, Math.min(d.at, now + minIntervalMs));
+      position += 1;
+      last = Math.max(last, Math.min(d.at, now + position * minIntervalMs));
     }
     return last === -Infinity ? 0 : Math.max(0, last + minIntervalMs - now);
+  }
+
+  /** Milliseconds until the distance to the last call made holds on the monotonic clock (0: it holds already). */
+  function monoWaitMs(key: string, minIntervalMs: number): number {
+    const madeMono = lastCallMono.get(key);
+    return madeMono === undefined
+      ? 0
+      : Math.max(0, Math.ceil(madeMono + minIntervalMs - performance.now()));
   }
 
   /**
@@ -886,6 +906,7 @@ export function createRelay(options: RelayOptions): Relay {
     own.push(now);
     windows.set(key, own);
     lastCall.set(key, now);
+    lastCallMono.set(key, performance.now());
   }
 
   /** A request joins a window that is open (it takes no slot: the window has one). */
@@ -1040,6 +1061,19 @@ export function createRelay(options: RelayOptions): Relay {
     const index = list.indexOf(d);
     if (index < 0) return;
     if (index > 0) return armDelayed(d, 1);
+    // the distance again, on the monotonic clock: the loop may have stood still while this and the one before were due
+    const wait = monoWaitMs(d.w.key, d.w.service.minIntervalMs);
+    if (wait > 0) {
+      d.at = options.now() + wait;
+      let before = d.at;
+      for (const e of list.slice(1)) {
+        // the windows behind it keep their distance to it (their own timers check again when they fire)
+        before += d.w.service.minIntervalMs;
+        e.at = Math.max(e.at, before);
+        before = e.at;
+      }
+      return armDelayed(d, wait);
+    }
     list.splice(index, 1);
     if (list.length === 0) delayedWindows.delete(d.w.key);
     callService(d.w);

@@ -338,8 +338,8 @@ describe('collecting operation (Sammelbetrieb) is written down where a reader lo
     expect(doc).toContain('zählen weiter jede Anfrage');
     expect(doc).toContain('**Alle** Anfragen des Fensters bekommen dieselbe Antwort');
     expect(doc).toContain('`503 shutting-down`');
-    expect(doc).toContain('mindestens `RELAY_BATCH_MS` + 17 s');
-    expect(doc).toContain('Fenster + 17 s');
+    expect(doc).toContain('mindestens `RELAY_BATCH_MS` + Kette + 17 s');
+    expect(doc).toContain('`AbortSignal.timeout(maxWaitMs + batchMs + chainMs + 17_000)`');
     expect(doc).toContain('nur dem **Lesen der Anfrage**');
     expect(doc).toContain('kürzer als das Mindestintervall');
     expect(doc).toContain('`verifyBatchedTimestamp`');
@@ -405,7 +405,7 @@ describe('key types, solo stamps and the key file read again are written down wh
     const doc = flat(relayDoc);
     expect(doc).toContain('Warten nur im Mangelfall');
     expect(doc).toContain('**Abwechselnd.**');
-    expect(doc).toContain('mindestens **`RELAY_MAX_WAIT_MS` + Fenster + 17 s**');
+    expect(doc).toContain('**`RELAY_MAX_WAIT_MS` + Fenster + Kette + 17 s**');
     expect(doc).toContain('Wartegrenze + 17 s');
     expect(doc).toContain('**für die Nutzer dieses Browsers auslesbar**');
     expect(doc).toContain('**nur an vertraute Nutzergruppen**');
@@ -454,6 +454,62 @@ describe('key types, solo stamps and the key file read again are written down wh
     expect(flat(readme)).toContain('mindestens `minIntervalMs` des Dienstes Abstand');
     expect(source).toContain('function spacingMs');
     expect(source).toContain('function stampWindow');
+  });
+  it('relay.md: the deadline formula counts the chain of windows that wait for the distance, with its limits tied to the code', () => {
+    const doc = flat(relayDoc);
+    // the old statements (a window waits at most one distance; window + 17 s) are gone everywhere
+    expect(doc).not.toContain('bei den mitgelieferten Diensten höchstens 15 s');
+    expect(doc).not.toContain('AbortSignal.timeout(batchMs + 17_000)');
+    expect(doc).not.toContain('Wer die Fristen knapp rechnet, addiert `minIntervalMs`');
+    expect(doc).toContain('(k + 1) · `minIntervalMs`');
+    expect(doc).toContain('höchstens 60 s');
+    expect(doc).toContain('`RELAY_BATCH_MAX` > 60 (Vorgabe 128)');
+    expect(doc).toContain('jedes einen Abstand nach dem vorigen');
+    expect(doc).toContain('noch einmal');
+    // the numbers of the text are the numbers of the code: one budget minute, the total limit, the default window size
+    expect(RELAY_LIMITS.windowMs).toBe(60_000);
+    expect(RELAY_LIMITS.perMinuteTotal).toBe(60);
+    expect(RELAY_LIMITS.batchMaxDefault).toBe(128);
+    expect(RELAY_LIMITS.upstreamTimeoutMs + 7000).toBe(17_000);
+    expect(doc).toContain('30 + 5 + 15 + 17 = **67 s**');
+    expect(doc).toContain('30 + 5 + 60 + 17 = **112 s**');
+    expect(flat(readme)).toContain('Kette der auf den Mindestabstand wartenden Fenster');
+    const project = flat(readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8'));
+    expect(project).toContain('`RELAY_MAX_WAIT_MS` + window + chain + 17 s');
+    expect(project).not.toContain('timeouts at least window');
+    expect(source).toContain('lastCallMono');
+    expect(source).toContain('function fireDelayed');
+  });
+  it('relay.md: the order of the refusals of a solo request (form first) and the case without authentication', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('**nach der Prüfung der Form des Körpers**');
+    expect(doc).toContain('`400 bad-upstream`) kommen vor dem `403`');
+    expect(doc).toContain('Mit **`RELAY_AUTH=off`** gibt es keinen Schlüssel');
+    expect(doc).not.toContain('die Zugangsdaten der Anfrage spielen keine Rolle.');
+  });
+  it('no document keeps a sentence of an old rule of the solo stamps or the planner', () => {
+    const files: [string, string][] = [
+      ['relay.md', relayDoc],
+      ['recherche.md', read('recherche.md')],
+      ['grenzen.md', limitsDoc],
+      ['README.md', readme],
+      [
+        'FEATURES_REQUIRED.md',
+        readFileSync(new URL('../FEATURES_REQUIRED.md', import.meta.url), 'utf8'),
+      ],
+    ];
+    for (const [name, text] of files) {
+      for (const old of [
+        'volle Sammeldauer',
+        '403 nach dem Warten',
+        'Best-Effort',
+        'Allein im Fenster',
+        'feste Plätze',
+        'bekommt auch Schlüsselart 1',
+      ]) {
+        expect(flat(text), `${name}: ${old}`).not.toContain(old);
+      }
+    }
   });
   it('relay.md: one relay instance per key file, and the proxy limit per address stays far below the key budget', () => {
     const doc = flat(relayDoc);

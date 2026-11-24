@@ -98,7 +98,7 @@ Dienstliste und Anker): dafür das Repository klonen. Einzelheiten und „Lokal 
 
 **Sammelbetrieb (Betriebsart des Relays, Vorgabe aus):** Mit `RELAY_BATCH_MS` sammelt das Relay die Hashes eines Fensters in
 einem Merkle-Baum und lässt den Dienst **einen** Stempel für alle geben (hält die Grenzen der Dienste ein, die Antwort
-kommt nach dem Fenster). Die Antwort trägt dann zusätzlich `batch` (`salt`, `index`, `size`, `path`); die App prüft sie mit
+kommt nach dem Fenster; die Frist der App und das Lese-Timeout des Proxys: Wartegrenze + Fenster + Kette der auf den Mindestabstand wartenden Fenster + 17 s, siehe „Latenz und Fristen“). Die Antwort trägt dann zusätzlich `batch` (`salt`, `index`, `size`, `path`); die App prüft sie mit
 `verifyBatchedTimestamp({ token, hash, batch }, [ankerPem], { now, minGenTime })` und bewahrt Token und Beleg mit dem Hash
 auf. Das ist **kein Einzelstempel** auf den Hash, und das Relay sieht alle Hashes; Einzelheiten in
 [`docs/relay.md`](docs/relay.md) („Sammelbetrieb“) und [`docs/grenzen.md`](docs/grenzen.md).

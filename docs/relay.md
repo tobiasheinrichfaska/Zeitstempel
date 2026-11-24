@@ -358,26 +358,26 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
 
 Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 
-| Status | Code                                                                            | Bedeutung                                                                                                                                                                                                                                                        |
-| ------ | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                                                                                                                                                                   |
-| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                                                                                                                                                                     |
-| 400    | `bad-request`                                                                   | Anfrageziel ist keine gültige Adresse (z. B. `//`, `//[`) oder nicht gleich dem kanonischen Pfad (`./`, `\`, Absolutform)                                                                                                                                        |
-| 400    | `bad-mode`                                                                      | `mode` im JSON-Körper hat einen anderen Wert als `"solo"` (nur nach bestandener Anmeldung)                                                                                                                                                                       |
-| 400    | `bad-upstream`                                                                  | `upstream` passt nicht zum Dienst: vorhanden, wo der Dienst keines nimmt (Quelle `relay`, keine `auth`), fehlend, wo die App eines liefern muss, falsche Form, Zeichen oder Länge (nur nach bestandener Anmeldung)                                               |
-| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich                                                                                                                                        |
-| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                                                                                                                                                                 |
-| 403    | `solo-not-allowed`                                                              | Ein Schlüssel der Art 1 (oder ohne Art 2) verlangte `mode: "solo"` (nur im Sammelbetrieb; kommt **sofort**, vor jeder Arbeit: kein Fenster, kein Platz, kein Warten, kein Budget verbraucht; nur die Zähler `soloDenied` und `refused` kennen es)                |
-| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                                                                                                                                                                 |
-| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                                                                                                                                                       |
-| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit                                                                                                                                              |
-| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                                                                                                                                                       |
-| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                                                                                                                                                             |
-| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                                                                                                                                                      |
-| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`)                                                                                                                                     |
-| 503    | `shutting-down`                                                                 | Nur im Sammelbetrieb: das Relay wird beendet; die Anfrage war nicht (mehr) in einem Fenster, die App versucht es später neu                                                                                                                                      |
-| 503    | `busy`                                                                          | Im Sammelbetrieb: kein freier Platz beim Dienst innerhalb von `RELAY_MAX_WAIT_MS`, oder die Solo-Warteschlange des Dienstes ist voll; immer: die Tabelle der Zugangsdaten-Identitäten des Dienstes ist voll (`upstreamIdentitiesMax`); `Retry-After` in Sekunden |
-| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                                                                                                                                                              |
+| Status | Code                                                                            | Bedeutung                                                                                                                                                                                                                                                                                                                                             |
+| ------ | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                                                                                                                                                                                                                                                        |
+| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                                                                                                                                                                                                                                                          |
+| 400    | `bad-request`                                                                   | Anfrageziel ist keine gültige Adresse (z. B. `//`, `//[`) oder nicht gleich dem kanonischen Pfad (`./`, `\`, Absolutform)                                                                                                                                                                                                                             |
+| 400    | `bad-mode`                                                                      | `mode` im JSON-Körper hat einen anderen Wert als `"solo"` (nur nach bestandener Anmeldung)                                                                                                                                                                                                                                                            |
+| 400    | `bad-upstream`                                                                  | `upstream` passt nicht zum Dienst: vorhanden, wo der Dienst keines nimmt (Quelle `relay`, keine `auth`), fehlend, wo die App eines liefern muss, falsche Form, Zeichen oder Länge (nur nach bestandener Anmeldung)                                                                                                                                    |
+| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich                                                                                                                                                                                                                             |
+| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                                                                                                                                                                                                                                                      |
+| 403    | `solo-not-allowed`                                                              | Ein Schlüssel der Art 1 (oder ohne Art 2) verlangte `mode: "solo"` (nur im Sammelbetrieb; kommt **sofort** nach der Prüfung der Form des Körpers (`415`, `400 bad-hash`, `bad-mode`, `bad-upstream` gehen vor), vor jeder Arbeit: kein Fenster, kein Platz, kein Warten, kein Budget verbraucht; nur die Zähler `soloDenied` und `refused` kennen es) |
+| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                                                                                                                                                                                                                                                      |
+| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                                                                                                                                                                                                                                            |
+| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit                                                                                                                                                                                                                                   |
+| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                                                                                                                                                                                                                                            |
+| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                                                                                                                                                                                                                                                  |
+| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                                                                                                                                                                                                                                           |
+| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`)                                                                                                                                                                                                                          |
+| 503    | `shutting-down`                                                                 | Nur im Sammelbetrieb: das Relay wird beendet; die Anfrage war nicht (mehr) in einem Fenster, die App versucht es später neu                                                                                                                                                                                                                           |
+| 503    | `busy`                                                                          | Im Sammelbetrieb: kein freier Platz beim Dienst innerhalb von `RELAY_MAX_WAIT_MS`, oder die Solo-Warteschlange des Dienstes ist voll; immer: die Tabelle der Zugangsdaten-Identitäten des Dienstes ist voll (`upstreamIdentitiesMax`); `Retry-After` in Sekunden                                                                                      |
+| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                                                                                                                                                                                                                                                   |
 
 ## Sammelbetrieb
 
@@ -498,22 +498,36 @@ mindestens `RELAY_BATCH_MS=15000`). Die Startzeile im Protokoll nennt dann `batc
 ### Latenz und Fristen
 
 Die Antwort kommt **nach dem Fenster** plus der Zeit des Dienstes, im ungünstigsten Fall nach `RELAY_BATCH_MS` + 10 s
-(`upstreamTimeoutMs`) + Prüfung. Die Frist von 5 s (`requestTimeoutMs`) gilt nur dem **Lesen der Anfrage**; die Antwort
-darf später kommen. **Folge für die Fristen:**
+(`upstreamTimeoutMs`) + Prüfung, wenn der Dienst frei ist. Die Frist von 5 s (`requestTimeoutMs`) gilt nur dem **Lesen
+der Anfrage**; die Antwort darf später kommen. Dazu kommen zwei Wartezeiten, die nur im Mangelfall auftreten:
 
-- Die Frist der App ab Sendebeginn ist **mindestens `RELAY_BATCH_MS` + 17 s** (statt 17 s); bei 5000 ms also 22 s
-  (`AbortSignal.timeout(batchMs + 17_000)`).
-- Der Reverse-Proxy braucht ein Lese-Timeout von mindestens **Fenster + 17 s** (nginx `proxy_read_timeout`, Caddy
+- **Warten auf einen Platz** (nur eine Anfrage, die ein neues Fenster öffnen muss, siehe „Schlüsselarten und
+  Solo-Stempel“): höchstens `RELAY_MAX_WAIT_MS`.
+- **Warten des geschlossenen Fensters auf den Mindestabstand** (Kettenwartezeit, siehe „Der Planer je Dienst“): ein
+  Fenster, das voll schließt oder kurz nach einem Solo-Stempel stempelt, ruft den Dienst erst `minIntervalMs` nach dem
+  Aufruf davor. Liegen schon `k` andere Fenster vor ihm, die ebenfalls warten (jedes ein Abstand nach dem vorigen), wartet
+  es bis zu **(k + 1) · `minIntervalMs`**, nicht nur `minIntervalMs`. **Obergrenze:** jedes wartende Fenster hält einen
+  Platz im Mengenbudget des Dienstes (`60000 / minIntervalMs` je Minute), die Kette liegt also immer innerhalb **einer
+  Budgetminute: höchstens 60 s** (bei den mitgelieferten Diensten 60 s: 4 Plätze zu je 15 s, FreeTSA 12 zu je 5 s).
+  **Wie lang sie wirklich wird:** nur **volle** Fenster bilden Ketten; ein Fenster füllt sich nur, wenn in seiner Zeit
+  `RELAY_BATCH_MAX` Anfragen kommen, und das Relay nimmt höchstens `perMinuteTotal` (60) je Minute an. Bei
+  `RELAY_BATCH_MAX` > 60 (Vorgabe 128) kann also kein Fenster voll werden: dann wartet ein Fenster nur auf einen
+  Solo-Stempel unmittelbar davor, **höchstens `minIntervalMs`**. Mit kleinem `RELAY_BATCH_MAX` (zum Beispiel 2) können
+  bis zu `⌊60 / RELAY_BATCH_MAX⌋` volle Fenster je Minute entstehen und die Kette wächst bis zur Obergrenze.
+
+**Folge für die Fristen** (`Kette` = `minIntervalMs` bei `RELAY_BATCH_MAX` > 60, sonst 60 s als sichere Obergrenze):
+
+- Die Frist der App ab Sendebeginn ist **mindestens `RELAY_BATCH_MS` + Kette + 17 s** (17 s = 10 s Dienst + 7 s Reserve
+  für Lesen des Körpers und Prüfung); wartet die Anfrage auch auf einen Platz, kommt `RELAY_MAX_WAIT_MS` dazu:
+  **`RELAY_MAX_WAIT_MS` + Fenster + Kette + 17 s** (`AbortSignal.timeout(maxWaitMs + batchMs + chainMs + 17_000)`).
+  Beispiele: Vorgabe (30 s Wartegrenze, 5 s Fenster, 15-s-Dienst, `RELAY_BATCH_MAX` 128): 30 + 5 + 15 + 17 = **67 s**; mit
+  kleinem `RELAY_BATCH_MAX`: 30 + 5 + 60 + 17 = **112 s**. Ohne Wartegrenze (die Anfrage bekommt sofort einen Platz):
+  5 + 15 + 17 = 37 s beziehungsweise 5 + 60 + 17 = 82 s.
+- Der Reverse-Proxy braucht ein Lese-Timeout von mindestens **derselben Frist** (nginx `proxy_read_timeout`, Caddy
   `response_header_timeout`), besser 3 s mehr. Mit dem Wert aus „Betrieb hinter einem Reverse-Proxy“ (17 bis 20 s)
   bricht der Proxy Anfragen ab, die das Relay noch zählt.
-- Wartet eine Anfrage zusätzlich auf einen freien Platz (siehe „Schlüsselarten und Solo-Stempel“), kommt die Wartezeit
-  dazu: Frist der App und Lese-Timeout des Proxys mindestens **`RELAY_MAX_WAIT_MS` + Fenster + 17 s** (Vorgabe 30 s
-  Wartegrenze: bei 5 s Fenster 52 s; bei einer Wartegrenze von 60 s und einem Fenster von 60 s 137 s). Ohne Fenster
-  (Solo-Stempel der Art 2) genügt Wartegrenze + 17 s; das Warten auf den Mindestabstand (siehe „Der Planer je Dienst“)
-  liegt innerhalb der Wartegrenze.
-- Ein **Fenster** kann nach dem Schließen noch bis zu `minIntervalMs` auf den Mindestabstand zum letzten Aufruf desselben
-  Dienstes warten (wenn es voll schließt oder ein Solo-Stempel kurz vor seinem Stempel lag): die Antwort kommt dann um so
-  viel später (bei den mitgelieferten Diensten höchstens 15 s). Wer die Fristen knapp rechnet, addiert `minIntervalMs`.
+- Ein Solo-Stempel der Art 2 hat kein Fenster; sein Warten auf den Mindestabstand (auch hinter einer Kette) liegt
+  **innerhalb** der Wartegrenze: Frist der App und Lese-Timeout des Proxys mindestens `RELAY_MAX_WAIT_MS` + 17 s.
 - Sie ist **keine Echtzeit**: wer sofort einen Stempel braucht, nimmt den Einzelbetrieb (eine zweite Relay-Instanz
   ohne `RELAY_BATCH_MS`).
 
@@ -522,8 +536,9 @@ darf später kommen. **Folge für die Fristen:**
 ```ts
 import { fromBase64Url, verifyBatchedTimestamp, verifyTimestampToken } from 'zeitstempel';
 
-// … Anfrage wie in „Die App als Client“ signieren und senden, mit der längeren Frist:
-//   fetch(relay + path, { method: 'POST', headers, body, signal: AbortSignal.timeout(batchMs + 17_000) })
+// … Anfrage wie in „Die App als Client“ signieren und senden, mit der längeren Frist (Wartegrenze + Fenster + Kette
+//   + 17 s, siehe „Latenz und Fristen“; chainMs = minIntervalMs des Dienstes, bei kleinem RELAY_BATCH_MAX 60_000):
+//   fetch(relay + path, { method: 'POST', headers, body, signal: AbortSignal.timeout(maxWaitMs + batchMs + chainMs + 17_000) })
 const body = await res.json(); // 200 { service, genTime, accuracyMs, serial, token, batch? }
 const token = fromBase64Url(body.token)!;
 const options = { now: new Date(), minGenTime: new Date(sentMs - 60_000) };
@@ -630,9 +645,13 @@ Solo-Stempel gibt es **nur für die Schlüsselart 2**.
 
 1. Art 2: Solo **sofort**, mit einem Platz des Dienstes für sich allein, im Rahmen der Grenzen, und nach dem
    **Mindestabstand** zum letzten Aufruf desselben Dienstes (siehe „Der Planer je Dienst“).
-2. Art 1 (oder eine Anfrage ohne Schlüssel): `mode: "solo"` ist **sofort** `403 solo-not-allowed`, **vor jeder Arbeit**.
+2. Art 1 (oder eine Anfrage ohne Schlüssel): `mode: "solo"` ist **sofort** `403 solo-not-allowed`, **vor jeder Arbeit**, aber
+   **nach der Prüfung der Form des Körpers**: ein falscher Medientyp (`415`), ein ungültiger Hash (`400 bad-hash`), ein
+   anderer `mode` (`400 bad-mode`) und ungültige oder fehlende Zugangsdaten des Dienstes (`400 bad-upstream`) kommen vor
+   dem `403` (Reihenfolge im Code: Form des Körpers, dann Zugangsdaten, dann Schlüsselart). Mit **`RELAY_AUTH=off`** gibt es
+   keinen Schlüssel und damit keine Art 2: im Sammelbetrieb ist **jedes** `mode: "solo"` ein `403`.
    Die Anfrage wartet nicht, öffnet kein Fenster, tritt keinem bei, bucht keinen Platz, kommt nicht in den Baum, legt keine
-   Zugangsdaten-Identität an und ruft den Dienst nicht auf; die Zugangsdaten der Anfrage spielen keine Rolle. Die
+   Zugangsdaten-Identität an und ruft den Dienst nicht auf; gültige Zugangsdaten der Anfrage spielen keine Rolle (ungültige sind `400 bad-upstream`, siehe oben). Die
    Fenster der anderen bleiben unberührt. **Zähler:** `soloDenied` und `refused['solo-not-allowed']` zählen die
    Abweisung. **Budget:** sie kostet **kein** Gesamt-, Schlüssel- und Solo-Budget und schreibt nichts in den
    Wiederholungsspeicher (dieselbe Anfrage noch einmal gesendet bekommt wieder `403`, nicht `401`), wie die anderen sofortigen
@@ -648,8 +667,8 @@ Solo-Stempel gibt es **nur für die Schlüsselart 2**.
    `perMinutePerKey` und das Solo-Limit je Schlüssel (`soloPerMinutePerKey`) werden bei der Annahme verbraucht (auch wenn
    sie später `503 busy` bekommt). Das Dienstbudget braucht der Stempel selbst.
 5. **Latenz und Fristen:** ein Solo der Art 2 antwortet sofort, wenn ein Platz frei ist und der Mindestabstand eingehalten
-   ist, sonst nach dem Warten (höchstens `RELAY_MAX_WAIT_MS`, der Abstand wächst die Latenz um bis zu `minIntervalMs`).
-   Frist der App und Lese-Timeout des Proxys: Wartegrenze + 17 s.
+   ist, sonst nach dem Warten (höchstens `RELAY_MAX_WAIT_MS`; der Abstand, auch hinter wartenden Fenstern, liegt darin).
+   Frist der App und Lese-Timeout des Proxys: Wartegrenze + 17 s (der Abstand liegt innerhalb der Wartegrenze).
 6. Zusätzlich gilt für jedes Solo die **eigene niedrige Grenze je Schlüssel** `soloPerMinutePerKey` (4 je Minute, nur im
    Arbeitsspeicher): die fünfte Anfrage in der Minute ist `429` mit `Retry-After`. Diese Zahl steht **nicht im Log**
    (keine Zahlen je Schlüssel im Betreiberlog); die Zähler unten sind Summen.
@@ -674,8 +693,9 @@ Solo-Stempel der Art 2; **der Rest wartet**.
   **zusätzlich** zum gleitenden Mengenbudget (der Abstand allein erlaubt bei `minIntervalMs` = 25 s noch drei Aufrufe in
   einer Minute, das Budget nur zwei) und nur im Sammelbetrieb (im Einzelbetrieb gilt nur das Mengenbudget mit `429`).
   - **Solo-Stempel (Art 2)** warten auf den Abstand (im Rahmen von `RELAY_MAX_WAIT_MS`): ein Solo direkt nach einem
-    Fenster oder einem anderen Solo geht erst nach `minIntervalMs` an den Dienst; die Latenz wächst um bis zu
-    `minIntervalMs` (bei den mitgelieferten Diensten 5 s oder 15 s). Mit dem Abstand erfüllt geht es **sofort**. Ist schon
+    Fenster oder einem anderen Solo geht erst nach `minIntervalMs` an den Dienst; die Latenz wächst um
+    `minIntervalMs`, hinter `k` wartenden Fenstern um bis zu `(k + 1) · minIntervalMs`, immer im Rahmen der Wartegrenze (bei
+    den mitgelieferten Diensten 5 s oder 15 s je Abstand). Mit dem Abstand erfüllt geht es **sofort**. Ist schon
     beim Eingang klar, dass der Abstand **länger** als die Wartegrenze dauert, bleibt es beim bisherigen `429 rate-limited`
     mit `Retry-After` (wie bei einem Platz, der zu spät frei wird); wer in der Warteschlange länger als die Wartegrenze
     wartet, bekommt `503 busy`.
@@ -683,11 +703,16 @@ Solo-Stempel der Art 2; **der Rest wartet**.
     zur Schließzeit. Liegt der letzte Aufruf (ein Solo-Stempel, der während des Fensters kam, oder ein Fenster, das
     voll geschlossen hat) dann noch keine `minIntervalMs` zurück, **wartet das geschlossene Fenster** bis dahin (es nimmt
     keine weiteren Anfragen mehr auf, hält seinen Platz und bucht ihn zur Zeit des Aufrufs); die Antwort kommt um so viel
-    später. Mehrere solche Fenster rufen in der Reihenfolge des Schließens auf. Ein Fenster nach einem Fenster mit
+    später. Mehrere solche Fenster rufen in der Reihenfolge des Schließens auf, **jedes einen Abstand nach dem vorigen** (das
+    `k`-te wartende Fenster wartet bis zu `k · minIntervalMs`, die Kette liegt innerhalb der Budgetminute, siehe „Latenz und
+    Fristen“). Ein Fenster nach einem Fenster mit
     `RELAY_BATCH_MS` >= `minIntervalMs` braucht den Abstand ohnehin schon (es stempelt erst nach seiner Sammelzeit); nur ein
     volles Fenster wäre früher dran und wartet.
-  - Der Abstand rechnet mit der Uhr des Relays; eine zurückgestellte Uhr hält ihn nicht länger als `minIntervalMs`, und das
-    Warten eines Fensters ist ein Zeitgeber dieser Länge (eine stehende Uhr hält kein Fenster fest).
+  - Der Abstand rechnet mit der Uhr des Relays; eine zurückgestellte Uhr hält ein Fenster nicht länger als seine Stelle in
+    der Kette (`k · minIntervalMs`), und das Warten eines Fensters ist ein Zeitgeber (eine stehende Uhr hält kein Fenster
+    fest). Beim Ablauf des Zeitgebers prüft das Relay den Abstand **noch einmal** gegen die monotone Uhr des Prozesses
+    (ein Stillstand der Ereignisschleife, nach dem mehrere Zeitgeber zugleich fällig sind, bringt zwei Aufrufe nicht näher
+    zusammen als `minIntervalMs`; ein Sprung der Uhr nach vorn zählt dagegen als vergangene Zeit); ist er noch nicht erreicht, wartet das Fenster den Rest.
 - **Warten nur im Mangelfall.** Ist ein Platz frei (und für ein Solo der Mindestabstand erfüllt), wird die Anfrage sofort
   bedient (ein Fenster öffnet, ein Solo-Stempel geht an den Dienst); eine Anfrage in ein **offenes** Fenster braucht keinen Platz.
 - **Abwechselnd.** Warten ein Solo-Stempel und ein Sammelfenster zugleich, bekommen sie die Plätze **abwechselnd**: nichts
@@ -853,7 +878,8 @@ haben die Identität „der Dienst selbst“, wie bisher. **Fenster, Plätze, Wa
 gelten je (Dienst, Identität).** Hashes mit verschiedenen Zugangsdaten landen **nie** im selben Fenster und nie im selben
 Baum (der Dienst sähe sonst Hashes unter fremden Zugangsdaten gebündelt); der Mindestabstand zwischen zwei Aufrufen des Dienstes
 gilt **je Spur der Identität** (eine andere Identität hält keinen Aufruf auf). Eine Solo-Anfrage der Art 1 wird vor jeder
-Arbeit abgewiesen, die Zugangsdaten spielen dabei keine Rolle und legen keine Identität an.
+Arbeit abgewiesen (nach der Prüfung der Form des Körpers, ungültige Zugangsdaten sind vorher `400 bad-upstream`); gültige
+Zugangsdaten spielen dabei keine Rolle und legen keine Identität an.
 
 - **Obergrenze:** höchstens `upstreamIdentitiesMax` (64) Identitäten je Dienst gleichzeitig. Eine Identität wird verworfen,
   wenn sie ein ganzes Fenster (60 s) ruhig war und nichts mehr für sie wartet (Fenster, Warteschlange, laufender Aufruf);
@@ -1062,7 +1088,8 @@ Was jede Einrichtung leisten muss:
   unverändert zurückgeben.
 - Eine **Lese-Frist von mindestens 17 s** (besser 20 s): bis zu 5 bis 6 s für den Körper, bis zu 10 s für den Dienst,
   dazu die Prüfung. Kürzere Fristen des Proxys brechen Stempel ab, die das Relay noch zählt. **Im Sammelbetrieb**
-  kommt das Fenster dazu: mindestens `RELAY_BATCH_MS` + 17 s („Sammelbetrieb“, „Latenz und Fristen“).
+  kommen das Fenster, die Wartezeit auf einen Platz und die Kette der auf den Mindestabstand wartenden Fenster dazu:
+  mindestens `RELAY_MAX_WAIT_MS` + `RELAY_BATCH_MS` + Kette + 17 s („Latenz und Fristen“).
 - **Ratenlimit und Verbindungslimit je Adresse.** Das Relay selbst kennt keine Adressen. Der Rahmen ist klein: die vier
   mitgelieferten Dienste erlauben zusammen 24 Anfragen je Minute (FreeTSA mit 5 s: 12, die drei anderen mit 15 s: je 4).
 - **Das Limit je Adresse muss deutlich unter dem Budget eines Schlüssels liegen.** Ein App-Schlüssel gehört allen

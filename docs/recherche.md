@@ -71,13 +71,15 @@ externem Dienst. Ist ein Fenster voll (Höchstzahl oder Anfrage der Art 2), wart
   Relay-Konfiguration, nicht zur Anfrage.
 - **Anforderung:** im signierten Anfragekörper `{"hash": "…", "mode": "solo"}`; der Körper ist über den Körper-Hash an die
   Signatur gebunden. Schlüsselart 1 mit `mode: "solo"` wird abgelehnt (403).
-- **Planer je externem Dienst** in festen Plätzen im Abstand `minIntervalMs`; jeder Platz gehört genau einem externen
-  Stempel. Wartet eine Solo-Anfrage, bekommt sie den nächsten Platz; danach folgt ein Platz für ein offenes Sammelfenster
+- **Planer je externem Dienst** mit dem gleitenden Mengenbudget (`60000 / minIntervalMs` Plätze je Minute) und dem
+  Mindestabstand `minIntervalMs` zwischen zwei Aufrufen; jeder Platz gehört genau einem externen Stempel. Wartet eine
+  Solo-Anfrage (nur Art 2), bekommt sie den nächsten Platz; danach folgt ein Platz für ein offenes Sammelfenster
   (abwechselnd, damit nichts verhungert). Ist ein Sammelfenster voll, schließt es sofort und wartet auf den nächsten
   Platz; neue Anfragen öffnen das nächste Fenster.
-- **Allein im Fenster:** Hat ein Sammelfenster genau einen Teilnehmer, wird dessen Hash direkt gestempelt (ohne Baum, kein
-  `batch`-Feld in der Antwort). So bekommt auch Schlüsselart 1 einen alleinigen Stempel, aber nur, wenn niemand sonst im
-  Fenster war. Nebenwirkung: Die Antwortart verrät dem Einreicher grob, ob im Fenster noch jemand anfragte.
+- **Solo nur für Art 2:** Ein alleiniger Stempel (ohne Baum, kein `batch`-Feld in der Antwort) kommt nur auf Anfrage
+  `mode: "solo"` eines Schlüssels der Art 2. Schlüsselart 1 mit `mode: "solo"` bekommt sofort `403 solo-not-allowed`
+  (verworfener früherer Entwurf: ein einzelner Hash im Fenster wird direkt gestempelt; er verriet dem Einreicher, ob noch jemand
+  im Fenster anfragte).
 - **Wartegrenze („Sicherheitsfenster“):** Jede Anfrage hat eine höchste Wartezeit in der Warteschlange
   (`RELAY_MAX_WAIT_MS`); danach `503 busy` mit `Retry-After`. Die Warteschlange je Dienst ist begrenzt. Die 60 s der
   Anmeldung (Zeitfenster der Signatur) und die ±60 s der Frischeprüfung (um den Zeitpunkt der Anfrage an den Dienst)
