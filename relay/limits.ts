@@ -101,7 +101,10 @@ export const RELAY_LIMITS = {
   maxWaitDefaultMs: 30_000,
   /** RELAY_MAX_WAIT_MS: smallest accepted value. */
   maxWaitMinMs: 1_000,
-  /** RELAY_MAX_WAIT_MS: largest accepted value (the proxy and client time-outs must exceed it by 17 s). */
+  /**
+   * RELAY_MAX_WAIT_MS: largest accepted value. Proxy and client time-outs (docs/relay.md, "Latenz und Fristen"):
+   * single operation Wartegrenze + 17 s; collecting operation Wartegrenze + Fenster + Kette + 17 s.
+   */
   maxWaitMaxMs: 60_000,
   /**
    * Credentials of a paid service sent by the app (`upstream` in the signed body; docs/relay.md, "Zugangsdaten zu

@@ -83,7 +83,7 @@ Zusage der Betreiber.
   von FreeTSA in `services.json` ist **5 s** (12 Stempel je Minute): belegt ist 1 Anfrage je Sekunde, 5 s sind die
   vorsichtige Reserve (das Fünffache des erlaubten Takts). Das Relay hält den Abstand in **beiden Betriebsarten** ein: zwei Aufrufe
   desselben Dienstes liegen mindestens `minIntervalMs` auseinander (im Einzelbetrieb wartet eine Anfrage darauf, höchstens
-  `RELAY_MAX_WAIT_MS`, sonst `429`; `docs/relay.md`). Im **Sammelbetrieb** (`RELAY_BATCH_MS`, `docs/relay.md`)
+  `RELAY_MAX_WAIT_MS`, sonst `429` oder `503 busy`; `docs/relay.md`). Im **Sammelbetrieb** (`RELAY_BATCH_MS`, `docs/relay.md`)
   macht das Relay je Fenster einen einzigen Stempel für beliebig viele Hashes und hält den Takt des Dienstes damit
   unabhängig von der Zahl der Nutzer ein; das Fenster darf dann nicht kürzer sein als `minIntervalMs` (sonst startet das Relay nicht).
   Die anderen drei Dienste behalten 15 s.

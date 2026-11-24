@@ -60,7 +60,7 @@ function replyFor(request: Uint8Array, nowMs: number): Uint8Array {
 }
 
 export interface Harness {
-  calls: { imprint: Uint8Array; at: number; token?: string }[];
+  calls: { imprint: Uint8Array; at: number; mono: number; token?: string }[];
   /** The relay's clock is the real one plus `offset` ms (the tests set it back); requests are signed with it. */
   clock: { offset: number };
   /**
@@ -68,6 +68,12 @@ export interface Harness {
    * loop). The wall clock (`clock`) and this one are steered apart.
    */
   mono: { offset: number };
+  /**
+   * With `virtualMono: true` the relay's monotonic clock is this value (ms) and stands still until `advance` moves it:
+   * no timer jitter, so a test can test the distance to the millisecond. Without it the value is unused.
+   */
+  vmono: { now: number };
+  advance: (ms: number) => void;
   relay: ReturnType<typeof createRelayServer>['relay'];
   stats: ReturnType<typeof createRelayServer>['relay']['stats'];
   stamp: (
@@ -101,16 +107,21 @@ export async function start(
     /** The service takes a bearer token from the client: each token is an identity (its own lane). */
     bearer?: boolean;
     upstreamIdentities?: number;
+    /** The monotonic clock of the relay is virtual (`vmono`, moved by `advance` only); the real timers still run. */
+    virtualMono?: boolean;
   } = {},
 ): Promise<Harness> {
   const calls: Harness['calls'] = [];
   const clock = { offset: 0 };
   const mono = { offset: 0 };
+  const vmono = { now: 1_000_000 };
+  const monoNow = (): number => (over.virtualMono ? vmono.now : performance.now() + mono.offset);
   const t0 = Date.now();
   const stub: Upstream = async (_t, body, creds) => {
     calls.push({
       imprint: imprintOf(body),
       at: Date.now() - t0,
+      mono: monoNow(),
       ...(creds?.kind === 'bearer' ? { token: creds.token } : {}),
     });
     if (over.stampDelayMs) await new Promise((r) => setTimeout(r, over.stampDelayMs));
@@ -133,7 +144,7 @@ export async function start(
     upstream: stub,
     random: (n) => new Uint8Array(randomBytes(n)),
     now: () => Date.now() + clock.offset,
-    monotonicNow: () => performance.now() + mono.offset,
+    monotonicNow: monoNow,
     keys: over.keys ?? KEYS,
     ...(batch === null ? {} : { batch }),
     ...(over.upstreamIdentities === undefined
@@ -169,6 +180,10 @@ export async function start(
     calls,
     clock,
     mono,
+    vmono,
+    advance: (ms) => {
+      vmono.now += ms;
+    },
     relay,
     stats: relay.stats,
     stamp,

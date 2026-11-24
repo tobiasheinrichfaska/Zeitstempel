@@ -281,7 +281,7 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    haben (sonst `bad-key`/`bad-options`). **Realm:** ein `Uint8Array` aus einem anderen Realm (iframe, Worker, `vm`)
    wird abgewiesen; `privateKey` und `body` als `new Uint8Array(x)` übergeben.
 
-   Keine Cookies, kein `mode`-Zusatz nötig. Für jeden Versuch (auch nach `429`/`401`) neu signieren. Die Frist der App sollte **`RELAY_MAX_WAIT_MS` + 17 s ab Sendebeginn** betragen (Vorgabe 30 + 17 = 47 s; im Sammelbetrieb dazu Fenster und Kette, siehe „Latenz und Fristen“): bis zu 5 bis 6 s für den Körper
+   Keine Cookies, kein `mode`-Zusatz nötig. Für jeden Versuch (auch nach `429`/`401`) neu signieren. Die Frist der App ab Sendebeginn sollte je Betriebsart betragen: **im Einzelbetrieb `RELAY_MAX_WAIT_MS` + 17 s** (Vorgabe 30 + 17 = 47 s), **im Sammelbetrieb `RELAY_MAX_WAIT_MS` + Fenster + Kette + 17 s** (Vorgabe mit 5 s Fenster und 15 s Dienst: 67 s; siehe „Latenz und Fristen“): bis zu 5 bis 6 s für den Körper
    (`requestTimeoutMs`), bis zu 10 s für den Dienst (`upstreamTimeoutMs`) und die Prüfung des Tokens, davor das Warten auf den Mindestabstand.
 
 2. Bei `200`: `fromBase64Url(body.token)` und
@@ -524,8 +524,8 @@ der Anfrage**; die Antwort darf später kommen. Dazu kommen zwei Wartezeiten, di
   kleinem `RELAY_BATCH_MAX`: 30 + 5 + 60 + 17 = **112 s**. Ohne Wartegrenze (die Anfrage bekommt sofort einen Platz):
   5 + 15 + 17 = 37 s beziehungsweise 5 + 60 + 17 = 82 s.
 - Der Reverse-Proxy braucht ein Lese-Timeout von mindestens **derselben Frist** (nginx `proxy_read_timeout`, Caddy
-  `response_header_timeout`), besser 3 s mehr. Mit dem Wert aus „Betrieb hinter einem Reverse-Proxy“ (17 bis 20 s)
-  bricht der Proxy Anfragen ab, die das Relay noch zählt.
+  `response_header_timeout`), besser 3 s mehr. Ein Lese-Timeout von 17 bis 20 s
+  bricht im Einzelbetrieb (Vorgabe 47 s) und im Sammelbetrieb (Vorgabe 67 s) Anfragen ab, die das Relay noch zählt.
 - Ein Solo-Stempel der Art 2 hat kein Fenster; sein Warten auf den Mindestabstand (auch hinter einer Kette) liegt
   **innerhalb** der Wartegrenze: Frist der App und Lese-Timeout des Proxys mindestens `RELAY_MAX_WAIT_MS` + 17 s.
 - **Im Einzelbetrieb** wartet eine Anfrage nur auf den Mindestabstand zum Aufruf davor (kein Fenster, keine Kette): Frist der App
@@ -538,8 +538,12 @@ der Anfrage**; die Antwort darf später kommen. Dazu kommen zwei Wartezeiten, di
 ```ts
 import { fromBase64Url, verifyBatchedTimestamp, verifyTimestampToken } from 'zeitstempel';
 
-// … Anfrage wie in „Die App als Client“ signieren und senden, mit der längeren Frist (Wartegrenze + Fenster + Kette
-//   + 17 s, siehe „Latenz und Fristen“; chainMs = minIntervalMs des Dienstes, bei kleinem RELAY_BATCH_MAX 60_000):
+// … Anfrage wie in „Die App als Client“ signieren und senden. Die Frist hängt von der Betriebsart ab
+//   (siehe „Latenz und Fristen“); die Werte setzt die App wie das Relay gestartet ist:
+//   maxWaitMs = RELAY_MAX_WAIT_MS (Vorgabe 30_000)
+//   batchMs   = RELAY_BATCH_MS im Sammelbetrieb (Beispiel 5_000), im Einzelbetrieb 0
+//   chainMs   = minIntervalMs des Dienstes im Sammelbetrieb (Beispiel 15_000; bei kleinem RELAY_BATCH_MAX 60_000), im Einzelbetrieb 0
+//   Einzelbetrieb: 30 + 17 = 47 s; Sammelbetrieb mit dem Beispiel: 30 + 5 + 15 + 17 = 67 s
 //   fetch(relay + path, { method: 'POST', headers, body, signal: AbortSignal.timeout(maxWaitMs + batchMs + chainMs + 17_000) })
 const body = await res.json(); // 200 { service, genTime, accuracyMs, serial, token, batch? }
 const token = fromBase64Url(body.token)!;
@@ -990,44 +994,44 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 
 ## Grenzen (`relay/limits.ts`)
 
-| Name                    | Wert   | Bedeutung                                                                                                                                                      |
-| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bodyBytes`             | 512    | Größter Körper einer Anfrage                                                                                                                                   |
-| `upstreamBytes`         | 65536  | Größte Antwort eines Dienstes                                                                                                                                  |
-| `upstreamTimeoutMs`     | 10000  | Frist für den ganzen Aufruf beim Dienst                                                                                                                        |
-| `requestTimeoutMs`      | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)                                                                                                   |
-| `perMinuteTotal`        | 60     | Anfragen je Minute über alle Dienste                                                                                                                           |
-| `windowMs`              | 60000  | Zeitfenster der Zähler                                                                                                                                         |
-| `perMinutePerKey`       | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                                                     |
-| `authWindowSeconds`     | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                                                 |
-| `authReplayEntries`     | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                                                             |
-| `authReplayKeyShare`    | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                                                                                                          |
-| `genTimeSlackMs`        | 60000  | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`)                                |
-| `maxOrigins`            | 16     | Zahl der einstellbaren Herkünfte                                                                                                                               |
-| `maxConnections`        | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab                                                                                                  |
-| `keepAliveProxyMs`      | 65000  | Leerlauf einer Verbindung zwischen zwei Anfragen bei Loopback-Bindung (`127.0.0.1`, `::1`, `localhost`; länger als der Leerlauf-Timeout üblicher Proxys, 60 s) |
-| `keepAliveDirectMs`     | 5000   | Leerlauf bei jeder anderen Bindung (entspricht `requestTimeoutMs`)                                                                                             |
-| `keepAliveMinMs`        | 1000   | `RELAY_KEEPALIVE_MS`: kleinster Wert                                                                                                                           |
-| `keepAliveMaxMs`        | 120000 | `RELAY_KEEPALIVE_MS`: größter Wert                                                                                                                             |
-| `batchMsMin`            | 1000   | `RELAY_BATCH_MS`: kleinster Wert (0 oder leer schaltet den Sammelbetrieb aus)                                                                                  |
-| `batchMsMax`            | 60000  | `RELAY_BATCH_MS`: größter Wert                                                                                                                                 |
-| `batchMaxDefault`       | 128    | `RELAY_BATCH_MAX`: Wert ohne Angabe                                                                                                                            |
-| `batchMaxMin`           | 2      | `RELAY_BATCH_MAX`: kleinster Wert                                                                                                                              |
-| `batchMaxMax`           | 1024   | `RELAY_BATCH_MAX`: größter Wert (so große Bäume prüft die Bibliothek, `MAX_SIZE`)                                                                              |
-| `soloPerMinutePerKey`   | 4      | Solo-Anfragen je Minute für eine Schlüsselkennung (zusätzlich zu `perMinutePerKey`; nur im Arbeitsspeicher, nicht im Log)                                      |
-| `soloQueueMax`          | 6      | Solo-Anfragen, die je Dienst auf einen Platz warten dürfen; eine weitere bekommt `503 busy`                                                                    |
-| `singleQueueMax`        | 16     | Einzelbetrieb: Anfragen, die je Dienst (und Identität) auf den Mindestabstand warten dürfen; eine weitere bekommt `503 busy` (nicht `soloQueueMax`)            |
-| `maxWaitDefaultMs`      | 30000  | `RELAY_MAX_WAIT_MS`: Wert ohne Angabe                                                                                                                          |
-| `maxWaitMinMs`          | 1000   | `RELAY_MAX_WAIT_MS`: kleinster Wert                                                                                                                            |
-| `maxWaitMaxMs`          | 60000  | `RELAY_MAX_WAIT_MS`: größter Wert (Proxy- und Client-Fristen dann mindestens Wartegrenze + 17 s; im Sammelbetrieb dazu Fenster und Kette)                      |
-| `upstreamUserMax`       | 64     | Zugangsdaten der App: längster Benutzername bei `basic` (druckbares ASCII, ohne `:`)                                                                           |
-| `upstreamPasswordMax`   | 128    | längstes Passwort bei `basic` (druckbares ASCII)                                                                                                               |
-| `upstreamTokenMax`      | 384    | längstes Token bei `bearer` und `header` (druckbares ASCII ohne Leerzeichen, `"` und `\`)                                                                      |
-| `upstreamIdentitiesMax` | 64     | gleichzeitig bekannte Zugangsdaten-Identitäten je Dienst (nur Arbeitsspeicher); eine weitere neue bekommt `503 busy`                                           |
-| `shutdownGraceMs`       | 2000   | Beenden: nach dieser Zeit werden alle Verbindungen geschlossen (auch eine mit halbem Request; Leerlauf-Verbindungen sofort)                                    |
-| `shutdownHardMs`        | 10000  | Beenden: spätestens nach dieser Zeit endet der Prozess mit Exit-Code 0, was auch noch offen ist                                                                |
-| `keyFileCheckMs`        | 5000   | Abstand, in dem das Relay die Schlüsseldatei liest (SHA-256 des Inhalts) und ihre Schreibrechte prüft                                                          |
-| `keyFileMaxBytes`       | 65536  | Größte Schlüsseldatei, die das Relay liest (Bytes); größere und Nicht-Dateien (FIFO, Gerät, Verzeichnis) werden nicht gelesen                                  |
+| Name                    | Wert   | Bedeutung                                                                                                                                                           |
+| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bodyBytes`             | 512    | Größter Körper einer Anfrage                                                                                                                                        |
+| `upstreamBytes`         | 65536  | Größte Antwort eines Dienstes                                                                                                                                       |
+| `upstreamTimeoutMs`     | 10000  | Frist für den ganzen Aufruf beim Dienst                                                                                                                             |
+| `requestTimeoutMs`      | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)                                                                                                        |
+| `perMinuteTotal`        | 60     | Anfragen je Minute über alle Dienste                                                                                                                                |
+| `windowMs`              | 60000  | Zeitfenster der Zähler                                                                                                                                              |
+| `perMinutePerKey`       | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                                                          |
+| `authWindowSeconds`     | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                                                      |
+| `authReplayEntries`     | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                                                                  |
+| `authReplayKeyShare`    | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                                                                                                               |
+| `genTimeSlackMs`        | 60000  | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`)                                     |
+| `maxOrigins`            | 16     | Zahl der einstellbaren Herkünfte                                                                                                                                    |
+| `maxConnections`        | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab                                                                                                       |
+| `keepAliveProxyMs`      | 65000  | Leerlauf einer Verbindung zwischen zwei Anfragen bei Loopback-Bindung (`127.0.0.1`, `::1`, `localhost`; länger als der Leerlauf-Timeout üblicher Proxys, 60 s)      |
+| `keepAliveDirectMs`     | 5000   | Leerlauf bei jeder anderen Bindung (entspricht `requestTimeoutMs`)                                                                                                  |
+| `keepAliveMinMs`        | 1000   | `RELAY_KEEPALIVE_MS`: kleinster Wert                                                                                                                                |
+| `keepAliveMaxMs`        | 120000 | `RELAY_KEEPALIVE_MS`: größter Wert                                                                                                                                  |
+| `batchMsMin`            | 1000   | `RELAY_BATCH_MS`: kleinster Wert (0 oder leer schaltet den Sammelbetrieb aus)                                                                                       |
+| `batchMsMax`            | 60000  | `RELAY_BATCH_MS`: größter Wert                                                                                                                                      |
+| `batchMaxDefault`       | 128    | `RELAY_BATCH_MAX`: Wert ohne Angabe                                                                                                                                 |
+| `batchMaxMin`           | 2      | `RELAY_BATCH_MAX`: kleinster Wert                                                                                                                                   |
+| `batchMaxMax`           | 1024   | `RELAY_BATCH_MAX`: größter Wert (so große Bäume prüft die Bibliothek, `MAX_SIZE`)                                                                                   |
+| `soloPerMinutePerKey`   | 4      | Solo-Anfragen je Minute für eine Schlüsselkennung (zusätzlich zu `perMinutePerKey`; nur im Arbeitsspeicher, nicht im Log)                                           |
+| `soloQueueMax`          | 6      | Solo-Anfragen, die je Dienst auf einen Platz warten dürfen; eine weitere bekommt `503 busy`                                                                         |
+| `singleQueueMax`        | 16     | Einzelbetrieb: Anfragen, die je Dienst (und Identität) auf den Mindestabstand warten dürfen; eine weitere bekommt `503 busy` (nicht `soloQueueMax`)                 |
+| `maxWaitDefaultMs`      | 30000  | `RELAY_MAX_WAIT_MS`: Wert ohne Angabe                                                                                                                               |
+| `maxWaitMinMs`          | 1000   | `RELAY_MAX_WAIT_MS`: kleinster Wert                                                                                                                                 |
+| `maxWaitMaxMs`          | 60000  | `RELAY_MAX_WAIT_MS`: größter Wert (Proxy- und Client-Fristen im Einzelbetrieb mindestens Wartegrenze + 17 s, im Sammelbetrieb Wartegrenze + Fenster + Kette + 17 s) |
+| `upstreamUserMax`       | 64     | Zugangsdaten der App: längster Benutzername bei `basic` (druckbares ASCII, ohne `:`)                                                                                |
+| `upstreamPasswordMax`   | 128    | längstes Passwort bei `basic` (druckbares ASCII)                                                                                                                    |
+| `upstreamTokenMax`      | 384    | längstes Token bei `bearer` und `header` (druckbares ASCII ohne Leerzeichen, `"` und `\`)                                                                           |
+| `upstreamIdentitiesMax` | 64     | gleichzeitig bekannte Zugangsdaten-Identitäten je Dienst (nur Arbeitsspeicher); eine weitere neue bekommt `503 busy`                                                |
+| `shutdownGraceMs`       | 2000   | Beenden: nach dieser Zeit werden alle Verbindungen geschlossen (auch eine mit halbem Request; Leerlauf-Verbindungen sofort)                                         |
+| `shutdownHardMs`        | 10000  | Beenden: spätestens nach dieser Zeit endet der Prozess mit Exit-Code 0, was auch noch offen ist                                                                     |
+| `keyFileCheckMs`        | 5000   | Abstand, in dem das Relay die Schlüsseldatei liest (SHA-256 des Inhalts) und ihre Schreibrechte prüft                                                               |
+| `keyFileMaxBytes`       | 65536  | Größte Schlüsseldatei, die das Relay liest (Bytes); größere und Nicht-Dateien (FIFO, Gerät, Verzeichnis) werden nicht gelesen                                       |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4, bei FreeTSA mit 5 s: 12). `perMinuteTotal` und
 `minIntervalMs` sind zuerst ein **Mengenbudget je Minute**: Das Relay lässt höchstens so viele Anfragen durch, dass der
@@ -1111,7 +1115,7 @@ Was jede Einrichtung leisten muss:
 - Die Köpfe **`Origin`** und **`X-Zeitstempel-Auth`** unverändert durchreichen (und `Content-Type`); `Origin` nicht
   entfernen, sonst gilt der Aufruf als Aufruf ohne Browser. Die Antworten (auch `Access-Control-*`, `Retry-After`)
   unverändert zurückgeben.
-- Eine **Lese-Frist von mindestens `RELAY_MAX_WAIT_MS` + 17 s** (Vorgabe 47 s, besser 3 s mehr): bis zu 5 bis 6 s für den Körper, bis zu 10 s für den Dienst,
+- Eine **Lese-Frist von mindestens `RELAY_MAX_WAIT_MS` + 17 s** (Einzelbetrieb, Vorgabe 47 s, besser 3 s mehr): bis zu 5 bis 6 s für den Körper, bis zu 10 s für den Dienst,
   dazu die Prüfung und, im Einzelbetrieb wie im Sammelbetrieb, das Warten auf den Mindestabstand (höchstens `RELAY_MAX_WAIT_MS`). Kürzere Fristen des Proxys brechen Stempel ab, die das Relay noch zählt. **Im Sammelbetrieb**
   kommen das Fenster und die Kette der auf den Mindestabstand wartenden Fenster dazu:
   mindestens `RELAY_MAX_WAIT_MS` + `RELAY_BATCH_MS` + Kette + 17 s („Latenz und Fristen“).
@@ -1165,7 +1169,8 @@ server {
         proxy_set_header Host $host;
         proxy_connect_timeout 5s;
         proxy_send_timeout    20s;
-        proxy_read_timeout    20s;          # mindestens 17 s
+        proxy_read_timeout    70s;          # Einzelbetrieb mindestens 47 s; Sammelbetrieb mit den Vorgaben 67 s,
+                                            # bei kleinem RELAY_BATCH_MAX 112 s (dann 115 s); siehe „Latenz und Fristen“
         proxy_redirect off;
         # Origin und X-Zeitstempel-Auth gibt nginx von sich aus weiter: nicht mit proxy_set_header leeren.
     }
@@ -1182,7 +1187,8 @@ relay.example {
     reverse_proxy 127.0.0.1:8080 {
         transport http {
             dial_timeout            5s
-            response_header_timeout 20s    # mindestens 17 s
+            response_header_timeout 70s    # Einzelbetrieb mindestens 47 s; Sammelbetrieb mit den Vorgaben 67 s,
+                                           # bei kleinem RELAY_BATCH_MAX 112 s (dann 115 s)
         }
     }
 }

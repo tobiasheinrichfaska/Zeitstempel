@@ -229,7 +229,10 @@ describe('the audit fixes are written down where a reader looks (Befunde 1-12)',
     expect(relayDoc).toContain('**nginx**');
     expect(relayDoc).toContain('**Caddy**');
     expect(doc).toContain('nicht gegen einen echten Proxy getestet');
-    expect(doc).toContain('mindestens 17 s');
+    expect(doc).toContain('Einzelbetrieb mindestens 47 s');
+    expect(doc).toContain('proxy_read_timeout 70s;');
+    expect(doc).toContain('response_header_timeout 70s');
+    expect(doc).toContain('bei kleinem RELAY_BATCH_MAX 112 s (dann 115 s)');
     expect(relayDoc).toContain('X-Zeitstempel-Auth');
     expect(doc).toContain('soweit es um die Bindung an den Hash geht');
     for (const word of ['Frische', 'Verfügbarkeit', 'Vertraulichkeit des Hashes']) {

@@ -139,6 +139,12 @@ export interface Relay {
   noteKeyReload: (applied: boolean) => void;
   /** Counts the key file turning writable for group or others (once per change of state). */
   noteKeyFileWritable: () => void;
+  /**
+   * FOR TESTS ONLY (changes no behaviour, never output by the server): how many entries the tables per identity hold
+   * (identities, budget times, last calls, lanes of the planner, gates of single operation). Their number must stay
+   * limited: an expired identity leaves none behind.
+   */
+  heldForTests: () => Record<'known' | 'windows' | 'lastCall' | 'lanes' | 'gates', number>;
 }
 
 export function createRelay(options: RelayOptions): Relay {
@@ -1427,5 +1433,12 @@ export function createRelay(options: RelayOptions): Relay {
     setKeys,
     noteKeyReload,
     noteKeyFileWritable,
+    heldForTests: () => ({
+      known: known.size,
+      windows: windows.size,
+      lastCall: lastCall.size,
+      lanes: lanes.size,
+      gates: gates.size,
+    }),
   };
 }

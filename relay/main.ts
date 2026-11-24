@@ -15,8 +15,9 @@
 //   RELAY_BATCH_MS           collecting operation: window in ms, 1000 to 60000 (not set, empty or 0: off, every
 //                            request gets a stamp of its own; docs/relay.md, "Sammelbetrieb")
 //   RELAY_BATCH_MAX          most requests in one window, 2 to 1024 (default 128)
-//   RELAY_MAX_WAIT_MS        collecting operation: the longest a request waits for a free slot of its service,
-//                            1000 to 60000 (default 30000); then 503 busy
+//   RELAY_MAX_WAIT_MS        the longest a request waits, 1000 to 60000 (default 30000); then 503 busy. Both
+//                            operations: the minimum distance to the previous call of the service (single
+//                            operation too); collecting operation: also a free slot of the service
 //   RELAY_UPSTREAM_AUTH_<ID>  credentials of a paid service that the relay holds itself (<ID>: the service id in capitals,
 //                            '-' as '_'); `user:password` for basic, the token for bearer and header; mandatory for a
 //                            chosen service with `auth.source` "relay", optional for "either", refused for the others

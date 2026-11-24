@@ -103,6 +103,11 @@ kommt nach dem Fenster; die Frist der App und das Lese-Timeout des Proxys: Warte
 auf. Das ist **kein Einzelstempel** auf den Hash, und das Relay sieht alle Hashes; Einzelheiten in
 [`docs/relay.md`](docs/relay.md) („Sammelbetrieb“) und [`docs/grenzen.md`](docs/grenzen.md).
 
+**Einzelbetrieb (Vorgabe, ohne `RELAY_BATCH_MS`):** jeder Stempel geht einzeln an den Dienst. Auch dort hält das Relay
+den Mindestabstand `minIntervalMs` zwischen zwei Aufrufen desselben Dienstes ein; eine Anfrage wartet darauf höchstens
+`RELAY_MAX_WAIT_MS` (Vorgabe 30 s), sonst `429` oder `503 busy`. Frist der App und Lese-Timeout des Proxys:
+`RELAY_MAX_WAIT_MS` + 17 s (Vorgabe 47 s).
+
 **Schlüsselarten und Solo-Stempel (nur im Sammelbetrieb):** Ein Schlüssel der Art 2 (`"solo": true` in der Schlüsseldatei,
 nur vom Eigentümer vergeben) darf `{"hash": "…", "mode": "solo"}` senden und bekommt einen **direkten** Stempel des Hashes
 ohne Baum (nötig für PDF-Dokumentzeitstempel; die Antwort hat kein `batch`). Ein Schlüssel der Art 1 bekommt für
