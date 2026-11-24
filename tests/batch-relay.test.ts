@@ -59,6 +59,8 @@ async function start(
     upstream?: Upstream;
     random?: (n: number) => Uint8Array;
     stampDelayMs?: number;
+    budgetWindowMs?: number;
+    maxWaitMs?: number;
   } = {},
 ): Promise<Harness> {
   const calls: Uint8Array[] = [];
@@ -85,6 +87,8 @@ async function start(
     now: () => clock.now,
     keys: KEYS,
     ...(batch === null ? {} : { batch }),
+    ...(over.budgetWindowMs === undefined ? {} : { budgetWindowMs: over.budgetWindowMs }),
+    ...(over.maxWaitMs === undefined ? {} : { maxWaitMs: over.maxWaitMs }),
   };
   const { server, relay } = createRelayServer(options);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -309,9 +313,14 @@ describe('relay, collecting operation: one stamp for a window', () => {
   });
 
   it('the service budget counts one stamp per window, the key budget every request', async () => {
-    // two stamps per minute for the service
-    const slow = SERVICES.map((s) => ({ ...s, minIntervalMs: 30_000 }));
-    h = await start({ services: slow, batch: { windowMs: 100, max: 100 } });
+    // two stamps per second for the service (a window of 100 ms at a distance of 500 ms: the second window waits for it)
+    const slow = SERVICES.map((s) => ({ ...s, minIntervalMs: 500 }));
+    h = await start({
+      services: slow,
+      batch: { windowMs: 100, max: 100 },
+      budgetWindowMs: 1000,
+      maxWaitMs: 200, // the slot of a third window is 500 ms away: later than that
+    });
     const w1 = await Promise.all(hashes(5, 'a').map((x) => h.stamp(x)));
     expect(w1.map((a) => a.status)).toEqual([200, 200, 200, 200, 200]); // five requests, one stamp
     const w2 = await Promise.all(hashes(3, 'b').map((x) => h.stamp(x)));

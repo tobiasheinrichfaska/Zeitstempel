@@ -12,9 +12,10 @@ import { sha256 } from './helpers.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
 
-// Key type 1 asks for `mode: "solo"` (collecting operation): it takes no slot of its own. It waits the whole collecting
-// time of a window; alone in the window at the close it is stamped directly, else `403 solo-not-allowed` (it stays out
-// of the tree). Key type 2 is unchanged (at once, a slot of its own). Real clock, short windows.
+// Solo stamps exist for key type 2 only. A key of type 1 that asks for `mode: "solo"` in collecting operation gets
+// `403 solo-not-allowed` at once, before any work: it does not wait, takes no slot, does not enter a window or the tree,
+// and costs no total or key budget (it is counted: `soloDenied`, `refused['solo-not-allowed']`). Key type 2 is unchanged.
+// Real clock, short windows.
 
 const SERVICES = loadServices().filter((s) => s.id === 'freetsa');
 const SIGNER = build();
@@ -165,129 +166,124 @@ async function start(
 const solo = (hash: Uint8Array) => ({ hash: toBase64Url(hash), mode: 'solo' });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const same = (a: Uint8Array, b: Uint8Array) => Buffer.from(a).equals(Buffer.from(b));
-const W = 400; // the window
 
-describe('key type 1 asks for solo: alone in the window it is stamped directly after the collecting time', () => {
+describe('key type 1 asks for solo: refused at once, before any work', () => {
   let h: Harness;
   afterEach(() => h.close());
 
-  it('alone: waits the full window, then a direct stamp of its own hash (no batch field), counted as solo', async () => {
-    h = await start({ batch: { windowMs: W, max: 100 } });
+  it('403 solo-not-allowed at once (no waiting for the window), no call to the service', async () => {
+    h = await start({ batch: { windowMs: 1500, max: 100 } });
     const x = sha256('alone');
-    const t = await h.timed(x, { key: KEY_A, body: solo(x) });
-    expect(t.res.status).toBe(200);
-    expect(t.at).toBeGreaterThanOrEqual(W - 30);
-    const body = (await t.res.json()) as Record<string, unknown>;
-    expect(Object.keys(body)).not.toContain('batch');
-    expect(h.calls).toHaveLength(1);
-    expect(same(h.calls[0]!.imprint, x)).toBe(true); // the unchanged hash
-    expect(h.calls[0]!.at).toBeGreaterThanOrEqual(W - 30); // not before the window closed
-    expect(h.stats()).toEqual({ stamped: 1, refused: {}, batched: 0, solo: 1 });
-  });
-
-  it('with another hash in the window: 403 after the window, the other one gets its receipt, one stamp for the window', async () => {
-    h = await start({ batch: { windowMs: W, max: 100 } });
-    const x = sha256('solo-with-other');
-    const y = sha256('the-other');
-    const other = h.stamp(y, { key: KEY_F }); // opens the window
-    await sleep(100);
     const t = await h.timed(x, { key: KEY_A, body: solo(x) });
     expect(t.res.status).toBe(403);
     expect(await t.res.json()).toEqual({ error: 'solo-not-allowed' });
-    expect(t.at).toBeGreaterThanOrEqual(W - 100 - 40); // it waited for the close, not an answer at the door
-    const got = await other;
-    expect(got.status).toBe(200);
-    const receipt = (await got.json()) as { batch: { size: number } };
-    expect(receipt.batch.size).toBe(1); // the refused solo request is not in the tree
-    expect(h.calls).toHaveLength(1);
-    expect(same(h.calls[0]!.imprint, x)).toBe(false);
-    expect(h.stats()).toMatchObject({
-      soloDenied: 1,
-      batched: 1,
+    expect(t.at).toBeLessThan(400); // the window is 1.5 s: it was not waited for
+    expect(h.calls).toHaveLength(0);
+    expect(h.stats()).toEqual({
+      stamped: 0,
       refused: { 'solo-not-allowed': 1 },
+      batched: 0,
+      soloDenied: 1,
     });
     expect(h.stats().solo).toBeUndefined();
   });
 
-  it('the solo request is the first in the window and another comes later: still 403 (not alone at the close)', async () => {
-    h = await start({ batch: { windowMs: W, max: 100 } });
-    const x = sha256('first-solo');
-    const first = h.stamp(x, { key: KEY_A, body: solo(x) });
-    await sleep(100);
-    const later = h.stamp(sha256('later'), { key: KEY_F });
-    expect((await first).status).toBe(403);
-    expect((await later).status).toBe(200);
-    expect(h.calls).toHaveLength(1);
-    expect(same(h.calls[0]!.imprint, x)).toBe(false);
-  });
-
-  it('several type 1 solo requests in one window: all 403, none in the tree, the service sees no stamp at all', async () => {
-    h = await start({ batch: { windowMs: W, max: 100 } });
-    const xs = [sha256('s1'), sha256('s2'), sha256('s3')];
-    const answers = await Promise.all(
-      xs.map((x, i) => h.stamp(x, { key: i === 2 ? KEY_F : KEY_A, body: solo(x) })),
-    );
-    expect(answers.map((a) => a.status)).toEqual([403, 403, 403]);
-    expect(h.calls).toHaveLength(0);
-    expect(h.stats()).toMatchObject({ soloDenied: 3, refused: { 'solo-not-allowed': 3 } });
-    expect(h.stats().stamped).toBe(0);
-  });
-
-  it('several solo requests and one normal one: the solo ones are 403, the normal one is a tree of one leaf', async () => {
-    h = await start({ batch: { windowMs: W, max: 100 } });
-    const [a, b, n] = [sha256('p1'), sha256('p2'), sha256('pn')];
-    const answers = await Promise.all([
-      h.stamp(a, { key: KEY_A, body: solo(a) }),
-      h.stamp(b, { key: KEY_F, body: solo(b) }),
-      h.stamp(n, { key: KEY_F }),
-    ]);
-    expect(answers.map((x) => x.status)).toEqual([403, 403, 200]);
-    expect(((await answers[2]!.json()) as { batch: { size: number } }).batch.size).toBe(1);
-    expect(h.calls).toHaveLength(1);
-  });
-
-  it('a window that held only refused solo requests books no slot: the next window opens at once', async () => {
+  it('it opens no window and books no slot: the next normal request is served at once', async () => {
     h = await start({
       batch: { windowMs: 150, max: 100 },
       minIntervalMs: 1000,
-      budgetWindowMs: 1000,
+      budgetWindowMs: 1000, // one slot a second
       maxWaitMs: 4000,
     });
-    const xs = [sha256('t1'), sha256('t2')];
+    const xs = [sha256('t1'), sha256('t2'), sha256('t3')];
     const refused = await Promise.all(xs.map((x) => h.stamp(x, { key: KEY_A, body: solo(x) })));
-    expect(refused.map((r) => r.status)).toEqual([403, 403]);
+    expect(refused.map((r) => r.status)).toEqual([403, 403, 403]);
     const t = await h.timed(sha256('after'), { key: KEY_F });
     expect(t.res.status).toBe(200);
-    expect(t.at).toBeLessThan(150 + 400); // window only: it did not wait for a booked slot of a second
+    expect(t.at).toBeLessThan(150 + 500); // the window only: no slot was booked for the refused requests
+    // and a type 2 solo stamp is not held back either
+    const s = sha256('type2-after');
+    expect((await h.stamp(s, { key: KEY_B, body: solo(s) })).status).toBe(200);
   });
 
-  it('the 403 after the waiting has spent the budgets: the solo limit per key counts it', async () => {
-    h = await start({ batch: { windowMs: 200, max: 100 }, minIntervalMs: 1000 });
-    const limit = RELAY_LIMITS.soloPerMinutePerKey;
-    const xs = Array.from({ length: limit }, (_, i) => sha256(`b${i}`));
-    const answers = await Promise.all(xs.map((x) => h.stamp(x, { key: KEY_A, body: solo(x) })));
-    expect(answers.map((a) => a.status)).toEqual(Array(limit).fill(403));
-    const x = sha256('one-more');
-    const over = await h.stamp(x, { key: KEY_A, body: solo(x) });
-    expect(over.status).toBe(429);
-    expect(over.headers.get('retry-after')).not.toBeNull();
-  });
-
-  it('a type 1 solo request joins a window that is open without a slot of its own', async () => {
-    h = await start({
-      batch: { windowMs: 300, max: 100 },
-      minIntervalMs: 1000,
-      budgetWindowMs: 1000,
-    });
-    const n = h.stamp(sha256('opens')); // the one slot of the second is the window's
-    await sleep(50);
-    const x = sha256('joins');
+  it('a request in an open window is refused at once too; the rider and the tree are untouched', async () => {
+    h = await start({ batch: { windowMs: 500, max: 100 } });
+    const y = sha256('rider');
+    const rider = h.stamp(y, { key: KEY_F }); // opens the window
+    await sleep(80);
+    const x = sha256('solo-in-open-window');
     const t = await h.timed(x, { key: KEY_A, body: solo(x) });
-    expect(t.res.status).toBe(403); // not 429: it joined the open window
-    expect((await n).status).toBe(200);
+    expect(t.res.status).toBe(403);
+    expect(t.at).toBeLessThan(250); // not after the close of the window (about 420 ms away)
+    const got = await rider;
+    expect(got.status).toBe(200);
+    const receipt = (await got.json()) as { batch: { size: number } };
+    expect(receipt.batch.size).toBe(1); // the refused request is not in the tree
+    expect(h.calls).toHaveLength(1);
+    expect(same(h.calls[0]!.imprint, x)).toBe(false);
+    expect(h.stats()).toMatchObject({ stamped: 1, batched: 1, soloDenied: 1 });
   });
 
-  it('the queue limit of solo stamps is for type 2 only: a full queue does not turn type 1 solo requests away with 503 busy', async () => {
+  it('the refused request costs no total, key or solo budget: far more than every limit, all 403, none 429', async () => {
+    h = await start({ batch: { windowMs: 200, max: 100 }, minIntervalMs: 1000 });
+    const n = RELAY_LIMITS.perMinutePerKey + RELAY_LIMITS.soloPerMinutePerKey + 5; // 29
+    const answers: number[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const x = sha256(`flood${i}`);
+      answers.push((await h.stamp(x, { key: KEY_A, body: solo(x) })).status);
+    }
+    expect(answers).toEqual(Array(n).fill(403));
+    expect(h.calls).toHaveLength(0);
+    // the same key still has its whole budget for a normal request
+    const ok = await h.stamp(sha256('normal-a'), { key: KEY_A });
+    expect(ok.status).toBe(200);
+    expect(h.stats()).toMatchObject({ soloDenied: n, refused: { 'solo-not-allowed': n } });
+    expect(h.stats().stamped).toBe(1);
+  });
+
+  it('counters: each refusal counts once in `soloDenied` and in `refused`, a stamp does not', async () => {
+    h = await start({ batch: { windowMs: 100, max: 100 } });
+    for (const i of [1, 2, 3]) {
+      const x = sha256(`c${i}`);
+      expect((await h.stamp(x, { key: i === 2 ? KEY_F : KEY_A, body: solo(x) })).status).toBe(403);
+    }
+    expect(h.stats()).toMatchObject({ soloDenied: 3, refused: { 'solo-not-allowed': 3 } });
+    expect(h.stats().stamped).toBe(0);
+    const z = sha256('type2');
+    expect((await h.stamp(z, { key: KEY_B, body: solo(z) })).status).toBe(200);
+    expect(h.stats()).toMatchObject({ stamped: 1, solo: 1, soloDenied: 3 });
+  });
+
+  it('the refusal does not depend on the others: also with a free service, alone and with riders', async () => {
+    h = await start({ batch: { windowMs: 300, max: 100 } });
+    const riders = [h.stamp(sha256('r1')), h.stamp(sha256('r2'), { key: KEY_F })];
+    const [a, b] = [sha256('sa'), sha256('sb')];
+    const refused = await Promise.all([
+      h.stamp(a, { key: KEY_A, body: solo(a) }),
+      h.stamp(b, { key: KEY_F, body: solo(b) }),
+    ]);
+    expect(refused.map((r) => r.status)).toEqual([403, 403]);
+    const sizes = await Promise.all(
+      riders.map(
+        async (r) => ((await r.then((x) => x.json())) as { batch: { size: number } }).batch.size,
+      ),
+    );
+    expect(sizes).toEqual([2, 2]);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('a malformed mode keeps its own answer (400 bad-mode) and is not counted as a refused solo request', async () => {
+    h = await start({ batch: { windowMs: 100, max: 100 } });
+    const res = await h.stamp(sha256('m'), {
+      key: KEY_A,
+      body: { hash: toBase64Url(sha256('m')), mode: 'x' },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'bad-mode' });
+    expect(h.stats().soloDenied).toBeUndefined();
+  });
+
+  it('the queue limit of solo stamps is for type 2 only: type 1 solo requests are 403, never 503 busy', async () => {
     const max = RELAY_LIMITS.soloQueueMax;
     h = await start({
       batch: { windowMs: 100, max: 100 },
@@ -297,99 +293,55 @@ describe('key type 1 asks for solo: alone in the window it is stamped directly a
       keys: [...KEYS, asRelayKey(KEY_C, true), asRelayKey(KEY_D, true), asRelayKey(KEY_G, false)],
     });
     const type2 = [KEY_B, KEY_C, KEY_D];
-    // one type 2 stamp takes the slot, `max` wait in the queue of the service: the queue is full
     const queued = Array.from({ length: max + 1 }, (_, i) => {
       const x = sha256(`full${i}`);
       return h.stamp(x, { key: type2[i % type2.length]!, body: solo(x) });
     });
     await sleep(60);
-    // more type 1 solo requests than the queue holds (`max` + 2, from two keys, each within its own solo limit)
     const type1 = Array.from({ length: max + 2 }, (_, i) => {
       const x = sha256(`t1-${i}`);
       return h.stamp(x, { key: i % 2 === 0 ? KEY_A : KEY_G, body: solo(x) });
     });
     const statuses = (await Promise.all(type1)).map((r) => r.status);
-    expect(statuses).not.toContain(503);
-    expect(statuses.every((st) => st === 200 || st === 403)).toBe(true);
+    expect(statuses).toEqual(Array(max + 2).fill(403));
     expect(h.stats().refused['busy']).toBeUndefined();
     expect((await Promise.all(queued)).map((r) => r.status)).toEqual(Array(max + 1).fill(200));
   });
 
   it('type 2 is unchanged: at once, a direct stamp, also while a window is open', async () => {
-    h = await start({ batch: { windowMs: 600, max: 100 } });
+    h = await start({ batch: { windowMs: 600, max: 100 }, minIntervalMs: 200 });
     const x = sha256('type2');
     const t = await h.timed(x, { key: KEY_B, body: solo(x) });
     expect(t.res.status).toBe(200);
     expect(t.at).toBeLessThan(300);
+    expect(Object.keys((await t.res.json()) as object)).not.toContain('batch');
     expect(same(h.calls[0]!.imprint, x)).toBe(true);
     expect(h.calls[0]!.at).toBeLessThan(300);
+    // while a window is open (its rider waits)
+    const rider = h.stamp(sha256('rider2'), { key: KEY_F });
+    await sleep(60);
+    const z = sha256('type2-again');
+    const again = await h.timed(z, { key: KEY_B, body: solo(z) });
+    expect(again.res.status).toBe(200);
+    expect(again.at).toBeLessThan(500 + 500);
+    expect((await rider).status).toBe(200);
   });
 
-  it('a type 2 stamp does not make a type 1 solo request "not alone" (only entries of its own window count)', async () => {
-    h = await start({ batch: { windowMs: W, max: 100 } });
-    const x = sha256('a-alone');
-    const a = h.stamp(x, { key: KEY_A, body: solo(x) });
-    await sleep(50);
-    const z = sha256('b-direct');
-    expect((await h.stamp(z, { key: KEY_B, body: solo(z) })).status).toBe(200);
-    expect((await a).status).toBe(200);
-    expect(h.calls.map((c) => same(c.imprint, x) || same(c.imprint, z))).toEqual([true, true]);
-  });
-
-  it('flood: type 1 solo requests that arrive together leave the window to the normal request (E1)', async () => {
-    // a 1.5 s service (4 slots per 6 s) as in the audit: four solo requests of one key at once
-    h = await start({
-      batch: { windowMs: 300, max: 100 },
-      minIntervalMs: 1500,
-      budgetWindowMs: 6000,
-      maxWaitMs: 1000,
-    });
-    const xs = Array.from({ length: 4 }, (_, i) => sha256(`flood${i}`));
-    const flood = xs.map((x) => h.stamp(x, { key: KEY_A, body: solo(x) }));
-    await sleep(20);
-    const n = await h.stamp(sha256('normal-b'), { key: KEY_F });
-    expect(n.status).toBe(200);
-    expect(((await n.json()) as { batch: { size: number } }).batch.size).toBe(1);
-    expect((await Promise.all(flood)).map((r) => r.status)).toEqual([403, 403, 403, 403]);
-    expect(h.calls).toHaveLength(1); // one stamp for the window; the solo requests took no slot
-  });
-
-  it('flood in a row: each solo request waits a window and takes at most the one slot of that window', async () => {
-    h = await start({
-      batch: { windowMs: 200, max: 100 },
-      minIntervalMs: 1500,
-      budgetWindowMs: 6000,
-      maxWaitMs: 1000,
-    });
-    // the second one meets a normal request in its window: it takes no slot at all
-    const x1 = sha256('row1');
-    expect((await h.stamp(x1, { key: KEY_A, body: solo(x1) })).status).toBe(200);
-    const x2 = sha256('row2');
-    const second = h.stamp(x2, { key: KEY_A, body: solo(x2) });
-    await sleep(40);
-    const n = h.stamp(sha256('normal'), { key: KEY_F });
-    expect((await second).status).toBe(403);
-    expect((await n).status).toBe(200);
-    expect(h.calls).toHaveLength(2); // two stamps, two slots (the first solo one and the shared window)
-  });
-
-  it('close() while a type 1 solo request waits in its window: 503 shutting-down, nothing stamped', async () => {
-    h = await start({ batch: { windowMs: 2000, max: 100 } });
-    const x = sha256('closing');
-    const waiting = h.stamp(x, { key: KEY_A, body: solo(x) });
-    await sleep(100);
-    h.relay.close();
-    const res = await waiting;
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'shutting-down' });
-    expect(h.calls).toHaveLength(0);
-  });
-
-  it('without collecting operation `mode: "solo"` stays without effect: a direct stamp at once', async () => {
+  it('without collecting operation `mode: "solo"` stays without effect: a direct stamp at once, no key type check', async () => {
     h = await start({ batch: null });
     const x = sha256('no-batch');
-    const t = await h.timed(x, { key: KEY_A, body: solo(x) });
+    const t = await h.timed(x, { key: KEY_A, body: solo(x) }); // key type 1
     expect(t.res.status).toBe(200);
     expect(t.at).toBeLessThan(300);
+    expect(h.stats()).toEqual({ stamped: 1, refused: {} });
+  });
+
+  it('after the relay is closed the answer is shutting-down, as for every request', async () => {
+    h = await start({ batch: { windowMs: 2000, max: 100 } });
+    h.relay.close();
+    const x = sha256('closing');
+    const res = await h.stamp(x, { key: KEY_A, body: solo(x) });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'shutting-down' });
   });
 });

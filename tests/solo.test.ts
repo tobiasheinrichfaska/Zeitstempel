@@ -193,39 +193,18 @@ describe('key type 2: who may ask for a solo stamp (collecting operation)', () =
     expect(h.stats()).toEqual({ stamped: 1, refused: {}, batched: 0, solo: 1 });
   });
 
-  it('type 1 gets a direct stamp after the collecting time when it is alone in the window', async () => {
-    h = await start();
-    const x = sha256('solo-a');
-    const res = await h.stamp(x, { key: KEY_A, body: solo(x) });
-    expect(res.status).toBe(200);
-    expect(Object.keys((await res.json()) as object)).not.toContain('batch');
-    expect(same(h.calls[0]!.imprint, x)).toBe(true);
-  });
-
-  it('type 1 is refused with 403 solo-not-allowed (after the window) when another request is in its window', async () => {
+  it('type 1 is refused with 403 solo-not-allowed at once, whatever the others do (detail: solo-type1.test.ts)', async () => {
     h = await start({ batch: { windowMs: 400, max: 100 } });
     const waiting = h.stamp(sha256('normal')); // opens the window
     await sleep(100);
     const x = sha256('solo-a2');
-    const denied = await h.stamp(x, { key: KEY_A, body: solo(x) });
-    expect(denied.status).toBe(403);
-    expect(await denied.json()).toEqual({ error: 'solo-not-allowed' });
+    const denied = await h.timed(x, { key: KEY_A, body: solo(x) });
+    expect(denied.res.status).toBe(403);
+    expect(await denied.res.json()).toEqual({ error: 'solo-not-allowed' });
+    expect(denied.at).toBeLessThan(250); // not after the window
     expect((await waiting).status).toBe(200); // the window itself is not disturbed
     expect(h.calls).toHaveLength(1);
     expect(h.stats()).toMatchObject({ soloDenied: 1, refused: { 'solo-not-allowed': 1 } });
-  });
-
-  it('type 1 is also refused when it meets the request that waited in the queue of the service in one window', async () => {
-    // one slot per second: the first stamp takes it, the next normal request waits for the next one
-    h = await start({ minIntervalMs: 1000, budgetWindowMs: 1000, maxWaitMs: 4000 });
-    const first = await h.stamp(sha256('first'), { key: KEY_B, body: solo(sha256('first')) });
-    expect(first.status).toBe(200);
-    const queued = h.stamp(sha256('queued')); // waits for the slot
-    await sleep(150);
-    const x = sha256('solo-a3');
-    const denied = await h.stamp(x, { key: KEY_A, body: solo(x) });
-    expect(denied.status).toBe(403);
-    expect((await queued).status).toBe(200);
   });
 
   it('type 2 gets its solo stamp even while a window is open; the window finishes on its own', async () => {
@@ -398,11 +377,20 @@ describe('planner: a solo stamp takes a whole slot of the service, the rest wait
   });
 
   it('a slot that is not free within the limit at all stays the old 429 (not a wait)', async () => {
-    h = await start({ minIntervalMs: 30_000, maxWaitMs: 5000 }); // two stamps per minute
-    for (const t of ['a', 'b']) expect((await h.stamp(sha256(t))).status).toBe(200);
-    const late = await h.timed(sha256('c'));
+    // two calls per 1.12 s, 400 ms apart: the third slot is free at about 1.12 s, 700 ms away, later than the limit of 600 ms
+    h = await start({ minIntervalMs: 400, budgetWindowMs: 1120, maxWaitMs: 600 });
+    for (const [t, key] of [
+      ['a', KEY_B],
+      ['b', KEY_C],
+    ] as const) {
+      const x = sha256(t);
+      expect((await h.stamp(x, { key, body: solo(x) })).status).toBe(200);
+    }
+    const c = sha256('c');
+    const late = await h.timed(c, { key: KEY_D, body: solo(c) });
     expect(late.res.status).toBe(429);
-    expect(late.at).toBeLessThan(1000);
+    expect(Number(late.res.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+    expect(late.at).toBeLessThan(400);
   });
 
   it('the queue of solo requests per service is limited: one more is 503 busy at once', async () => {

@@ -286,6 +286,8 @@ export function createRelay(options: RelayOptions): Relay {
      * slot of the service is taken later by the planner (`slotMs` says how long until one is free).
      */
     forService: boolean | 'defer' = true,
+    /** A solo stamp: it also has to keep the minimum distance to the last call of the service (`slotMs` counts it). */
+    forSolo = false,
   ): { wait: number | null; slotMs: number; spend: () => void } {
     const now = options.now();
     // Times in the future (the clock was set back) count as `now`: a jump back must not lock the budget
@@ -308,8 +310,9 @@ export function createRelay(options: RelayOptions): Relay {
     }
     // In collecting operation the slot of an open window counts too: its stamp is still to come (`stampAt`).
     const booked = batch ? [...own, ...reservedStamp(laneKey, now)] : own;
-    const slotMs =
+    const countMs =
       booked.length >= ownLimit ? Math.max(1, bw - (now - booked[booked.length - ownLimit]!)) : 0;
+    const slotMs = forSolo ? Math.max(countMs, spacingMs(laneKey, minIntervalMs, now)) : countMs;
     if (forService === true && own.length >= ownLimit) waits.push(until(own, ownLimit));
     if (kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey) {
       waits.push(until(mine, RELAY_LIMITS.perMinutePerKey));
@@ -537,11 +540,14 @@ export function createRelay(options: RelayOptions): Relay {
     // and the key type is not looked at.
     const wantsSolo = batch !== undefined && parsed.solo;
     if (batch && closed) return send(res, 503, { error: 'shutting-down' }, origin);
-    // Key type 2: a direct stamp at once, with a slot of its own. Key type 1 takes no slot of its own: it waits in a
-    // window like everybody else, for the whole collecting time, and is stamped directly only if it is alone in the
-    // window at its close (else `403 solo-not-allowed`: the others wait for their receipt, the service sees one stamp).
+    // Solo stamps exist for key type 2 only (a direct stamp at once, with a slot of its own). A key of type 1 (or no key)
+    // that asks for one is refused here, before any work: no window, no slot, no wait, no entry in the tree, no
+    // identity, and no total or key budget spent (like `bad-mode`); only the counters know it.
     const direct = wantsSolo && auth !== null && soloKids.has(auth.kid);
-    const alone = wantsSolo && !direct;
+    if (wantsSolo && !direct) {
+      stats.soloDenied = (stats.soloDenied ?? 0) + 1;
+      return send(res, 403, { error: 'solo-not-allowed' }, origin);
+    }
     // Collecting operation: a window that is open already takes this request without touching the service's
     // budget (one stamp per window); the budget of a key and the total still count every request.
     const open = batch ? openWindows.get(lk) : undefined;
@@ -559,6 +565,7 @@ export function createRelay(options: RelayOptions): Relay {
       service.minIntervalMs,
       auth?.kid ?? null,
       batch ? (joinsOpen ? false : 'defer') : true,
+      direct,
     );
     const cache = auth ? cacheWait(auth.kid) : null;
     const soloNow = wantsSolo && auth ? soloBudget(auth.kid) : null;
@@ -589,8 +596,8 @@ export function createRelay(options: RelayOptions): Relay {
         // The answer comes when the window is closed and the service has answered (the 5 s request deadline
         // is over by now: it only governs the reading of the request).
         const reply = joinsOpen
-          ? await joinOpen(open, hash, alone)
-          : await enqueue(service, lk, creds, hash, direct, alone);
+          ? await joinOpen(open, hash)
+          : await enqueue(service, lk, creds, hash, direct);
         if (res.destroyed) return countAborted(req, res);
         return send(res, reply.status, reply.body, origin, reply.headers);
       }
@@ -653,6 +660,7 @@ export function createRelay(options: RelayOptions): Relay {
       if (expired(e, now)) {
         known.delete(key);
         windows.delete(key);
+        lastCall.delete(key);
         lanes.delete(key);
         continue;
       }
@@ -760,8 +768,6 @@ export function createRelay(options: RelayOptions): Relay {
   interface Waiting {
     hash: Uint8Array;
     resolve: (reply: Reply) => void;
-    /** Key type 1 asked for `mode: "solo"`: a direct stamp only if it is the only entry of its window at the close. */
-    alone?: boolean;
   }
   interface Window {
     service: RelayService;
@@ -807,20 +813,59 @@ export function createRelay(options: RelayOptions): Relay {
     return lane;
   };
 
+  /** The time of the last call to a service per lane (service and identity); memory only, never output. */
+  const lastCall = new Map<string, number>();
   /**
-   * The time the open window of a lane will be stamped, as a list of zero or one entry (after every time of
-   * a stamp that is made: it is in the future, at most one window length ahead even if the clock was set back).
+   * A window that is closed but must wait for the minimum distance to the last call of its service before it is
+   * stamped; in the order of their stamps.
+   */
+  interface Delayed {
+    at: number;
+    w: Window;
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+  const delayedWindows = new Map<string, Delayed[]>(); // lane key -> its delayed windows
+
+  /**
+   * The times the windows of a lane will stamp, still to come, in ascending order: the windows that wait for the
+   * distance (at that time) and the open one (opening + window length, at most one window length ahead even if the
+   * clock was set back).
    */
   function reservedStamp(key: string, now: number): number[] {
+    const times = (delayedWindows.get(key) ?? []).map((d) => Math.min(d.at, now + batch!.windowMs));
     const open = openWindows.get(key);
-    return open === undefined ? [] : [Math.min(open.stampAt, now + batch!.windowMs)];
+    if (open !== undefined) times.push(Math.min(open.stampAt, now + batch!.windowMs));
+    return times.sort((a, b) => a - b);
+  }
+
+  /**
+   * Milliseconds until a call to the service of this lane may be made without coming closer than `minIntervalMs` to
+   * the one before (0: now): the last call made, and the windows that are delayed and will call before it (all of them,
+   * or only those before `before`). A time in the future (the clock was set back) counts as `now`, a delayed one at
+   * most `minIntervalMs` ahead.
+   */
+  function spacingMs(key: string, minIntervalMs: number, now: number, before?: Delayed): number {
+    let last = -Infinity;
+    const made = lastCall.get(key);
+    if (made !== undefined) {
+      // stored as `now` from here on (the same rule as for the budget): a clock that stays behind cannot hold it ahead
+      if (made > now) lastCall.set(key, now);
+      last = Math.min(made, now);
+    }
+    for (const d of delayedWindows.get(key) ?? []) {
+      if (d === before) break;
+      last = Math.max(last, Math.min(d.at, now + minIntervalMs));
+    }
+    return last === -Infinity ? 0 : Math.max(0, last + minIntervalMs - now);
   }
 
   /**
    * Milliseconds until the service has a free slot (0: now). A slot is counted at the time of the STAMP, the
    * moment the service sees the call: the times of the stamps made, and for an open window the time it will be
-   * stamped (`open + windowMs`, at the latest). So a window holds its slot from its opening on, and the stamps that
-   * come before it count it already: in any minute the service sees at most `bw / minIntervalMs` calls.
+   * stamped (`open + windowMs`, at the latest), for a window that waits for the distance the time it will call. So a
+   * window holds its slot from its opening on, and the stamps that come before it count it already: in any minute
+   * the service sees at most `bw / minIntervalMs` calls. The minimum distance to the last call is a second rule
+   * (`spacingMs`) that the solo stamps and the stamps of the windows keep on top of this one.
    */
   function slotWaitMs(key: string, service: RelayService): number {
     const now = options.now();
@@ -828,23 +873,25 @@ export function createRelay(options: RelayOptions): Relay {
     // (no new request passes `budget`) would else see the same future time every time and wait for the length of the jump
     const own = (windows.get(key) ?? []).filter((t) => now - t < bw).map((t) => Math.min(t, now));
     windows.set(key, own);
-    // except the stamp that is still to come (an open window, at most one window length ahead)
+    // except the stamps that are still to come (windows, at most one window length ahead)
     const booked = [...own, ...reservedStamp(key, now)];
     const limit = Math.max(1, Math.floor(bw / service.minIntervalMs));
     return booked.length >= limit ? Math.max(1, bw - (now - booked[booked.length - limit]!)) : 0;
   }
 
-  /** Books a stamp of the service at this moment. */
+  /** Books a call to the service at this moment: the budget and the last call (the distance counts from here). */
   function takeSlot(key: string): void {
+    const now = options.now();
     const own = windows.get(key) ?? [];
-    own.push(options.now());
+    own.push(now);
     windows.set(key, own);
+    lastCall.set(key, now);
   }
 
   /** A request joins a window that is open (it takes no slot: the window has one). */
-  function joinOpen(w: Window, hash: Uint8Array, alone: boolean): Promise<Reply> {
+  function joinOpen(w: Window, hash: Uint8Array): Promise<Reply> {
     return new Promise((resolve) => {
-      w.waiting.push({ hash, resolve, alone });
+      w.waiting.push({ hash, resolve });
       if (w.waiting.length >= batch!.max) closeWindow(w); // full: the next request waits for a slot
     });
   }
@@ -874,22 +921,23 @@ export function createRelay(options: RelayOptions): Relay {
     creds: UpstreamCredentials | undefined,
     hash: Uint8Array,
     solo: boolean,
-    alone: boolean,
   ): Promise<Reply> {
     return new Promise((resolve) => {
       const lane = laneOf(key, service, creds);
-      const item: Queued = { hash, resolve, alone, timer: null };
+      const item: Queued = { hash, resolve, timer: null };
       item.timer = setTimeout(() => {
         const list = solo ? lane.solo : lane.normal;
         const at = list.indexOf(item);
         if (at < 0) return;
         list.splice(at, 1);
+        const waitMs = Math.max(
+          slotWaitMs(key, service),
+          solo ? spacingMs(key, service.minIntervalMs, options.now()) : 0,
+        );
         resolve({
           status: 503,
           body: { error: 'busy' },
-          headers: {
-            'Retry-After': String(Math.max(1, Math.ceil(slotWaitMs(key, service) / 1000))),
-          },
+          headers: { 'Retry-After': String(Math.max(1, Math.ceil(waitMs / 1000))) },
         });
       }, maxWaitMs);
       (solo ? lane.solo : lane.normal).push(item);
@@ -897,24 +945,38 @@ export function createRelay(options: RelayOptions): Relay {
     });
   }
 
-  /** Gives free slots to the waiting requests: a solo request and a window alternate, so nothing starves. */
+  /**
+   * Gives free slots to the waiting requests: a solo request and a window alternate, so nothing starves. A window
+   * needs a slot of the budget; a solo stamp needs one too and, on top, the minimum distance to the last call of the
+   * service (a window keeps the distance when it stamps, see `stampWindow`).
+   */
   function dispatch(lane: Lane): void {
     const service = lane.service;
     if (lane.timer !== null) clearTimeout(lane.timer);
     lane.timer = null;
     while (!closed && lane.solo.length + lane.normal.length > 0) {
-      const wait = slotWaitMs(lane.key, service);
-      if (wait > 0) {
+      const countWait = slotWaitMs(lane.key, service);
+      const soloWait = Math.max(
+        countWait,
+        spacingMs(lane.key, service.minIntervalMs, options.now()),
+      );
+      const canSolo = lane.solo.length > 0 && soloWait === 0;
+      const canNormal = lane.normal.length > 0 && countWait === 0;
+      if (!canSolo && !canNormal) {
+        const wait = Math.min(
+          lane.solo.length > 0 ? soloWait : Infinity,
+          lane.normal.length > 0 ? countWait : Infinity,
+        );
         lane.timer = setTimeout(() => dispatch(lane), wait);
         return;
       }
-      const solo = lane.solo.length > 0 && (lane.normal.length === 0 || !lane.lastWasSolo);
+      const solo = canSolo && (!canNormal || !lane.lastWasSolo);
       lane.lastWasSolo = solo;
       if (solo) {
         takeSlot(lane.key); // the stamp is made now
         const item = lane.solo.shift()!;
         if (item.timer !== null) clearTimeout(item.timer);
-        runSolo(lane, item);
+        stampSolo(lane, item);
       } else {
         // the window takes the requests that wait, up to its size; the others wait for the next slot
         // (its slot is booked by the window itself: `stampAt` while it is open, the real stamp time at its close)
@@ -925,36 +987,16 @@ export function createRelay(options: RelayOptions): Relay {
     }
   }
 
-  /** A direct stamp of one hash (no tree, no `batch` in the answer). */
-  function runSolo(lane: Lane, item: Waiting): void {
-    stampDirect(lane.service, lane.creds, item);
-  }
-
-  function stampDirect(
-    service: RelayService,
-    creds: UpstreamCredentials | undefined,
-    item: Waiting,
-  ): void {
+  /** A direct stamp of one hash (key type 2, no tree, no `batch` in the answer). */
+  function stampSolo(lane: Lane, item: Waiting): void {
     const done = async (): Promise<void> => {
-      const got = await obtain(service, item.hash, creds);
+      const got = await obtain(lane.service, item.hash, lane.creds);
       if (!got.ok) return item.resolve({ status: got.status, body: got.body });
       stats.stamped += 1;
       stats.solo = (stats.solo ?? 0) + 1;
-      item.resolve({ status: 200, body: stampBody(service, got) });
+      item.resolve({ status: 200, body: stampBody(lane.service, got) });
     };
     done().catch(() => item.resolve({ status: 500, body: { error: 'internal' } }));
-  }
-
-  /**
-   * What a closed window does with the entries that asked for a solo stamp as key type 1: alone in the window, the
-   * request is stamped directly (the hash itself, no tree); with any other entry, also another such request, every one
-   * of them is refused with `403 solo-not-allowed` and stays OUT of the tree (a receipt exists only for answers that
-   * somebody collects). Returns the entries for the tree, or `null` when the window is one direct stamp.
-   */
-  function splitWindow(waiting: readonly Waiting[]): { tree: Waiting[]; direct: Waiting | null } {
-    const wishes = waiting.filter((x) => x.alone === true);
-    if (wishes.length === 1 && waiting.length === 1) return { tree: [], direct: wishes[0]! };
-    return { tree: waiting.filter((x) => x.alone !== true), direct: null };
   }
 
   const answerAll = (waiting: readonly Waiting[], reply: Reply): void => {
@@ -965,14 +1007,47 @@ export function createRelay(options: RelayOptions): Relay {
     if (openWindows.get(w.key) !== w) return; // closed already (timer and full window meet)
     openWindows.delete(w.key);
     if (w.timer !== null) clearTimeout(w.timer);
-    // The stamp is made now: the slot is booked at this time (a window that is full closes before `stampAt`). There
-    // is always room: the open window held its slot, and every stamp since counted it. A window that holds nothing
-    // but refused solo requests makes no stamp and books no slot.
-    const split = splitWindow(w.waiting);
-    if (split.direct !== null || split.tree.length > 0) takeSlot(w.key);
+    stampWindow(w);
     // a lane that waits for a slot looks again: a window that closed early frees its slot earlier than booked
     const waiting = lanes.get(w.key);
     if (waiting !== undefined && waiting.timer !== null) dispatch(waiting);
+  }
+
+  /**
+   * The closed window calls the service: at once, or when the minimum distance to the last call is kept (a window that
+   * closes full right after a solo stamp or another window would else come closer). Until then it holds its place
+   * (`delayedWindows`: counted by the budget, the distance counts from it).
+   */
+  function stampWindow(w: Window): void {
+    const wait = spacingMs(w.key, w.service.minIntervalMs, options.now());
+    if (wait <= 0) return callService(w);
+    const d: Delayed = { at: options.now() + wait, w, timer: null };
+    delayedWindows.set(w.key, [...(delayedWindows.get(w.key) ?? []), d]);
+    armDelayed(d, wait);
+  }
+
+  function armDelayed(d: Delayed, ms: number): void {
+    d.timer = setTimeout(() => fireDelayed(d), ms);
+  }
+
+  /**
+   * The wait is over (a timer of the length of the distance, whatever the clock says now: a clock that stands still
+   * or jumps cannot hold a window forever). Windows call in the order they closed: one that is not the first waits a
+   * moment for the one before it.
+   */
+  function fireDelayed(d: Delayed): void {
+    const list = delayedWindows.get(d.w.key) ?? [];
+    const index = list.indexOf(d);
+    if (index < 0) return;
+    if (index > 0) return armDelayed(d, 1);
+    list.splice(index, 1);
+    if (list.length === 0) delayedWindows.delete(d.w.key);
+    callService(d.w);
+  }
+
+  /** The window is stamped now: the slot is booked at this time, then the tree is built and the service is called. */
+  function callService(w: Window): void {
+    takeSlot(w.key);
     flush(w).catch(() => answerAll(w.waiting, { status: 500, body: { error: 'internal' } }));
   }
 
@@ -1000,18 +1075,7 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** One window: salts, tree, one stamp for the imprint, and a receipt for each waiting request. */
   async function flush(w: Window): Promise<void> {
-    const split = splitWindow(w.waiting);
-    if (split.direct !== null) {
-      stampDirect(w.service, w.creds, split.direct);
-      return;
-    }
-    for (const x of w.waiting) {
-      if (x.alone !== true) continue;
-      stats.soloDenied = (stats.soloDenied ?? 0) + 1;
-      x.resolve({ status: 403, body: { error: 'solo-not-allowed' } });
-    }
-    const waiting = split.tree;
-    if (waiting.length === 0) return;
+    const waiting = w.waiting;
     const entries = waiting.map((x) => {
       const salt = options.random(32);
       if (salt.length !== 32) throw new Error('random source gave the wrong length');
@@ -1048,6 +1112,13 @@ export function createRelay(options: RelayOptions): Relay {
       if (w.timer !== null) clearTimeout(w.timer);
       answerAll(w.waiting, { status: 503, body: { error: 'shutting-down' } });
     }
+    for (const list of [...delayedWindows.values()]) {
+      for (const d of list) {
+        if (d.timer !== null) clearTimeout(d.timer);
+        answerAll(d.w.waiting, { status: 503, body: { error: 'shutting-down' } });
+      }
+    }
+    delayedWindows.clear();
     for (const lane of lanes.values()) {
       if (lane.timer !== null) clearTimeout(lane.timer);
       lane.timer = null;

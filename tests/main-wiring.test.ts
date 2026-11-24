@@ -160,9 +160,12 @@ describe('buildRelayOptions: every setting reaches the relay', () => {
   it('maxWaitMs: RELAY_MAX_WAIT_MS decides whether a request waits for a slot or gets 429 at once', async () => {
     const h = await run({ RELAY_MAX_WAIT_MS: '1000' });
     try {
-      // both slots of the minute are taken at t0; 57 s later the first frees in 3 s: more than 1 s of waiting
-      for (const tag of ['s1', 's2']) expect((await h.post(SOLO, tag, true)).status).toBe(200);
-      h.clock.now += 57_000;
+      // both slots of the minute are taken (30 s apart: the minimum distance); 27 s later the first frees in 3 s: more
+      // than 1 s of waiting
+      expect((await h.post(SOLO, 's1', true)).status).toBe(200);
+      h.clock.now += 30_000;
+      expect((await h.post(SOLO, 's2', true)).status).toBe(200);
+      h.clock.now += 27_000;
       const started = Date.now();
       const refused = await h.post(SOLO, 's3', true);
       expect(refused.status).toBe(429); // with the default (30 s) it would wait the 3 s and be served
@@ -176,8 +179,10 @@ describe('buildRelayOptions: every setting reaches the relay', () => {
   it('without RELAY_MAX_WAIT_MS the default is used: the same request waits and is served', async () => {
     const h = await run({});
     try {
-      for (const tag of ['s1', 's2']) expect((await h.post(SOLO, tag, true)).status).toBe(200);
-      h.clock.now += 59_700; // the first slot frees in 300 ms (the clock of the test moves on by itself below)
+      expect((await h.post(SOLO, 's1', true)).status).toBe(200);
+      h.clock.now += 30_000; // the minimum distance between two stamps
+      expect((await h.post(SOLO, 's2', true)).status).toBe(200);
+      h.clock.now += 29_700; // the first slot frees in 300 ms (the clock of the test moves on by itself below)
       setTimeout(() => (h.clock.now += 1000), 500);
       const res = await h.post(SOLO, 's3', true);
       expect(res.status).toBe(200);

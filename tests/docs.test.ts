@@ -415,31 +415,45 @@ describe('key types, solo stamps and the key file read again are written down wh
       '`perMinuteTotal` (60) und `perMinutePerKey` (20) bleiben **unverändert**',
     );
   });
-  it('relay.md: key type 1 solo waits the window and is stamped only when alone (rule, 403 after waiting, budget, deadlines)', () => {
+  it('relay.md: solo exists for key type 2 only; type 1 is refused at once, before any work, without budget', () => {
     const doc = flat(relayDoc);
-    expect(doc).toContain('**kein eigener Platz, kein sofortiger Stempel.**');
-    expect(doc).toContain('**wartet die ganze Sammelzeit ab**');
-    expect(doc).toContain('**Allein im Fenster**');
-    expect(doc).toContain('**Ein `403` nach dem Warten hat sie verbraucht**');
-    expect(doc).toContain('**alle** bekommen `403`, und **keine** kommt in den Baum');
-    expect(doc).toContain('**höchstens den einen Platz, den ein Fenster ohnehin belegt**');
-    expect(doc).toContain('Fenster + 17 s');
-    expect(doc).not.toContain('niemand sonst wartet');
-    expect(doc).not.toContain('Solo nur, wenn das Fenster des Dienstes **leer** ist');
-    expect(flat(model)).toContain('nur, wenn sie allein im Fenster ist');
-    // the code does what the text says: the refusal is made when the window is closed, not at the door
-    expect(source).toContain('function splitWindow');
+    expect(doc).toContain('Solo-Stempel gibt es **nur für die Schlüsselart 2**.');
+    expect(doc).toContain('ist **sofort** `403 solo-not-allowed`, **vor jeder Arbeit**');
+    expect(doc).toContain('kostet **kein** Gesamt-, Schlüssel- und Solo-Budget');
+    expect(doc).toContain("`soloDenied` und `refused['solo-not-allowed']` zählen die Abweisung");
+    expect(doc).toContain('die Schlüsselart wird **nicht** geprüft und es gibt keinen `403`');
+    expect(flat(model)).toContain('sofort <code>403 solo-not-allowed</code>');
+    expect(flat(readme)).toContain(
+      'sofort `403 solo-not-allowed` (kein Warten, kein Platz, kein Budget verbraucht)',
+    );
+    // the old rule is gone from the text and from the code
+    for (const old of [
+      'Nur nach bestem Bemühen',
+      'allein im Fenster',
+      'wartet die ganze Sammelzeit ab',
+      'Ein `403` nach dem Warten',
+      'nie sofort',
+    ]) {
+      expect(doc, old).not.toContain(old);
+    }
+    expect(flat(limitsDoc)).not.toContain('nach bestem Bemühen');
+    expect(source).not.toContain('splitWindow');
+    expect(source).not.toContain('stampDirect');
+    expect(source).not.toContain('alone');
     expect(source).not.toContain('function laneBusy');
   });
-  it('type 1 solo is best effort (a rider in every window blocks it), a full window answers the 403 at once', () => {
+  it('relay.md: the minimum spacing between two calls to one service is written down and tied to the code', () => {
     const doc = flat(relayDoc);
-    expect(doc).toContain('**Nur nach bestem Bemühen:**');
-    expect(doc).toContain('macht jedes Solo der Art 1 anderer Schlüssel zu `403`');
-    expect(doc).toContain('Ein verlässliches Solo gibt es nur mit der Schlüsselart 2.');
-    expect(doc).toContain('das `403` kommt sofort, nicht erst nach der Sammelzeit');
-    expect(doc).not.toContain('nie sofort');
-    expect(flat(limitsDoc)).toContain('Das gilt nur nach bestem Bemühen');
-    expect(flat(limitsDoc)).toContain('Ein verlässliches Solo braucht die Schlüsselart 2.');
+    expect(doc).toContain('liegen **mindestens `minIntervalMs` auseinander**');
+    expect(doc).toContain('gleich ob der vorige ein Fenster oder ein Solo-Stempel war');
+    expect(doc).toContain('**wartet das geschlossene Fenster** bis dahin');
+    expect(doc).toContain('Im **Einzelbetrieb** gibt es ihn nicht');
+    expect(doc).not.toContain('Kein Mindestabstand zwischen Stempeln');
+    expect(doc).not.toContain('Einen **Mindestabstand** zwischen zwei Stempeln gibt es nicht');
+    expect(doc).not.toContain('(kein Mindestabstand)');
+    expect(flat(readme)).toContain('mindestens `minIntervalMs` des Dienstes Abstand');
+    expect(source).toContain('function spacingMs');
+    expect(source).toContain('function stampWindow');
   });
   it('relay.md: one relay instance per key file, and the proxy limit per address stays far below the key budget', () => {
     const doc = flat(relayDoc);

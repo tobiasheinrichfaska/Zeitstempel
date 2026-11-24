@@ -99,6 +99,8 @@ interface Call {
   /** The third argument as the stub saw it (`undefined`: the relay passed none). */
   creds: UpstreamCredentials | undefined;
   imprint: Uint8Array;
+  /** The real time of the call (the clock of the relay is a fake one in these tests). */
+  at: number;
 }
 interface Harness {
   base: string;
@@ -126,7 +128,7 @@ async function start(
   const calls: Call[] = [];
   const clock = { now: NOW };
   const stub: Upstream = async (target, body, creds) => {
-    calls.push({ url: target.url, creds, imprint: imprintOf(body) });
+    calls.push({ url: target.url, creds, imprint: imprintOf(body), at: Date.now() });
     return {
       status: 200,
       contentType: 'application/timestamp-reply',
@@ -806,39 +808,36 @@ describe('the identities: collecting operation keeps credentials apart', () => {
     // B's hash is not in A's tree: A's receipt does not verify for it
     expect((await receiptVerifies(new Response(JSON.stringify(bodies[0])), b[0]!)).ok).toBe(false);
   });
-  it('a type 1 solo request is stamped alone with its own credentials; with the same credentials as a rider it is 403', async () => {
+  it('a type 1 solo request is refused at once with 403, with any credentials: no call, no window, no identity', async () => {
     h = await start({ batch: { windowMs: 300, max: 100 } });
-    const x = sha256('s1');
-    const apart = await Promise.all([
+    const rider = h.post('paid-client', withUpstream('r1', { token: 'tok-A' }));
+    await sleep(40);
+    const started = Date.now();
+    const answers = await Promise.all([
+      // the identity of the rider, another identity, and none that was seen before: the credentials play no part
       h.post('paid-client', withUpstream('s1', { token: 'tok-A' }, { mode: 'solo' }), {
         key: KEY_A,
       }),
-      h.post('paid-client', withUpstream('r1', { token: 'tok-B' })),
-    ]);
-    // two lanes, two windows: the solo request is alone in its own, the rider has a tree of one
-    expect(apart.map((r) => r.status)).toEqual([200, 200]);
-    const bodies = (await Promise.all(apart.map((r) => r.json()))) as {
-      batch?: { size: number };
-    }[];
-    expect(bodies[0]!.batch).toBeUndefined();
-    expect(bodies[1]!.batch?.size).toBe(1);
-    expect(h.calls).toHaveLength(2);
-    const direct = h.calls.filter((c) => Buffer.from(c.imprint).equals(Buffer.from(x)));
-    expect(direct).toHaveLength(1); // the unchanged hash went to the service ...
-    expect(direct[0]!.creds).toEqual({ kind: 'bearer', token: 'tok-A' }); // ... with its own credentials
-    const tree = h.calls.filter((c) => !Buffer.from(c.imprint).equals(Buffer.from(x)));
-    expect((tree[0]!.creds as { token: string }).token).toBe('tok-B');
-    // the same credentials: one window, the solo request is not alone
-    h.calls.length = 0;
-    const same = await Promise.all([
-      h.post('paid-client', withUpstream('s2', { token: 'tok-A' }, { mode: 'solo' }), {
+      h.post('paid-client', withUpstream('s2', { token: 'tok-B' }, { mode: 'solo' }), {
         key: KEY_A,
       }),
-      h.post('paid-client', withUpstream('r2', { token: 'tok-A' })),
+      h.post('paid-client', withUpstream('s3', { token: 'tok-C' }, { mode: 'solo' }), {
+        key: KEY_B,
+      }),
     ]);
-    expect(same.map((r) => r.status)).toEqual([403, 200]);
-    expect(h.calls).toHaveLength(1);
-    expect(Buffer.from(h.calls[0]!.imprint).equals(Buffer.from(sha256('s2')))).toBe(false);
+    expect(answers.map((r) => r.status)).toEqual([403, 403, 403]);
+    expect(Date.now() - started).toBeLessThan(200); // not after the window (260 ms to go)
+    expect(await answers[0]!.json()).toEqual({ error: 'solo-not-allowed' });
+    const got = await rider;
+    expect(got.status).toBe(200);
+    expect(((await got.json()) as { batch: { size: number } }).batch.size).toBe(1);
+    expect(h.calls).toHaveLength(1); // the rider's window only
+    for (const tag of ['s1', 's2', 's3']) {
+      expect(h.calls.some((c) => Buffer.from(c.imprint).equals(Buffer.from(sha256(tag))))).toBe(
+        false,
+      );
+    }
+    expect(h.relay.stats()).toMatchObject({ soloDenied: 3, refused: { 'solo-not-allowed': 3 } });
   });
   it('the relay own credentials and a client identity of an either service are separate lanes too', async () => {
     h = await start({ batch: { windowMs: 300, max: 100 } });
@@ -889,21 +888,45 @@ describe('the identities: collecting operation keeps credentials apart', () => {
     );
     expect(statuses).toContain(429);
   });
-  it('a solo request of a key of type 1 is judged per identity: another identity waiting does not matter', async () => {
-    // service: 1 slot per minute and a long window, so the first identity's request waits in an open window
-    h = await start({ batch: { windowMs: 800, max: 100 } });
-    // both solo requests are made while A's window is open: B is alone in its own lane (200), A's solo is not (403)
-    const waiting = h.post('paid-client', withUpstream('a', { token: 'A' }));
-    await sleep(60);
-    const other = h.post('paid-client', withUpstream('b', { token: 'B' }, { mode: 'solo' }), {
-      key: KEY_B,
-    });
-    const same = h.post('paid-client', withUpstream('c', { token: 'A' }, { mode: 'solo' }), {
-      key: KEY_B,
-    });
-    expect((await other).status).toBe(200); // not 403 solo-not-allowed: nobody else is in B's lane
-    expect((await same).status).toBe(403);
-    expect((await waiting).status).toBe(200);
+  it('a refused solo request of type 1 opens no identity: the table of identities is not touched', async () => {
+    h = await start({ batch: { windowMs: 100, max: 100 }, upstreamIdentities: 2 });
+    for (const t of ['a', 'b', 'c', 'd', 'e']) {
+      const r = await h.post(
+        'paid-client',
+        withUpstream(t, { token: `tok-${t}` }, { mode: 'solo' }),
+        {
+          key: KEY_A,
+        },
+      );
+      expect(r.status).toBe(403); // never 503 busy (the table holds two)
+    }
+    expect((await h.post('paid-client', withUpstream('n1', { token: 'N1' }))).status).toBe(200);
+    expect((await h.post('paid-client', withUpstream('n2', { token: 'N2' }))).status).toBe(200);
+    expect(h.relay.stats().refused['busy']).toBeUndefined();
+  });
+  it('the minimum distance of solo stamps is kept per identity: another identity does not hold one back, the same does', async () => {
+    const M = 400;
+    const quick = SERVICES.map((s) => ({ ...s, minIntervalMs: M }));
+    h = await start({ services: quick, batch: { windowMs: 100, max: 100 } });
+    // a clock that runs (the relay waits for the distance by it)
+    const tick = setInterval(() => (h.clock.now += 10), 10);
+    try {
+      const t0 = Date.now();
+      const send = (tag: string, token: string) =>
+        h.post('paid-client', withUpstream(tag, { token }, { mode: 'solo' }), { key: KEY_S });
+      const answers = await Promise.all([send('a1', 'A'), send('b1', 'B'), send('a2', 'A')]);
+      expect(answers.map((r) => r.status)).toEqual([200, 200, 200]);
+      const at = (token: string) =>
+        h.calls.filter((c) => (c.creds as { token: string }).token === token).map((c) => c.at - t0);
+      const [a, b] = [at('A'), at('B')];
+      expect(a).toHaveLength(2);
+      expect(b).toHaveLength(1);
+      expect(Math.min(a[0]!, b[0]!)).toBeLessThan(150);
+      expect(Math.max(a[0]!, b[0]!)).toBeLessThan(150); // B did not wait for A: its own lane
+      expect(a[1]! - a[0]!).toBeGreaterThanOrEqual(M - 40); // the same identity waited for the distance
+    } finally {
+      clearInterval(tick);
+    }
   });
 });
 

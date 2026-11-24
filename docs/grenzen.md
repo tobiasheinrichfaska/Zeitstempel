@@ -416,11 +416,7 @@ Ein Stempel mit `mode: "solo"` ist ein **gewöhnlicher Einzelstempel auf den Has
 `verifyTimestampToken` geprüft und hat alle Grenzen dieses Dokuments, aber **nicht** die des Belegs im Sammelbetrieb. Ob
 ein Schlüssel ihn verlangen darf, entscheidet allein die Schlüsseldatei des Relays; die Bibliothek kennt keine
 Schlüsselarten (`docs/relay.md`, „Schlüsselarten und Solo-Stempel“). Ein Solo-Schlüssel in einer Web-App ist für die
-Nutzer dieses Browsers auslesbar. Ein Schlüssel der Art 1 bekommt den direkten Stempel nur, wenn er nach der vollen
-Sammeldauer allein im Fenster ist (sonst `403 solo-not-allowed`).
-Das gilt nur nach bestem Bemühen: ein beliebiger gültiger Schlüssel, der in jedem Fenster eine normale Anfrage mitschickt,
-macht jedes Solo der Art 1 anderer Schlüssel zu `403` (bei Fenstern von 15 s genügen 4 Anfragen je Minute). Ein
-verlässliches Solo braucht die Schlüsselart 2.
+Nutzer dieses Browsers auslesbar. Ein Schlüssel der Art 1 bekommt für `mode: "solo"` sofort `403 solo-not-allowed`.
 
 ## Beleg im Sammelbetrieb: was er aussagt und was nicht
 

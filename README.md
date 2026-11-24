@@ -105,9 +105,10 @@ auf. Das ist **kein Einzelstempel** auf den Hash, und das Relay sieht alle Hashe
 
 **Schlüsselarten und Solo-Stempel (nur im Sammelbetrieb):** Ein Schlüssel der Art 2 (`"solo": true` in der Schlüsseldatei,
 nur vom Eigentümer vergeben) darf `{"hash": "…", "mode": "solo"}` senden und bekommt einen **direkten** Stempel des Hashes
-ohne Baum (nötig für PDF-Dokumentzeitstempel; die Antwort hat kein `batch`). Art 1 wartet die volle Sammeldauer im
-Fenster und bekommt den direkten Stempel nur, wenn es dort allein ist (sonst `403 solo-not-allowed`, das Budget ist dann
-verbraucht). Ist kein Platz beim Dienst frei, wartet die Anfrage höchstens
+ohne Baum (nötig für PDF-Dokumentzeitstempel; die Antwort hat kein `batch`). Ein Schlüssel der Art 1 bekommt für
+`mode: "solo"` sofort `403 solo-not-allowed` (kein Warten, kein Platz, kein Budget verbraucht). Ein Solo-Stempel hält
+mindestens `minIntervalMs` des Dienstes Abstand zum vorigen Aufruf (Fenster oder Solo) und wartet dafür; ist kein Platz
+beim Dienst frei, wartet die Anfrage höchstens
 `RELAY_MAX_WAIT_MS` (Vorgabe 30 s), danach `503 busy`. Die Schlüsseldatei wird laufend neu gelesen (Sperren = Eintrag
 entfernen); `restartAfter` beendet das Relay einmal sauber (Prozess-Überwacher nötig). Einzelheiten in
 [`docs/relay.md`](docs/relay.md) („Schlüsselarten und Solo-Stempel“); Solo-Schlüssel im Browserspeicher sind für die
