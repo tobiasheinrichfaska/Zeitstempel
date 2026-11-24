@@ -247,7 +247,7 @@
       <tr><td>Fehlercodes</td><td><code>bad-upstream</code> (400), <code>bad-mode</code> (400), <code>solo-not-allowed</code> (403), <code>busy</code> (503)</td><td>Einzelheiten und Zähler (<code>solo</code>, <code>soloDenied</code>, <code>keyReloads</code>, <code>keyReloadFailed</code>) in <code>docs/relay.md</code>, „Schlüsselarten und Solo-Stempel“</td></tr>
       <tr><td>Einstellung <code>RELAY_MAX_WAIT_MS</code></td><td>ganze Zahl 1000 bis 60000, Vorgabe 30000</td><td>Längste Wartezeit auf einen freien Platz beim Dienst, danach <code>503 busy</code></td></tr>
     </table>
-    <p class="note">Grenzen im Code (<code>relay/limits.ts</code>): <code>soloPerMinutePerKey</code> 4, <code>soloQueueMax</code> 6, <code>maxWaitDefaultMs</code> 30000, <code>keyFileCheckMs</code> 5000, <code>upstreamUserMax</code> 64, <code>upstreamPasswordMax</code> 128, <code>upstreamTokenMax</code> 384, <code>upstreamIdentitiesMax</code> 64; alle mit Wert in <code>docs/relay.md</code>.</p>
+    <p class="note">Grenzen im Code (<code>relay/limits.ts</code>): <code>soloPerMinutePerKey</code> 4, <code>soloQueueMax</code> 6, <code>maxWaitDefaultMs</code> 30000, <code>keyFileCheckMs</code> 5000, <code>keyFileMaxBytes</code> 65536, <code>upstreamUserMax</code> 64, <code>upstreamPasswordMax</code> 128, <code>upstreamTokenMax</code> 384, <code>upstreamIdentitiesMax</code> 64; alle mit Wert in <code>docs/relay.md</code>.</p>
 
     <h2>6 Werkseinstellungen (mitgelieferte Daten)</h2>
     <p>

@@ -919,8 +919,121 @@ describe('the table of identities is limited, and idle identities are dropped', 
       (await h.post('paid-client', withUpstream('n4', { token: 'N4' }), { key: KEY_B })).status,
     ).toBe(200);
   });
-  it('the default limit is the one in limits.ts', () => {
-    expect(RELAY_LIMITS.upstreamIdentitiesMax).toBe(64);
+  it('without a setting the table holds exactly `upstreamIdentitiesMax` identities per service; the next one is 503 busy', async () => {
+    // Identities in flight never expire, so they can be held side by side although the budgets (per key, in total)
+    // let only a few requests through a minute: the first half is sent, the minute passes, the second half is sent.
+    const max = RELAY_LIMITS.upstreamIdentitiesMax;
+    const gate: { open: () => void; opened: Promise<void> } = {
+      open: () => undefined,
+      opened: Promise.resolve(),
+    };
+    gate.opened = new Promise<void>((r) => (gate.open = r));
+    let clockForReply = NOW;
+    let reached = 0;
+    const upstream: Upstream = async (_t, body) => {
+      reached += 1;
+      await gate.opened;
+      return {
+        status: 200,
+        contentType: 'application/timestamp-reply',
+        body: replyFor(body, clockForReply),
+      };
+    };
+    h = await start({ upstream });
+    const keys = [KEY_A, KEY_B, KEY_S];
+    const sent: Promise<Response>[] = [];
+    const wave = (from: number, to: number) => {
+      for (let i = from; i < to; i += 1) {
+        sent.push(
+          h.post('paid-client', withUpstream(`i${i}`, { token: `T${i}` }), { key: keys[i % 3]! }),
+        );
+      }
+    };
+    wave(0, 30);
+    await sleep(300);
+    h.clock.now += 61_000; // the first wave left the budgets of the minute
+    clockForReply = h.clock.now;
+    wave(30, max);
+    await sleep(300);
+    const next = await h.post('paid-client', withUpstream('one-too-many', { token: 'T-extra' }), {
+      key: KEY_A,
+    });
+    expect(next.status).toBe(503);
+    expect(await next.json()).toEqual({ error: 'busy' });
+    gate.open();
+    const answered = await Promise.all(sent);
+    expect(answered.map((r) => r.status).filter((x) => x !== 200)).toEqual([]);
+    expect(reached).toBe(max); // the refused one never reached the service
+  }, 20_000);
+});
+
+describe('the lifetime of an identity (credentials of the app)', () => {
+  let h: Harness;
+  afterEach(() => h.close());
+
+  /** An upstream that answers when the test says so (the request stays in flight until then). */
+  function held() {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    let clock: { now: number } = { now: NOW };
+    const upstream: Upstream = async (_t, body) => {
+      await gate;
+      return {
+        status: 200,
+        contentType: 'application/timestamp-reply',
+        body: replyFor(body, clock.now),
+      };
+    };
+    return {
+      upstream,
+      release: () => release(),
+      follow: (c: { now: number }) => void (clock = c),
+    };
+  }
+  const post = (tag: string, token: string, key = KEY_A) =>
+    h.post('paid-client', withUpstream(tag, { token }), { key });
+
+  it('an identity with a request in flight does not expire, however long it takes', async () => {
+    const slow = held();
+    h = await start({ upstream: slow.upstream, upstreamIdentities: 1 });
+    slow.follow(h.clock);
+    const inFlight = post('x1', 'X');
+    await sleep(200);
+    h.clock.now += 61_000; // longer than a window: idle would be gone, but a request is still in flight
+    const refused = await post('y1', 'Y', KEY_B);
+    expect(refused.status).toBe(503); // X still holds the only place
+    expect(await refused.json()).toEqual({ error: 'busy' });
+    slow.release();
+    expect((await inFlight).status).toBe(200);
+  });
+
+  it('the identity lives a whole window after its last ANSWER, not after its start', async () => {
+    const slow = held();
+    h = await start({ upstream: slow.upstream, upstreamIdentities: 1 });
+    slow.follow(h.clock);
+    const inFlight = post('x1', 'X');
+    await sleep(200);
+    h.clock.now += 50_000; // the request takes 50 s
+    slow.release();
+    expect((await inFlight).status).toBe(200); // answered at t0 + 50 s
+    h.clock.now += 50_000; // t0 + 100 s: 100 s after the start, 50 s after the answer
+    const refused = await post('y1', 'Y', KEY_B);
+    expect(refused.status).toBe(503); // X is still known
+    h.clock.now += 11_000; // 61 s after the answer
+    expect((await post('y2', 'Y', KEY_B)).status).toBe(200); // X is gone, Y takes its place
+  });
+
+  it('a dropped identity takes its budget with it (a new one with the same credentials starts empty)', async () => {
+    h = await start({ upstreamIdentities: 2 });
+    const limit = Math.floor(60_000 / 5000); // the lane of an identity: 12 stamps a minute
+    for (let i = 0; i < limit; i += 1) {
+      expect((await post(`b${i}`, 'X', i % 2 ? KEY_B : KEY_A)).status).toBe(200);
+    }
+    expect((await post('b-over', 'X', KEY_S)).status).toBe(429); // X has used its minute
+    h.clock.now += 61_000;
+    expect((await post('y', 'Y', KEY_S)).status).toBe(200); // a new identity: the idle X is dropped now
+    h.clock.now -= 50_000; // the clock is set back: the old stamps of X would count again if they were kept
+    expect((await post('x-again', 'X', KEY_S)).status).toBe(200);
   });
 });
 

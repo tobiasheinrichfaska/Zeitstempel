@@ -104,4 +104,10 @@ export const RELAY_LIMITS = {
   upstreamIdentitiesMax: 64,
   /** How often the relay looks at the modification time of the key file (ms). */
   keyFileCheckMs: 5_000,
+  /**
+   * Largest key file the relay reads (bytes): 64 keys with long ids are about 12 KB. Larger files are refused
+   * unread (a failure of the reload, the old set stays). The relay reads (and hashes) the file at every look, so
+   * the cost is bounded by this.
+   */
+  keyFileMaxBytes: 65_536,
 } as const;

@@ -391,7 +391,13 @@ describe('key types, solo stamps and the key file read again are written down wh
       expect(relayDoc, code).toMatch(new RegExp(String.raw`\|\s*\d{3}\s*\|\s*\`${code}\``));
       expect(source, code).toContain(`error: '${code}'`);
     }
-    for (const counter of ['solo', 'soloDenied', 'keyReloads', 'keyReloadFailed']) {
+    for (const counter of [
+      'solo',
+      'soloDenied',
+      'keyReloads',
+      'keyReloadFailed',
+      'keyFileWritable',
+    ]) {
       expect(relayDoc, counter).toMatch(new RegExp(String.raw`\|\s*\`${counter}\`\s*\|`));
     }
   });

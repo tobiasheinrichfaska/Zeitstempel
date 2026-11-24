@@ -249,6 +249,16 @@ describe('key type 2: who may ask for a solo stamp (collecting operation)', () =
     expect(h.stats()).toEqual({ stamped: 2, refused: {} }); // no solo counters, nothing new in single operation
   });
 
+  it('without collecting operation `mode: "solo"` is not limited like a solo stamp (no per-key solo limit)', async () => {
+    h = await start({ batch: null, minIntervalMs: 1000 });
+    const more = RELAY_LIMITS.soloPerMinutePerKey + 2;
+    for (let i = 0; i < more; i += 1) {
+      const x = sha256(`ns${i}`);
+      expect((await h.stamp(x, { key: KEY_B, body: solo(x) })).status, `request ${i}`).toBe(200);
+    }
+    expect(h.stats()).toEqual({ stamped: more, refused: {} });
+  });
+
   it('single operation keeps its old budget answer: 429 with Retry-After, no waiting', async () => {
     h = await start({ batch: null, minIntervalMs: 30_000 }); // two stamps per minute
     for (const t of ['a', 'b']) expect((await h.stamp(sha256(t))).status).toBe(200);
@@ -360,6 +370,29 @@ describe('planner: a solo stamp takes a whole slot of the service, the rest wait
     expect(h.stats().refused['busy']).toBe(1);
   });
 
+  it('a request answered with 503 busy leaves the queue: it is never stamped later, its slot is not used', async () => {
+    h = await start({ minIntervalMs: 1000, budgetWindowMs: 1000, maxWaitMs: 1500 });
+    const x = sha256('g0');
+    expect((await h.stamp(x, { key: KEY_B, body: solo(x) })).status).toBe(200); // slot used for 1 s
+    const s1 = sha256('g1');
+    const s2 = sha256('g2');
+    const [r1, r2] = await Promise.all([
+      h.stamp(s1, { key: KEY_B, body: solo(s1) }), // gets the slot at 1 s
+      h.stamp(s2, { key: KEY_C, body: solo(s2) }), // would get it at 2 s: past its limit of 1.5 s
+    ]);
+    expect([r1.status, r2.status].sort()).toEqual([200, 503]);
+    const busyHash = r1.status === 503 ? s1 : s2;
+    await sleep(2600); // long enough for the slot after the one of the other request
+    expect(h.calls).toHaveLength(2); // the first stamp and the one that was served; the busy one never reached the service
+    expect(h.calls.some((c) => same(c.imprint, busyHash))).toBe(false);
+    expect(h.stats().stamped).toBe(2);
+    // and the slot is free for a later request at once
+    const y = sha256('g3');
+    const later = await h.timed(y, { key: KEY_D, body: solo(y) });
+    expect(later.res.status).toBe(200);
+    expect(later.at).toBeLessThan(700);
+  });
+
   it('a slot that is not free within the limit at all stays the old 429 (not a wait)', async () => {
     h = await start({ minIntervalMs: 30_000, maxWaitMs: 5000 }); // two stamps per minute
     for (const t of ['a', 'b']) expect((await h.stamp(sha256(t))).status).toBe(200);
@@ -426,6 +459,102 @@ describe('planner: a solo stamp takes a whole slot of the service, the rest wait
     const res = await h.timed(x, { key: KEY_B, body: solo(x) });
     expect(res.res.status).toBe(200);
     expect(res.at).toBeGreaterThanOrEqual(280);
+  });
+});
+
+describe('planner: the slot of a window is booked at the time of its stamp (never more calls than the budget)', () => {
+  let h: Harness;
+  afterEach(() => h.close());
+
+  /** The most calls of the service in any interval of `ms` (the sliding window the service itself looks at). */
+  const mostIn = (times: number[], ms: number): number =>
+    Math.max(...times.map((a) => times.filter((t) => t >= a && t < a + ms).length));
+
+  it('an open window, L-1 solo stamps, then one more: the service never sees more than L calls in a sliding window', async () => {
+    // limit 4 per 2000 ms; the window opens at 0 and is stamped at 500 (the repro of the audit, scaled down)
+    h = await start({
+      batch: { windowMs: 500, max: 100 },
+      minIntervalMs: 500,
+      budgetWindowMs: 2000,
+      maxWaitMs: 5000,
+    });
+    const answers: Promise<Response>[] = [h.stamp(sha256('w0'))]; // opens the window
+    await sleep(40);
+    for (const [i, key] of [KEY_B, KEY_C, KEY_D, KEY_E].entries()) {
+      const x = sha256(`s${i}`);
+      answers.push(h.stamp(x, { key, body: solo(x) })); // the fourth finds no slot until the first call is old
+      await sleep(100);
+    }
+    const all = await Promise.all(answers);
+    expect(all.map((r) => r.status)).toEqual([200, 200, 200, 200, 200]);
+    expect(h.calls).toHaveLength(5);
+    const times = h.calls.map((c) => c.at);
+    // 5 ms of slack for the timers; the old behaviour put five calls into 1.6 s
+    expect(mostIn(times, 2000 - 5)).toBeLessThanOrEqual(4);
+  });
+
+  it('while a window is open, a slot that is free only after the stamp of the window is the old 429, not a wait', async () => {
+    // one call per 2000 ms; the window is stamped at 1500, so the slot is free at 3500 after it opened: more than the
+    // longest wait (3000 ms) from the moment the solo request arrives
+    h = await start({
+      batch: { windowMs: 1500, max: 100 },
+      minIntervalMs: 2000,
+      budgetWindowMs: 2000,
+      maxWaitMs: 3000,
+    });
+    const normal = h.stamp(sha256('r1'));
+    await sleep(40);
+    const x = sha256('r2');
+    const refused = await h.timed(x, { key: KEY_B, body: solo(x) });
+    expect(refused.res.status).toBe(429);
+    expect(refused.at).toBeLessThan(500); // at once, not after the wait
+    expect(Number(refused.res.headers.get('retry-after'))).toBeGreaterThanOrEqual(4);
+    expect((await normal).status).toBe(200);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('a window that closes early (full) books the time of its real stamp, not the end of its window', async () => {
+    // one call per 2000 ms: the window of 1500 ms is full with two requests and is stamped at once
+    h = await start({
+      batch: { windowMs: 1500, max: 2 },
+      minIntervalMs: 2000,
+      budgetWindowMs: 2000,
+      maxWaitMs: 5000,
+    });
+    const first = h.stamp(sha256('f1'));
+    await sleep(30);
+    const second = h.stamp(sha256('f2')); // fills the window: stamped now
+    await sleep(60);
+    const x = sha256('after');
+    const late = await h.timed(x, { key: KEY_B, body: solo(x) });
+    expect((await Promise.all([first, second])).map((r) => r.status)).toEqual([200, 200]);
+    expect(late.res.status).toBe(200);
+    expect(h.calls).toHaveLength(2);
+    const [windowCall, soloCall] = h.calls.map((c) => c.at) as [number, number];
+    expect(windowCall).toBeLessThan(300); // stamped when it was full, not after 1500 ms
+    // the slot of that stamp is free 2000 ms after it, not 2000 ms after the end of the window (3500)
+    expect(soloCall - windowCall).toBeGreaterThanOrEqual(1995);
+    expect(soloCall).toBeLessThan(2600);
+  });
+
+  it('while a window is open its slot counts as taken for the solo stamps that arrive', async () => {
+    // one call per 2000 ms: the window (stamp at 600) holds the only slot, a solo stamp comes after it
+    h = await start({
+      batch: { windowMs: 600, max: 100 },
+      minIntervalMs: 2000,
+      budgetWindowMs: 2000,
+      maxWaitMs: 5000,
+    });
+    const normal = h.stamp(sha256('o1'));
+    await sleep(40);
+    const x = sha256('o2');
+    const soloAnswer = h.timed(x, { key: KEY_B, body: solo(x) });
+    const [a, b] = await Promise.all([normal, soloAnswer]);
+    expect(a.status).toBe(200);
+    expect(b.res.status).toBe(200);
+    const [windowCall, soloCall] = h.calls.map((c) => c.at) as [number, number];
+    expect(windowCall).toBeGreaterThanOrEqual(580); // the window stamps when it closes ...
+    expect(soloCall - windowCall).toBeGreaterThanOrEqual(1995); // ... and the solo stamp is a whole interval later
   });
 });
 
@@ -606,6 +735,30 @@ describe('key file read again: new keys count, removed keys stop, an invalid fil
       // nothing was written
       expect(readFileSync(path, 'utf8')).toBe(before.text);
       expect(statSync(path).mtimeMs).toBe(before.mtime);
+    });
+
+    it('a new file without restartAfter takes the old one back: no restart later', () => {
+      const now = 1_800_000_000_000;
+      let clock = now;
+      let current: KeyFile = { keys: KEYS, restartAfter: 1_800_000_100 };
+      let signature = 'v1';
+      let restarts = 0;
+      const watcher = createKeyWatcher({
+        path: 'unused',
+        load: () => current,
+        signature: () => signature,
+        apply: () => undefined,
+        now: () => clock,
+        startMs: now,
+        onRestart: () => void (restarts += 1),
+      });
+      watcher.check(); // restartAfter is 100 s ahead
+      signature = 'v2';
+      current = { keys: KEYS }; // the operator took the restart back
+      watcher.check();
+      clock = now + 500_000;
+      watcher.check();
+      expect(restarts).toBe(0);
     });
 
     it('restartAfter in the future waits; one before the start never fires', () => {

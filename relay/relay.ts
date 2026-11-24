@@ -95,6 +95,7 @@ export interface RelayStats {
   /** Key file reloads applied / refused (invalid file, old set kept); present once counted. */
   keyReloads?: number;
   keyReloadFailed?: number;
+  keyFileWritable?: number;
 }
 
 const JSON_TYPE = 'application/json';
@@ -128,6 +129,8 @@ export interface Relay {
   setKeys: (keys: readonly RelayKey[]) => void;
   /** Counts a reload of the key file: applied (`true`) or refused (`false`). */
   noteKeyReload: (applied: boolean) => void;
+  /** Counts the key file turning writable for group or others (once per change of state). */
+  noteKeyFileWritable: () => void;
 }
 
 export function createRelay(options: RelayOptions): Relay {
@@ -303,8 +306,10 @@ export function createRelay(options: RelayOptions): Relay {
     if (total.length >= RELAY_LIMITS.perMinuteTotal) {
       waits.push(until(total, RELAY_LIMITS.perMinuteTotal));
     }
+    // In collecting operation the slot of an open window counts too: its stamp is still to come (`stampAt`).
+    const booked = batch ? [...own, ...reservedStamp(laneKey, now)] : own;
     const slotMs =
-      own.length >= ownLimit ? Math.max(1, bw - (now - own[own.length - ownLimit]!)) : 0;
+      booked.length >= ownLimit ? Math.max(1, bw - (now - booked[booked.length - ownLimit]!)) : 0;
     if (forService === true && own.length >= ownLimit) waits.push(until(own, ownLimit));
     if (kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey) {
       waits.push(until(mine, RELAY_LIMITS.perMinutePerKey));
@@ -763,6 +768,8 @@ export function createRelay(options: RelayOptions): Relay {
     creds: UpstreamCredentials | undefined;
     waiting: Waiting[];
     timer: ReturnType<typeof setTimeout> | null;
+    /** When it will be stamped at the latest (opening + window length): the time its slot is booked for. */
+    stampAt: number;
   }
   const openWindows = new Map<string, Window>(); // lane key -> the window that takes requests
   let closed = false;
@@ -807,18 +814,32 @@ export function createRelay(options: RelayOptions): Relay {
     );
   }
 
-  /** Milliseconds until the service has a free slot (0: now). */
+  /**
+   * The time the open window of a lane will be stamped, as a list of zero or one entry (after every time of
+   * a stamp that is made: it is in the future, at most one window length ahead even if the clock was set back).
+   */
+  function reservedStamp(key: string, now: number): number[] {
+    const open = openWindows.get(key);
+    return open === undefined ? [] : [Math.min(open.stampAt, now + batch!.windowMs)];
+  }
+
+  /**
+   * Milliseconds until the service has a free slot (0: now). A slot is counted at the time of the STAMP, the
+   * moment the service sees the call: the times of the stamps made, and for an open window the time it will be
+   * stamped (`open + windowMs`, at the latest). So a window holds its slot from its opening on, and the stamps that
+   * come before it count it already: in any minute the service sees at most `bw / minIntervalMs` calls.
+   */
   function slotWaitMs(key: string, service: RelayService): number {
     const now = options.now();
     const own = (windows.get(key) ?? []).filter((t) => now - t < bw);
     windows.set(key, own);
+    // times in the future (the clock was set back) count as `now`, except the stamp that is still to come
+    const booked = [...own.map((t) => Math.min(t, now)), ...reservedStamp(key, now)];
     const limit = Math.max(1, Math.floor(bw / service.minIntervalMs));
-    return own.length >= limit
-      ? Math.max(1, bw - (now - Math.min(own[own.length - limit]!, now)))
-      : 0;
+    return booked.length >= limit ? Math.max(1, bw - (now - booked[booked.length - limit]!)) : 0;
   }
 
-  /** Takes a slot of the service now. */
+  /** Books a stamp of the service at this moment. */
   function takeSlot(key: string): void {
     const own = windows.get(key) ?? [];
     own.push(options.now());
@@ -841,6 +862,7 @@ export function createRelay(options: RelayOptions): Relay {
       creds: lane.creds,
       waiting: items,
       timer: null,
+      stampAt: options.now() + batch!.windowMs,
     };
     created.timer = setTimeout(() => closeWindow(created), batch!.windowMs);
     openWindows.set(lane.key, created);
@@ -891,14 +913,15 @@ export function createRelay(options: RelayOptions): Relay {
         return;
       }
       const solo = lane.solo.length > 0 && (lane.normal.length === 0 || !lane.lastWasSolo);
-      takeSlot(lane.key);
       lane.lastWasSolo = solo;
       if (solo) {
+        takeSlot(lane.key); // the stamp is made now
         const item = lane.solo.shift()!;
         if (item.timer !== null) clearTimeout(item.timer);
         runSolo(lane, item);
       } else {
         // the window takes the requests that wait, up to its size; the others wait for the next slot
+        // (its slot is booked by the window itself: `stampAt` while it is open, the real stamp time at its close)
         const items = lane.normal.splice(0, batch!.max);
         for (const i of items) if (i.timer !== null) clearTimeout(i.timer);
         openWindowWith(lane, items);
@@ -927,6 +950,12 @@ export function createRelay(options: RelayOptions): Relay {
     if (openWindows.get(w.key) !== w) return; // closed already (timer and full window meet)
     openWindows.delete(w.key);
     if (w.timer !== null) clearTimeout(w.timer);
+    // The stamp is made now: the slot is booked at this time (a window that is full closes before `stampAt`). There
+    // is always room: the open window held its slot, and every stamp since counted it.
+    takeSlot(w.key);
+    // a lane that waits for a slot looks again: a window that closed early frees its slot earlier than booked
+    const waiting = lanes.get(w.key);
+    if (waiting !== undefined && waiting.timer !== null) dispatch(waiting);
     flush(w).catch(() => answerAll(w.waiting, { status: 500, body: { error: 'internal' } }));
   }
 
@@ -1012,6 +1041,10 @@ export function createRelay(options: RelayOptions): Relay {
   function noteKeyReload(applied: boolean): void {
     if (applied) stats.keyReloads = (stats.keyReloads ?? 0) + 1;
     else stats.keyReloadFailed = (stats.keyReloadFailed ?? 0) + 1;
+  }
+
+  function noteKeyFileWritable(): void {
+    stats.keyFileWritable = (stats.keyFileWritable ?? 0) + 1;
   }
 
   /** One answer for every authentication failure: nothing says whether id, time or signature was wrong. */
@@ -1143,9 +1176,11 @@ export function createRelay(options: RelayOptions): Relay {
       ...(stats.soloDenied === undefined ? {} : { soloDenied: stats.soloDenied }),
       ...(stats.keyReloads === undefined ? {} : { keyReloads: stats.keyReloads }),
       ...(stats.keyReloadFailed === undefined ? {} : { keyReloadFailed: stats.keyReloadFailed }),
+      ...(stats.keyFileWritable === undefined ? {} : { keyFileWritable: stats.keyFileWritable }),
     }),
     close,
     setKeys,
     noteKeyReload,
+    noteKeyFileWritable,
   };
 }

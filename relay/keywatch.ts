@@ -1,12 +1,29 @@
-import { statSync } from 'node:fs';
-import { loadKeyFile, type KeyFile, type RelayKey } from './keys.ts';
+import { createHash } from 'node:crypto';
+import {
+  keyFilePermissionWarning,
+  loadKeyFile,
+  readKeyFileBytes,
+  type KeyFile,
+  type RelayKey,
+} from './keys.ts';
 
 export interface KeyWatcherOptions {
   path: string;
   /** Reads and checks the file (throws on any problem); default `loadKeyFile`. */
   load?: (path: string) => KeyFile;
-  /** Modification signature of the file, or null when it cannot be examined; default mtime, size and inode. */
+  /**
+   * Signature of the file's state, or null when it cannot be examined (gone, not a plain file, too large); default
+   * the SHA-256 of the content. Not mtime, size or inode: a change that keeps all three (written in place, the old
+   * times put back) must be found, because a removed key has to stop. The file is at most `keyFileMaxBytes`, so
+   * reading it at every look is cheap.
+   */
   signature?: (path: string) => string | null;
+  /** The permission warning for the file (null: none); default `keyFilePermissionWarning`. */
+  permissionWarning?: (path: string) => string | null;
+  /** Called when the file turns writable for group or others (once per change of state, path and mode only). */
+  onWritable?: (message: string) => void;
+  /** The file was already reported as writable at the start: not reported again by the first look. */
+  writableAtStart?: boolean;
   /** Gives the relay the new key set (throws when it refuses it). */
   apply: (keys: readonly RelayKey[]) => void;
   /** Milliseconds since the epoch. */
@@ -30,8 +47,7 @@ export interface KeyWatcher {
 
 function fileSignature(path: string): string | null {
   try {
-    const s = statSync(path);
-    return `${s.mtimeMs}:${s.size}:${s.ino}`;
+    return createHash('sha256').update(readKeyFileBytes(path)).digest('hex');
   } catch {
     return null;
   }
@@ -46,6 +62,8 @@ function fileSignature(path: string): string | null {
 export function createKeyWatcher(options: KeyWatcherOptions): KeyWatcher {
   const load = options.load ?? loadKeyFile;
   const signatureOf = options.signature ?? fileSignature;
+  const permissionOf = options.permissionWarning ?? keyFilePermissionWarning;
+  let writable = options.writableAtStart === true; // reported as writable and not yet fixed
   let applied: string | null | undefined; // signature of the state that is active (undefined: none read yet)
   let failedFor: string | null | undefined; // signature of the state that failed last (counted once)
   let restartAfter: number | undefined;
@@ -59,10 +77,27 @@ export function createKeyWatcher(options: KeyWatcherOptions): KeyWatcher {
     }
   }
 
+  /** The permissions are looked at every time (a `chmod` changes no content): a warning, never a refusal. */
+  function checkPermissions(): void {
+    try {
+      const warning = permissionOf(options.path);
+      if (warning === null) writable = false;
+      else if (!writable) {
+        writable = true;
+        options.onWritable?.(warning);
+      }
+    } catch {
+      // a warning that cannot be made must not stop the reload
+    }
+  }
+
   function check(): void {
     try {
+      checkPermissions();
       const sig = signatureOf(options.path);
-      if (sig !== applied) {
+      if (sig === applied) {
+        failedFor = undefined; // back in the state that is active: a later failure is a new one
+      } else {
         if (sig === null) {
           fail(sig); // the file is gone: the old set stays
         } else {

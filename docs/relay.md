@@ -469,7 +469,10 @@ mindestens `RELAY_BATCH_MS=15000`). Die Startzeile im Protokoll nennt dann `batc
   Relay nimmt höchstens `perMinuteTotal` = 60 Anfragen je Minute an (ein Schlüssel höchstens 20), ein Fenster wird
   also nie größer als das; ein `RELAY_BATCH_MAX` über 60 füllt sich nur, wenn die Grenzen geändert werden (sie wurden
   für den Sammelbetrieb **nicht** geändert, siehe „Offene Punkte“).
-- Eine abgewiesene Anfrage (`401`, `400`, `415`, `429`, `503`) kommt nie in ein Fenster und kostet kein Budget.
+- Eine **sofort** abgewiesene Anfrage (`401`, `400`, `415`, `429` und das `503 busy` bei voller Tabelle der Identitäten
+  oder voller Solo-Warteschlange) kommt nie in ein Fenster und kostet kein Budget. Eine **angenommene** Anfrage hat das
+  Budget dagegen verbraucht, auch wenn sie nach dem Warten `503 busy` oder beim Beenden `503 shutting-down` bekommt (das
+  Budget wird bei der Annahme verbraucht und nicht zurückgegeben; so auch im Abschnitt „Schlüsselarten und Solo-Stempel“).
 - Der Wiederholungsspeicher gegen abgespielte Köpfe und die Prüfung der Frische arbeiten unverändert.
 - **Zähler:** `stamped` zählt die Stempel, die der Dienst gegeben hat (im Sammelbetrieb einen je Fenster), und es gibt
   `batched`, die Zahl der mit einem Beleg beantworteten Anfragen. Beides sind reine Summen. Ein Fehler im Fenster zählt
@@ -574,6 +577,9 @@ Länge, falscher Typ oder falsche Größe eines Feldes, unbekanntes Feld), ist *
   je Fenster statt je Anfrage zählen oder höher stehen (Entscheidung des Eigentümers, derzeit nicht geändert).
 - Nicht ausgerollt, nicht von einem Menschen geprüft, nicht im Browser getestet; der Test nutzt einen Stub als Dienst,
   gegen einen echten Dienst lief der Sammelbetrieb nicht (kein Netz).
+- **Kein Mindestabstand zwischen Stempeln** (Entscheidung des Eigentümers offen): das Relay hält das Mengenbudget je
+  gleitender Minute ein, verteilt die Stempel aber nicht gleichmäßig. Zwei bis vier Solo-Stempel können innerhalb weniger
+  Sekunden an einen Dienst gehen, der „15 Sekunden Pause zwischen Anfragen“ erbittet (`docs/dienste.md`).
 
 ## Schlüsselarten und Solo-Stempel
 
@@ -634,6 +640,16 @@ Fenster gelten **immer je externem Dienst**. Ein **Platz** ist ein Stempel des D
 Platz ganz, nicht nur einen Teil des Fensters). Ein Fenster ist **voll** durch `RELAY_BATCH_MAX` oder durch einen
 Solo-Stempel; **der Rest wartet**.
 
+- **Der Platz wird zur Zeit des Stempels gebucht.** Ein Solo-Stempel bucht seinen Platz, wenn er an den Dienst geht. Ein
+  Fenster hält seinen Platz **ab dem Öffnen** und bucht ihn für den Zeitpunkt, an dem es gestempelt wird (Öffnung plus
+  Fensterlänge, bei einem vollen Fenster der tatsächliche frühere Zeitpunkt). Solo-Stempel, die während des offenen
+  Fensters kommen, sehen den Platz schon als belegt. Folge: der Dienst sieht in **jeder** gleitenden Minute höchstens
+  `60000 / minIntervalMs` Aufrufe, auch bei einem Gemisch aus Fenstern und Solo-Stempeln. Zur Schließzeit ist der Platz
+  immer frei (er war reserviert und jeder Stempel danach hat ihn mitgezählt); das Fenster wartet dann nie. Wartende
+  bekommen den Platz in der Reihenfolge, die der Abschnitt beschreibt; ihre Wartegrenze ist `RELAY_MAX_WAIT_MS`.
+  Der Start prüft weiter `RELAY_BATCH_MS` >= `minIntervalMs`. Einen **Mindestabstand** zwischen zwei Stempeln gibt es
+  nicht (Solo-Stempel können dicht hintereinander an einen Dienst gehen, der eine Pause von 15 s erbittet): das ist eine
+  offene Entscheidung des Betreibers (siehe „Offene Punkte“).
 - **Warten nur im Mangelfall.** Ist ein Platz frei, wird die Anfrage sofort bedient (ein Fenster öffnet, ein Solo-Stempel
   geht an den Dienst); eine Anfrage in ein **offenes** Fenster braucht keinen Platz.
 - **Abwechselnd.** Warten ein Solo-Stempel und ein Sammelfenster zugleich, bekommen sie die Plätze **abwechselnd**: nichts
@@ -649,12 +665,14 @@ Solo-Stempel; **der Rest wartet**.
   Wartezeit nicht berührt: sie werden beim Eingang beziehungsweise beim Senden an den Dienst gemessen.
 - `perMinuteTotal` (60) und `perMinutePerKey` (20) bleiben **unverändert** und zählen jede angenommene Anfrage, auch eine
   Solo-Anfrage und auch eine, die später `503 busy` bekommt (das Budget wird bei der Annahme verbraucht und nicht
-  zurückgegeben). Mit den mitgelieferten Diensten werden sie weiterhin nicht erreicht; das Solo-Limit je Schlüssel (4)
+  zurückgegeben). Mit den mitgelieferten Diensten (zusammen 24 Plätze je Minute) kann ein Schlüssel, der mehrere Dienste
+  nutzt, `perMinutePerKey` (20) erreichen; `perMinuteTotal` (60) wird nicht erreicht. Das Solo-Limit je Schlüssel (4)
   liegt unter `perMinutePerKey` (20), die Grenzen kollidieren also nicht.
 - **Kapazität:** ein Solo-Stempel kostet einen ganzen Platz. Mit FreeTSA (12 Plätze je Minute) und abwechselnder Vergabe
   höchstens 6 Solo-Stempel je Minute für **alle** Schlüssel der Art 2 zusammen (sonst bleibt der Sammelbetrieb stehen);
   bei den Diensten mit 15 s sind es 4 Plätze, also höchstens 2.
-- **Beim Beenden** (`SIGTERM`, `restartAfter`) bekommen auch die auf einen Platz Wartenden `503 shutting-down`.
+- **Beim Beenden** (`SIGTERM`, `restartAfter`) bekommen auch die auf einen Platz Wartenden `503 shutting-down`; Verbindungen,
+  die ihre Antwort bekommen haben, werden danach geschlossen, damit der Prozess nicht auf das Ende ihres Keep-alive wartet.
 
 ### Zähler
 
@@ -667,16 +685,30 @@ Zeile `counts` erst, wenn sie zum ersten Mal gezählt wurden:
 | `soloDenied`      | Solo-Anfragen der Art 1, die `403 solo-not-allowed` bekamen (auch unter `refused`)                                    |
 | `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                        |
 | `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal |
+| `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)         |
 
 `busy` und `solo-not-allowed` stehen außerdem unter `refused` wie jeder Fehlercode.
 
 ### Schlüsseldatei laufend lesen
 
-Das Relay sieht alle `keyFileCheckMs` (5 s) nach, ob sich Änderungszeit, Größe oder Inode der Schlüsseldatei geändert
-haben, und liest sie dann **streng** neu (dieselben Regeln wie beim Start).
+Das Relay liest alle `keyFileCheckMs` (5 s) die Schlüsseldatei und bildet den SHA-256 ihres Inhalts. Hat er sich
+geändert, liest es sie **streng** neu (dieselben Regeln wie beim Start). Der Inhalt zählt, nicht Änderungszeit, Größe
+oder Inode: eine an Ort und Stelle geschriebene Datei mit zurückgesetzter Änderungszeit wird ebenso gefunden (sonst
+bliebe ein gesperrter Schlüssel gültig). Das Lesen ist billig: die Datei ist höchstens `keyFileMaxBytes` (64 KiB) groß.
 
-- **Neuer Schlüssel:** gilt ab dem Übernehmen. **Entfernter Schlüssel:** ist **sofort** ungültig (jede Anfrage prüft gegen
-  den aktuellen Satz); das ist der Weg, einen Schlüssel zu **sperren**. Auch eine geänderte Art (`solo`) gilt sofort.
+- **Nur eine reguläre, kleine Datei.** Das Relay öffnet sie ohne zu warten und prüft das geöffnete Handle: eine FIFO, ein
+  Gerät, ein Verzeichnis oder eine Datei über `keyFileMaxBytes` wird nicht gelesen (beim Start `config-error`, beim
+  Neulesen zählt `keyReloadFailed` einmal je Zustand, der alte Satz bleibt). Ein **Symlink wird verfolgt** (ein Link auf
+  eine reguläre Datei ist ein üblicher Weg, sie auszurollen); sein Ziel muss dieselbe Prüfung bestehen.
+- **Schreibrechte werden bei jedem Nachsehen geprüft** (POSIX), nicht nur beim Start: ist die Datei für Gruppe oder
+  Andere schreibbar, steht eine Zeile `warning` im Log (Pfad und Modus, nichts aus der Datei) und `keyFileWritable` zählt,
+  **einmal je Wechsel des Zustands**. Es ist eine Warnung, kein Abbruch: die Datei wird weiter gelesen. Ein beim Start
+  schon gemeldeter Zustand wird nicht zum zweiten Mal gemeldet.
+
+- **Neuer Schlüssel:** gilt ab dem Übernehmen. **Entfernter Schlüssel:** ist **sofort** ungültig, sobald das Relay die
+  Datei neu gelesen hat (jede Anfrage prüft gegen den aktuellen Satz; das Neulesen geschieht nach spätestens
+  `keyFileCheckMs`, auch wenn Änderungszeit, Größe und Inode gleich geblieben sind); das ist der Weg, einen Schlüssel
+  zu **sperren**. Auch eine geänderte Art (`solo`) gilt sofort.
 - **Ungültige Datei** (kein JSON, Regelverstoß, halb geschrieben, verschwunden): der **alte Satz bleibt aktiv**,
   `keyReloadFailed` zählt, es wird nichts aus der Datei protokolliert. Schon beim nächsten Nachsehen wird es erneut
   versucht (eine halb geschriebene Datei wird so bald gelesen, wie sie fertig ist).
@@ -910,12 +942,15 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `upstreamPasswordMax`   | 128    | längstes Passwort bei `basic` (druckbares ASCII)                                                                                                               |
 | `upstreamTokenMax`      | 384    | längstes Token bei `bearer` und `header` (druckbares ASCII ohne Leerzeichen, `"` und `\`)                                                                      |
 | `upstreamIdentitiesMax` | 64     | gleichzeitig bekannte Zugangsdaten-Identitäten je Dienst (nur Arbeitsspeicher); eine weitere neue bekommt `503 busy`                                           |
-| `keyFileCheckMs`        | 5000   | Abstand, in dem das Relay die Änderungszeit der Schlüsseldatei prüft                                                                                           |
+| `keyFileCheckMs`        | 5000   | Abstand, in dem das Relay die Schlüsseldatei liest (SHA-256 des Inhalts) und ihre Schreibrechte prüft                                                          |
+| `keyFileMaxBytes`       | 65536  | Größte Schlüsseldatei, die das Relay liest (Bytes); größere und Nicht-Dateien (FIFO, Gerät, Verzeichnis) werden nicht gelesen                                  |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4, bei FreeTSA mit 5 s: 12). `perMinuteTotal` und
 `minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht
-zeitlich, sondern lässt in einem Fenster von einer Minute höchstens so viele durch; danach kommen Anfragen mit
-`429` und `Retry-After`.
+zeitlich, sondern lässt höchstens so viele durch, dass der **Dienst** in jedem gleitenden Fenster von einer Minute
+höchstens so viele Aufrufe sieht; danach kommen Anfragen mit `429` und `Retry-After` (oder, im Sammelbetrieb, eine
+kurze Wartezeit). Gezählt wird der Zeitpunkt des **Stempels** (des Aufrufs beim Dienst), im Sammelbetrieb auch beim
+Fenster (siehe „Der Planer je Dienst“). Mehrere Stempel können dicht hintereinander kommen (kein Mindestabstand).
 
 **Grenze der Zähler:** Die globalen und die Dienst-Zähler gelten für alle Aufrufer zusammen, nicht je
 Netzadresse (das Relay kennt keine Adressen); je Aufrufer zählt nur die Schlüsselkennung. Wer einen gültigen
@@ -981,7 +1016,7 @@ Was jede Einrichtung leisten muss:
   dazu die Prüfung. Kürzere Fristen des Proxys brechen Stempel ab, die das Relay noch zählt. **Im Sammelbetrieb**
   kommt das Fenster dazu: mindestens `RELAY_BATCH_MS` + 17 s („Sammelbetrieb“, „Latenz und Fristen“).
 - **Ratenlimit und Verbindungslimit je Adresse.** Das Relay selbst kennt keine Adressen. Der Rahmen ist klein: die vier
-  mitgelieferten Dienste erlauben zusammen 16 Anfragen je Minute (4 je Dienst).
+  mitgelieferten Dienste erlauben zusammen 24 Anfragen je Minute (FreeTSA mit 5 s: 12, die drei anderen mit 15 s: je 4).
 - Körper höchstens 512 Byte (das Relay lehnt mehr ab); der Proxy darf früher abweisen.
 - `GET /health` ist für Überwachung gedacht; es prüft keinen Dienst.
 

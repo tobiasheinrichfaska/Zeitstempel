@@ -1,5 +1,6 @@
 import { createPublicKey, type KeyObject } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync, statSync } from 'node:fs';
+import { RELAY_LIMITS } from './limits.ts';
 import { fail, fromBase64Url, ok, toHex, type Result } from '../src/index.ts';
 
 /**
@@ -111,20 +112,83 @@ export function readKeyFile(data: unknown): Result<RelayKey[]> {
   return full.ok ? ok(full.value.keys) : full;
 }
 
+/** The key file is not a plain file or is larger than `keyFileMaxBytes` (never read further). */
+export class KeyFileKindError extends Error {}
+
+/**
+ * The bytes of the key file, for a plain file of at most `keyFileMaxBytes` only. The file is opened without waiting
+ * (`O_NONBLOCK`: a FIFO must not block the relay until a writer comes) and examined through the open handle
+ * (`fstat`, so nothing can change between the check and the read): a FIFO, a device, a directory or a file that
+ * is too large (also one that grows while it is read) throws `KeyFileKindError`, with nothing read beyond the limit.
+ * A symbolic link is followed (a link to a plain file is a normal way to deploy it); what it points to must pass
+ * the same check.
+ */
+export function readKeyFileBytes(path: string): Buffer {
+  const max = RELAY_LIMITS.keyFileMaxBytes;
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY);
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.size > max) throw new KeyFileKindError('kind');
+    const buffer = Buffer.alloc(max + 1);
+    let length = 0;
+    for (;;) {
+      const got = readSync(fd, buffer, length, max + 1 - length, null);
+      if (got === 0) break;
+      length += got;
+      if (length > max) throw new KeyFileKindError('size');
+    }
+    return buffer.subarray(0, length);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const readKeyFileText = (path: string): string => readKeyFileBytes(path).toString('utf8');
+
+/**
+ * A warning text when the key file can be written by its group or by others (POSIX; mode & 0o022): whoever
+ * can write it can enter a key of their own. Null otherwise, also under Windows (no such modes) and when
+ * the file cannot be examined. The text names the path and the mode, nothing from the file. Reading is
+ * no problem: the file holds public keys only.
+ */
+export function keyFilePermissionWarning(
+  path: string,
+  stat: (path: string) => { mode: number } = statSync,
+  platform: string = process.platform,
+): string | null {
+  if (platform === 'win32') return null;
+  let mode: number;
+  try {
+    mode = stat(path).mode;
+  } catch {
+    return null;
+  }
+  if ((mode & 0o022) === 0) return null;
+  return `${path}: Die Schlüsseldatei ist für Gruppe oder Andere schreibbar (Modus ${(mode & 0o777).toString(8)}); wer sie schreiben kann, kann einen eigenen Schlüssel eintragen. Schreibrechte entziehen (chmod go-w)`;
+}
+
 /**
  * Reads and checks the key file (keys and `restartAfter`). Throws with a message a person can read: the
  * path and a rule name, never a piece of the file.
  */
 export function loadKeyFile(
   path: string,
-  read: (path: string) => string = (p) => readFileSync(p, 'utf8'),
+  read: (path: string) => string = readKeyFileText,
 ): KeyFile {
+  // never a cause on the error: the message of a JSON error can quote a piece of the file
   let data: unknown;
+  let problem: 'kind' | 'unreadable' | null = null;
   try {
     data = JSON.parse(read(path));
-  } catch {
-    throw new Error(`${path}: Schlüsseldatei nicht lesbar oder kein JSON`);
+  } catch (e) {
+    problem = e instanceof KeyFileKindError ? 'kind' : 'unreadable';
   }
+  if (problem === 'kind') {
+    throw new Error(
+      `${path}: Schlüsseldatei ist keine reguläre Datei oder größer als ${RELAY_LIMITS.keyFileMaxBytes} Byte`,
+    );
+  }
+  if (problem !== null) throw new Error(`${path}: Schlüsseldatei nicht lesbar oder kein JSON`);
   const file = readKeyFileFull(data);
   if (!file.ok)
     throw new Error(`${path}: ungültige Schlüsseldatei (${file.reason}: ${file.detail})`);
@@ -134,7 +198,7 @@ export function loadKeyFile(
 /** Reads and checks the key file; the keys only (see `loadKeyFile`). */
 export function loadKeys(
   path: string,
-  read: (path: string) => string = (p) => readFileSync(p, 'utf8'),
+  read: (path: string) => string = readKeyFileText,
 ): RelayKey[] {
   return loadKeyFile(path, read).keys;
 }

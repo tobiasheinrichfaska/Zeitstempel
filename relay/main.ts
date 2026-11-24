@@ -23,17 +23,19 @@
 //                            (docs/relay.md, "Zugangsdaten zu bezahlten Diensten"). Never logged, never in an error text.
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
-import { statSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { loadServices } from './load.ts';
 import type { ServiceAuth } from '../src/index.ts';
 import { credentialsFromText, type UpstreamCredentials } from './credentials.ts';
-import { loadKeys, type RelayKey } from './keys.ts';
+import { keyFilePermissionWarning, loadKeys, type RelayKey } from './keys.ts';
 import { createKeyWatcher } from './keywatch.ts';
-import type { RelayService } from './relay.ts';
+import type { RelayOptions, RelayService } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { networkUpstream } from './upstream.ts';
 import { createRelayServer, LOOPBACK_HOSTS } from './server.ts';
+
+// re-exported: the check lives with the key file reader (the watcher repeats it at every look)
+export { keyFilePermissionWarning };
 
 export function readSettings(env: NodeJS.ProcessEnv) {
   const origins = (env.RELAY_ORIGINS ?? '')
@@ -214,28 +216,6 @@ export function readUpstreamAuth(
   return out;
 }
 
-/**
- * A warning text when the key file can be written by its group or by others (POSIX; mode & 0o022): whoever
- * can write it can enter a key of their own. Null otherwise, also under Windows (no such modes) and when
- * the file cannot be examined. The text names the path and the mode, nothing from the file. Reading is
- * no problem: the file holds public keys only.
- */
-export function keyFilePermissionWarning(
-  path: string,
-  stat: (path: string) => { mode: number } = statSync,
-  platform: string = process.platform,
-): string | null {
-  if (platform === 'win32') return null;
-  let mode: number;
-  try {
-    mode = stat(path).mode;
-  } catch {
-    return null;
-  }
-  if ((mode & 0o022) === 0) return null;
-  return `${path}: Die Schlüsseldatei ist für Gruppe oder Andere schreibbar (Modus ${(mode & 0o777).toString(8)}); wer sie schreiben kann, kann einen eigenen Schlüssel eintragen. Schreibrechte entziehen (chmod go-w)`;
-}
-
 /** Settings, the services to offer and the keys (or `'off'`), or a throw that names the problem. */
 export function readConfig(
   env: NodeJS.ProcessEnv,
@@ -312,6 +292,32 @@ export function serverLimits(settings: {
   };
 }
 
+/**
+ * What `createRelay` is given, from the read settings: services, origins, keys, the credentials the relay holds, the
+ * collecting operation and the longest wait. The one place where the settings reach the relay (a test follows each of
+ * them through here). The upstream, the random source and the clock come from the caller.
+ */
+export function buildRelayOptions(
+  config: ReturnType<typeof readConfig>,
+  deps: Pick<RelayOptions, 'upstream' | 'random' | 'now'>,
+): RelayOptions {
+  const { settings, services, keys, upstreamAuth } = config;
+  return {
+    services,
+    origins: settings.origins,
+    allowPlainHttp: settings.allowPlainHttp,
+    upstream: deps.upstream,
+    random: deps.random,
+    now: deps.now,
+    keys,
+    upstreamAuth,
+    ...(settings.batchMs === undefined
+      ? {}
+      : { batch: { windowMs: settings.batchMs, max: settings.batchMax } }),
+    ...(settings.maxWaitMs === undefined ? {} : { maxWaitMs: settings.maxWaitMs }),
+  };
+}
+
 function main(): void {
   let config: ReturnType<typeof readConfig>;
   try {
@@ -322,25 +328,16 @@ function main(): void {
     return;
   }
   const startMs = Date.now();
-  const { settings, services, keys, warnings, upstreamAuth } = config;
+  const { settings, services, keys, warnings } = config;
   // The relay holds the credentials in memory now: they leave the environment (nothing inherits them).
   for (const s of services) Reflect.deleteProperty(process.env, upstreamAuthVariable(s.id));
   for (const message of warnings) console.error(JSON.stringify({ event: 'warning', message }));
   const { server, relay } = createRelayServer(
-    {
-      services,
-      origins: settings.origins,
-      allowPlainHttp: settings.allowPlainHttp,
+    buildRelayOptions(config, {
       upstream: networkUpstream,
       random: (n) => new Uint8Array(randomBytes(n)),
       now: () => Date.now(),
-      keys,
-      upstreamAuth,
-      ...(settings.batchMs === undefined
-        ? {}
-        : { batch: { windowMs: settings.batchMs, max: settings.batchMax } }),
-      ...(settings.maxWaitMs === undefined ? {} : { maxWaitMs: settings.maxWaitMs }),
-    },
+    }),
     serverLimits(settings),
   );
   listenOn(server, settings.port, settings.host, () => {
@@ -357,6 +354,10 @@ function main(): void {
     watcher?.stop();
     relay.close(); // requests that wait in a window or for a slot are answered (503), nothing hangs
     server.close(() => process.exit(0));
+    // `close` only ends idle connections at the moment of the call: a connection that was busy (it just got its
+    // 503) would stay open until its keep-alive ends (65 s on a loopback binding) and hold the exit. So idle ones
+    // are closed as they become idle; a request still in flight is not cut.
+    setInterval(() => server.closeIdleConnections(), 200).unref();
   };
   // The key file is read again while the relay runs (new keys count, removed ones stop at once); a
   // `restartAfter` in it ends the process once cleanly, a supervisor starts it again. The relay only reads the file.
@@ -374,6 +375,12 @@ function main(): void {
           },
           onReloaded: () => relay.noteKeyReload(true),
           onFailed: () => relay.noteKeyReload(false),
+          // the permission check of the start, repeated at every look: a warning once per change of state
+          writableAtStart: warnings.length > 0,
+          onWritable: (message) => {
+            relay.noteKeyFileWritable();
+            console.error(JSON.stringify({ event: 'warning', message }));
+          },
         });
   watcher?.check();
   watcher?.start(RELAY_LIMITS.keyFileCheckMs);

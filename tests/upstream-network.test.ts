@@ -208,7 +208,3 @@ describe.skipIf(!have)(
     });
   },
 );
-
-describe.skipIf(have)('openssl is missing: the TLS stub tests are skipped', () => {
-  it('is visible', () => undefined);
-});
