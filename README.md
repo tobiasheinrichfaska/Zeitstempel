@@ -28,15 +28,22 @@ const request = buildTimestampRequest(sha256, nonce); // DER-Bytes für den Dien
 // der Körper der Antwort ist answerBytes (ein Uint8Array). Browser erreichen die Dienste meist nicht (CORS): Relay.
 const response = readTimestampResponse(answerBytes); // { ok, value: { status, token, info } }
 if (!response.ok) throw new Error(response.reason);
+const sentMs = Date.now(); // vor dem Senden merken
+// ... Anfrage senden, Antwort lesen (readTimestampResponse) ...
 const verified = await verifyTimestampToken(response.value.token, sha256, [anchorPem], {
   expectedNonce: nonce,
   now: new Date(), // ohne `now` wird nicht gegen die Zukunft geprüft
+  minGenTime: new Date(sentMs - 60_000), // ohne `minGenTime` wird die Frische NICHT geprüft (Rückdatierung möglich)
 });
 // { ok: true, value: { genTime: '2026-11-23T13:05:56.000Z', signer, chainLength, … } }
 ```
 
-`verified.ok` heißt: „Dienst X bestätigt, dass dieser Hash spätestens zu `genTime` existierte“ – wenn man dem Anker
-traut. Der Stempel ist **nicht qualifiziert**, es gibt **keine Sperrprüfung**, und die Anker bestimmt der
+`verified.ok` heißt: „ein Zeitstempel-Zertifikat unter dem übergebenen Anker bestätigt, dass dieser Hash spätestens zu
+`genTime` existierte“ – wenn man dem Anker traut (welcher Betreiber dahinter steht, sagt die Prüfung nicht). Die Aussage
+über die **Zeit** gilt nur mit `minGenTime`: ohne sie wird nicht geprüft, wie alt das Token ist, und ein Dienst mit
+abgelaufenem oder gestohlenem Schlüssel könnte rückdatieren (`docs/grenzen.md`). Das Ergebnis nennt auch
+`signerNotAfter`: nach diesem Zeitpunkt oder bei Kompromittierung des Dienstschlüssels verfällt die Beweiskraft
+(rechtzeitig neu stempeln, mehrere Dienste; `docs/grenzen.md`, „Langzeitaussage“). Der Stempel ist **nicht qualifiziert**, es gibt **keine Sperrprüfung**, und die Anker bestimmt der
 Aufrufer (`docs/grenzen.md`). Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime` ist
 im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `response.value.info` dagegen eine Zahl
 (Millisekunden seit 1970).
@@ -51,6 +58,7 @@ import { fromBase64Url, signRelayRequest, toBase64Url } from 'zeitstempel';
 const privateKey = fromBase64Url(privateKeyText.trim()); // null bei ungültigem Text
 if (!privateKey) throw new Error('privateKeyText is not base64url');
 const path = '/v1/stamp/freetsa';
+const sentMs = Date.now(); // merken: für `minGenTime` der Prüfung unten
 const body = new TextEncoder().encode(JSON.stringify({ hash: toBase64Url(sha256) }));
 const auth = await signRelayRequest({
   privateKey,
@@ -58,7 +66,7 @@ const auth = await signRelayRequest({
   method: 'POST',
   path,
   body,
-  nowMs: Date.now(), // Millisekunden, nicht Sekunden
+  nowMs: sentMs, // Millisekunden, nicht Sekunden
 });
 if (!auth.ok) throw new Error(auth.reason);
 const res = await fetch(relayUrl + path, {
@@ -67,13 +75,20 @@ const res = await fetch(relayUrl + path, {
   body,
 });
 const token = fromBase64Url((await res.json()).token); // 200 { service, genTime, accuracyMs, serial, token }
-// das Token danach mit verifyTimestampToken prüfen (ohne expectedNonce: die Nonce wählt das Relay)
+// das Token danach mit verifyTimestampToken prüfen (ohne expectedNonce: die Nonce wählt das Relay), und zwar mit
+// { now: new Date(), minGenTime: new Date(sentMs - 60_000) }, sonst ist die Frische nicht geprüft
 ```
 
-Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt) gehört in die App. `make-key` druckt ihn als
+Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt, oder ein nicht extrahierbarer `CryptoKey`) gehört in die App. `make-key` druckt ihn als
 base64url-Text auf das Terminal (im Beispiel oben macht `fromBase64Url` daraus die Bytes). In einer Web-App ist er für die
 Besucher der Seite lesbar. Das Relay und die Werkzeuge (`relay/`, `scripts/`) sind **nicht im Paket** (nur Bibliothek,
 Dienstliste und Anker): dafür das Repository klonen. Einzelheiten und „Lokal testen“ in [`docs/relay.md`](docs/relay.md).
+
+Betriebshinweise (Einzelheiten im Abschnitt „Betrieb hinter einem Reverse-Proxy“ von `docs/relay.md`): Das Relay und der Dienst
+sehen den **Hash**; bei ratbarem Inhalt einen gesalzenen Hash oder eine Merkle-Wurzel stempeln. Jeder Dienst erlaubt nur
+wenige Stempel je Minute für alle zusammen (mitgeliefert: 4 je Dienst), auch ein Fehlschlag kostet davon; `/health` prüft
+keinen Dienst; ein Anstieg von `upstream-invalid` in den Zählern ist ein Alarmzeichen. Das Relay lauscht ohne `RELAY_HOST`
+nur auf `127.0.0.1` (ein Container braucht `RELAY_HOST=0.0.0.0`) und gehört hinter einen Reverse-Proxy.
 
 Die Kernfunktionen (`buildTimestampRequest`, `readTimestampResponse`, `verifyTimestampToken`, `readServices`,
 `signRelayRequest`) werfen bei keiner gewöhnlichen Eingabe (gegen feindliche `Proxy`-Objekte sind `buildTimestampRequest`, `verifyTimestampToken`, `equalBytes` und `signRelayRequest` abgesichert und getestet); Fehler sind Codes (`{ ok: false, reason }`). Die Bausteine

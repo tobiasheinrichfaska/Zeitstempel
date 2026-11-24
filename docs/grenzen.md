@@ -1,6 +1,6 @@
 # Was die Prüfung kann und was nicht
 
-Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Diese Seite sagt ehrlich, was
+Stand: 2026-11-24. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Diese Seite sagt ehrlich, was
 **nicht** geprüft wird und wo die Aussage endet.
 
 ## Was geprüft wird
@@ -10,7 +10,9 @@ Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 3. Die Nonce stimmt, wenn eine erwartet wird.
 4. Der Hash des Inhalts stimmt mit dem signierten Attribut überein, der Inhaltstyp ist `TSTInfo`.
 5. Das Attribut zum Zeitstempel-Zertifikat (`signingCertificate` oder `signingCertificateV2`) passt zum
-   verwendeten Zertifikat.
+   verwendeten Zertifikat. Im v2-Attribut (ESSCertIDv2) gilt der dort genannte Hash; **SHA-1 und eine unbekannte
+   Hash-OID dort werden abgelehnt** (`unsupported-hash`), es gibt keinen stillen Rückfall auf SHA-256 (fehlt die
+   Angabe ganz, gilt SHA-256, wie im RFC 5035). Nur das v1-Attribut (`signingCertificate`) rechnet mit SHA-1.
 6. Die Signatur (RSA PKCS#1 v1.5 oder ECDSA P-256/P-384/P-521, mit SHA-256/384/512) stimmt. Nennt die
    Signatur-OID ihren Hash (z. B. `ecdsa-with-SHA384`, `sha256WithRSAEncryption`), muss er zum `digestAlgorithm`
    des Unterzeichner-Eintrags passen, sonst `signature-invalid` (wie bei `openssl ts -verify`: `signature failure`).
@@ -21,7 +23,9 @@ Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
    Erweiterung vorhanden ist; **zusätzliche Bits** (z. B. `keyEncipherment`, `keyAgreement`, `keyCertSign`,
    `cRLSign`) neben `digitalSignature` werden angenommen. `openssl ts -verify` lehnt solche Zertifikate ab. Ob das
    verschärft werden soll, ist eine Entscheidung des Besitzers (derzeit nicht).
-8. Alle Zertifikate der Kette waren **zur bestätigten Zeit** gültig, kein Zertifikat der Kette (Anker ausgenommen) trägt eine
+8. Alle Zertifikate der Kette waren **zur bestätigten Zeit** (`genTime`) gültig und, wenn die Option `at` gegeben
+   ist, **zusätzlich zu `at`** (beides, `at` ersetzt die `genTime` nicht; mit `at` ist ein Zertifikat, das nur zu
+   `at` gültig war, abgelehnt: `certificate-not-valid-at-time`), kein Zertifikat der Kette (Anker ausgenommen) trägt eine
    kritische, unbekannte Erweiterung, die Aussteller sind
    Zertifizierungsstellen und erlauben das Ausstellen von Zertifikaten, und die Kette endet bei einem der
    übergebenen Anker. **Ausnahme Anker:** Ein übergebener Anker ohne `basicConstraints` (X.509 v1, ohne
@@ -72,9 +76,23 @@ Schnelltest (`npm run spike`).
 
 ## Was NICHT geprüft wird
 
+- **Frische (ohne `minGenTime`):** Ohne die Option `minGenTime` wird **nicht geprüft, wie alt das Token ist**. Die
+  Bibliothek kennt keine eigene Zeitquelle und weiß nicht, wann die Anfrage ging. Ein Dienst (oder wer seinen
+  Signierschlüssel hat, etwa nach Ablauf oder Diebstahl des Schlüssels) kann ein Token mit einer **rückdatierten**
+  `genTime` ausstellen, solange sein Zertifikat zu dieser früheren Zeit gültig war; es besteht die Prüfung. Das
+  Token behauptet dann „der Hash existierte schon 2021“, obwohl er heute gestempelt wurde. Dagegen hilft nur, den
+  Zeitpunkt des Sendens zu merken und `minGenTime: new Date(gesendet − 60_000)` (zusammen mit `now`) zu übergeben;
+  das Relay macht das für seine eigene Prüfung (`genTimeSlackMs`, `docs/relay.md`). Wer ein Token **später oder
+  anderswo** prüft (ohne den Zeitpunkt des Sendens zu kennen), kann die Frische nicht prüfen. `now` allein fängt nur
+  die Zukunft ab.
 - **Sperrung (Revocation):** Es wird weder OCSP noch eine Sperrliste ausgewertet. Ein später gesperrtes
   Zertifikat erscheint weiterhin gültig. Die Prüfung gilt für die Zeit der Bestätigung; für Langzeitnachweise
   bräuchte man zusätzlich Sperrinformationen zum damaligen Zeitpunkt (Langzeit-Validierung, LTV).
+- **Schaltsekunde:** Ein Token mit `genTime` `…60Z` (Sekunde 60, wie eine Schaltsekunde sie hätte) wird abgelehnt
+  (`bad-time`), ebenso jede andere Sekunde über 59. Ein solches Token ist mit dieser Bibliothek **unprüfbar**. Das
+  Relay antwortet dann `502 upstream-invalid` (Grund `bad-time`), und das Budget des Dienstes ist verbraucht (die
+  Anfrage ging hinaus). Das ist bewusst so entschieden (keine Annahme eines Wertes, den `Date` nicht darstellen
+  kann). Ob ein Dienst bei einer Schaltsekunde so stempelt, wurde nicht untersucht.
 - **Namens- und Pfadbeschränkungen** der Zertifikate (NameConstraints, pathLenConstraint) werden nicht
   ausgewertet; die Länge der Kette ist begrenzt (höchstens 5 Zwischenzertifikate; `chainLength` höchstens 7, Anker eingerechnet).
 - **Zertifikatsrichtlinien** (Policy-OIDs): Die Richtlinie des Tokens wird gemeldet, aber nicht gegen eine
@@ -106,7 +124,7 @@ kein `String`-Objekt). Eine Klasseninstanz oder eine `Map` wird also nie als „
 Folge „Prüfung still aus“ ist ausdrücklich ausgeschlossen. `expectedNonce`
 muss, wenn der Schlüssel vorhanden und nicht `undefined` ist, ein `Uint8Array` mit 1 bis 16 Byte sein (`null`,
 `0`, `""`, `NaN`, `false`, ein leeres Array oder leere Bytes sind also Fehler und keine „keine Nonce“);
-`requireCriticalEku` muss ein Wahrheitswert sein; `now` und `at` müssen **echte** `Date`-Objekte mit gültiger
+`requireCriticalEku` muss ein Wahrheitswert sein; `now`, `at` und `minGenTime` müssen **echte** `Date`-Objekte mit gültiger
 Zeit sein (Prototyp genau `Date.prototype`, endlich, Betrag höchstens 8,64e15 ms; Unterklassen, Objekte, die
 nur über `Symbol.toStringTag` ein Datum vortäuschen, und ein `Date` aus einem anderen Realm sind Fehler);
 `maxSkewMs` muss eine Zahl ≥ 0 sein (`Infinity` erlaubt). Nur `undefined` zählt als „nicht angegeben“.
@@ -197,13 +215,37 @@ gilt es.
   `signer-certificate-missing`. Fehlt dadurch ein Zwischenzertifikat der Kette, ist der Grund `untrusted-chain` (die
   genauere Ursache, z. B. `bad-time`, wird dann nicht gemeldet). Anker und Unterzeichner-Eintrag bleiben streng.
 
+## Langzeitaussage
+
+Geprüft wird die Kette **zur `genTime`** des Tokens (und, wenn gegeben, zu `at`), nicht zum Zeitpunkt der Prüfung.
+Das Ergebnis nennt dazu `signerNotBefore` und `signerNotAfter`, die Gültigkeit des Zeitstempel-Zertifikats. Daraus
+folgt ehrlich:
+
+- Ein Token bleibt nicht beliebig lange „bewiesen“. Ein Zeitstempel-Zertifikat hat eine begrenzte Gültigkeit (bei
+  den aufgezeichneten Token reicht sie bis 2036 bis 2040); **nach `signerNotAfter` oder nach Kompromittierung des Signierschlüssels** (die
+  hier nicht erkannt wird, es gibt keine Sperrprüfung) verfällt die Beweiskraft: Wer den Schlüssel hat, kann Token
+  mit beliebiger früherer `genTime` ausstellen, und ein altes Token lässt sich von einem solchen nicht
+  unterscheiden. Dass die Bibliothek ein altes Token später noch „annimmt“, ist **kein** Beweis, dass es damals
+  echt war.
+- „Geprüft wird später mit denselben Mitteln“ gilt nur so: die **Rechnung** lässt sich wiederholen (Hash, Signatur,
+  Kette zur `genTime`); die **Aussage** wird mit der Zeit schwächer. Wer eine lange Frist braucht, muss
+  **rechtzeitig neu stempeln** (vor `signerNotAfter`, den Hash oder das alte Token mit einem frischen Stempel
+  überdecken) und **mehrere Dienste** stempeln, damit der Ausfall oder die Kompromittierung eines Dienstes nicht alles
+  entwertet. Langzeit-Validierung (LTV, Sperrinformationen und Zeitstempel über die Kette) bietet diese Bibliothek
+  nicht.
+- Ein frisch ausgestelltes Token prüft man mit `minGenTime` (s. „Frische“ oben), solange man weiß, wann man es
+  angefordert hat; später nicht mehr.
+
 ## Was ein bestandener Test aussagt
 
 „Ein Dienst, dessen Zertifikatskette bei einem übergebenen Anker endet, hat bestätigt: diesen Hash gab es
-spätestens zur angegebenen Zeit.“ Mehr nicht.
+spätestens zur angegebenen Zeit.“ Mehr nicht. Genauer: **„Ein Zeitstempel-Zertifikat unter einem der Anker hat
+diese Aussage signiert“**; welcher Betreiber dahinter steht, sagt die Prüfung nicht (der Anker bestimmt nur die
+Wurzel, nicht den einzelnen Dienst). Und die Aussage über die **Zeit** gilt nur, wenn die Frische geprüft wurde
+(`minGenTime`) und das Zertifikat nicht kompromittiert war (s. „Langzeitaussage“).
 
 - Die **Zeit stammt vom Dienst.** Die Bibliothek kennt keine eigene Zeitquelle; nur die Prüfung „nicht in der
-  Zukunft“ (mit einer vom Aufrufer gelieferten Uhr) fängt grobe Abweichungen ab.
+  Zukunft“ (`now`) und, wenn der Aufrufer sie gibt, „nicht älter als“ (`minGenTime`) fangen grobe Abweichungen ab.
 - Freie Dienste sind **nicht qualifiziert** (eIDAS). Der rechtliche Beweiswert ist begrenzt (siehe
   `docs/dienste.md`).
 - Die Bibliothek prüft **nicht, was gestempelt wurde**: Sie bekommt nur den Hash. Dass der Hash zu den

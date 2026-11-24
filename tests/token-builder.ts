@@ -99,10 +99,30 @@ export interface Opts {
   junkCerts?: Uint8Array[];
   genTime?: string; // GeneralizedTime text of TSTInfo.genTime (default 20260101000000Z)
   selfSignedSigner?: boolean; // the signer certificate is its own issuer
+  /** Reuses the key pairs of an earlier build (`build().keys`): the same root signs every token, so one anchor fits all. */
+  keys?: { ca: unknown; tsa: unknown };
+  /** The signing certificate attribute: `v1` (ESSCertID, SHA-1), or `v2` with this hash OID instead of SHA-256 (the certificate hash stays SHA-256). Default v2 without an algorithm. */
+  essCertId?: { v1: true } | { v2Hash: string };
+}
+const hashOf = (name: 'sha1' | 'sha256', b: Uint8Array) => u(createHash(name).update(b).digest());
+function essAttribute(kind: Opts['essCertId'], cert: Uint8Array): Uint8Array {
+  if (kind && 'v1' in kind) {
+    // ESSCertID: certHash is the SHA-1 of the certificate
+    return seq(oidT('1.2.840.113549.1.9.16.2.12'), set(seq(seq(seq(octet(hashOf('sha1', cert)))))));
+  }
+  const alg = kind && 'v2Hash' in kind ? [seq(oidT(kind.v2Hash))] : [];
+  return seq(
+    oidT('1.2.840.113549.1.9.16.2.47'),
+    set(seq(seq(seq(...alg, octet(hashOf('sha256', cert)))))),
+  );
 }
 export function build(o: Opts = {}) {
-  const ca = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-  const tsa = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const ca =
+    (o.keys?.ca as ReturnType<typeof generateKeyPairSync>) ??
+    generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const tsa =
+    (o.keys?.tsa as ReturnType<typeof generateKeyPairSync>) ??
+    generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const spki = (k: any) => u(k.publicKey.export({ type: 'spki', format: 'der' }));
   const validity = seq(gt('20200101000000Z'), gt('20400101000000Z'));
   const mkCert = (
@@ -266,7 +286,7 @@ export function build(o: Opts = {}) {
   const attrs = [
     seq(oidT('1.2.840.113549.1.9.3'), set(oidT('1.2.840.113549.1.9.16.1.4'))),
     seq(oidT('1.2.840.113549.1.9.4'), set(octet(sha256(tst)))),
-    seq(oidT('1.2.840.113549.1.9.16.2.47'), set(seq(seq(seq(octet(sha256(tsaCert))))))),
+    essAttribute(o.essCertId, tsaCert),
   ];
   const attrsSet = set(...attrs);
   let sig: Uint8Array = u(sign(o.signatureAlg?.hash ?? 'sha256', attrsSet, tsa.privateKey));
@@ -311,6 +331,7 @@ export function build(o: Opts = {}) {
     imprint,
     tst,
     tsaCert,
+    keys: { ca, tsa },
   };
 }
 export { seq, set, oidT, int, octet, tlv, ext };

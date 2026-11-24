@@ -37,7 +37,9 @@ const bundle = readFileSync(`${out}dist/bundle.js`, 'utf8');
 const b64 = (name) => readFileSync(`${root}tests/fixtures/${name}`).toString('base64');
 const pem = (name) => readFileSync(`${root}anchors/${name}.pem`, 'utf8');
 
-const NOW = Date.parse('2026-11-23T13:10:00Z');
+// the relay clock of this check: a few seconds after the recorded FreeTSA token (13:05:56), because the relay
+// refuses a token whose time is not around the moment of its request (genTimeSlackMs)
+const NOW = Date.parse('2026-11-23T13:06:00Z');
 const { chromium } = createRequire(import.meta.url)('playwright');
 
 // The page's own origin; the relay allows exactly this origin.

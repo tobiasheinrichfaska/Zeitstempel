@@ -80,6 +80,7 @@ describe('relay settings', () => {
     ).toEqual({
       origins: ['https://a.example', 'http://localhost:5178'],
       port: 9000,
+      host: '127.0.0.1',
       allowPlainHttp: true,
       only: [],
       authOff: false,
@@ -88,12 +89,19 @@ describe('relay settings', () => {
     expect(readSettings({})).toEqual({
       origins: [],
       port: 8080,
+      host: '127.0.0.1',
       allowPlainHttp: false,
       only: [],
       authOff: false,
       keysFile: '',
     });
     expect(readSettings({ RELAY_AUTH: 'off' }).authOff).toBe(true);
+    // Befund 7: with authentication on, the default is loopback too; a wider address is the operator's decision
+    expect(readSettings({ RELAY_KEYS_FILE: '/x/k.json' }).host).toBe('127.0.0.1');
+    expect(readSettings({ RELAY_KEYS_FILE: '/x/k.json', RELAY_HOST: '0.0.0.0' }).host).toBe(
+      '0.0.0.0',
+    );
+    expect(readSettings({ RELAY_KEYS_FILE: '/x/k.json', RELAY_HOST: '  ' }).host).toBe('127.0.0.1');
     expect(readSettings({ RELAY_KEYS_FILE: '/x/k.json' }).keysFile).toBe('/x/k.json');
   });
   it('refuses origins that are not exact, plain-http origins other than localhost, and bad ports', () => {

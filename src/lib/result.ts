@@ -26,6 +26,7 @@ export type Reason =
   | 'unsupported-hash'
   | 'bad-time'
   | 'time-in-future'
+  | 'time-too-old'
   | 'imprint-mismatch'
   | 'nonce-mismatch'
   | 'one-signer-required'

@@ -31,11 +31,37 @@ import {
   type TestKey,
 } from './auth-helpers.ts';
 import { FREETSA_NONCE, fixture, fixtureText, sha256 } from './helpers.ts';
+import { build, int, seq } from './token-builder.ts';
+import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
 
 const SERVICES = loadServices();
 const RECORDED = fixture('freetsa.tsr');
+const RECORDED_GEN_TIME = Date.parse('2026-11-23T13:05:56Z');
+
+// The relay only takes a token stamped around the moment of its request. Tests that move the relay's clock far
+// from the recorded token get a token made for that moment, signed by an own root that the default services of
+// the harness also trust. The recorded token is used whenever the clock is near it.
+const CLOCKED = build();
+const GEN_TIME_TEXT = (ms: number) =>
+  new Date(ms)
+    .toISOString()
+    .replace(/[-:T]/g, '')
+    .replace(/\.\d+Z$/, 'Z');
+/** A TimeStampResp (status 0) with a token for the hash and nonce of `request`, stamped at `atMs`. */
+function clockedReply(request: Uint8Array, atMs: number): Uint8Array {
+  const parts = children(parseDer(request));
+  const hash = octets(children(parts[1]!)[1]!);
+  const nonceBytes = integerBytes(parts[2]!);
+  const made = build({ keys: CLOCKED.keys, hash, nonceBytes, genTime: GEN_TIME_TEXT(atMs) });
+  return seq(seq(int(0)), made.token);
+}
+/** The services of a harness also trust the own root of `CLOCKED` (the recorded token chains elsewhere). */
+const withClockedRoot = (services: typeof SERVICES): typeof SERVICES =>
+  services.map((s) => ({ ...s, anchorPems: [...s.anchorPems, CLOCKED.caPem] }));
 const ORIGIN = 'https://app.example';
-const NOW = Date.parse('2026-11-23T13:10:00Z');
+// a few seconds after the time of the recorded FreeTSA token (13:05:56): the relay only takes tokens stamped
+// around the moment of its request
+const NOW = Date.parse('2026-11-23T13:06:00Z');
 
 // Random per run: the repo holds no key material.
 const KEY_A = makeTestKey('app-a');
@@ -73,10 +99,15 @@ async function start(
   const clock = { now: over.clockStart ?? NOW };
   const stand: Upstream = async (_t, body) => {
     calls.push(body);
-    return { status: 200, contentType: 'application/timestamp-reply', body: RECORDED };
+    const near = Math.abs(clock.now - RECORDED_GEN_TIME) <= RELAY_LIMITS.genTimeSlackMs;
+    return {
+      status: 200,
+      contentType: 'application/timestamp-reply',
+      body: near ? RECORDED : clockedReply(body, clock.now),
+    };
   };
   const { server, relay } = createRelayServer({
-    services: over.services ?? SERVICES,
+    services: withClockedRoot(over.services ?? SERVICES),
     origins: [ORIGIN],
     allowPlainHttp: over.allowPlainHttp ?? false,
     upstream: over.upstream ?? stand,
@@ -219,7 +250,14 @@ describe('relay: stamping', () => {
   });
 
   it('refuses a token from the future', async () => {
-    const early = await start({ clockStart: NOW - RELAY_LIMITS.maxSkewMs - 3 * 3_600_000 });
+    const early = await start({
+      clockStart: NOW - RELAY_LIMITS.genTimeSlackMs - 3 * 3_600_000,
+      upstream: async () => ({
+        status: 200,
+        contentType: 'application/timestamp-reply',
+        body: RECORDED, // stamped 13:05:56, hours after the relay's clock
+      }),
+    });
     const res = await post(
       early,
       '/v1/stamp/freetsa',
@@ -228,6 +266,113 @@ describe('relay: stamping', () => {
     );
     expect(await res.json()).toEqual({ error: 'upstream-invalid', reason: 'time-in-future' });
     await early.close();
+  });
+});
+
+describe('relay: the time of the token must lie around the request (Befund 1)', () => {
+  const REPLY = 'application/timestamp-reply';
+  /** A relay whose service stamps `offsetMs` from the relay's clock at the moment of the request. */
+  const stampingAt = (offsetMs: number, advanceMs = 0) => {
+    let h: Harness;
+    const upstream: Upstream = async (_t, body) => {
+      const sent = h.clock.now;
+      h.clock.now += advanceMs; // the service takes its time
+      return { status: 200, contentType: REPLY, body: clockedReply(body, sent + offsetMs) };
+    };
+    return start({ upstream }).then((made) => ((h = made), made));
+  };
+  const stampOnce = (h: Harness) =>
+    post(h, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json');
+  const slack = RELAY_LIMITS.genTimeSlackMs;
+
+  it('refuses a token dated 2021 whose signer certificate was valid then: 502 upstream-invalid, counted on its own', async () => {
+    const h = await start({
+      upstream: async (_t, body) => ({
+        status: 200,
+        contentType: REPLY,
+        body: seq(
+          seq(int(0)),
+          build({
+            keys: CLOCKED.keys,
+            hash: octets(children(children(parseDer(body))[1]!)[1]!),
+            nonceBytes: integerBytes(children(parseDer(body))[2]!),
+            genTime: '20210101000000Z', // the signer certificate (2020-2040) was valid then
+          }).token,
+        ),
+      }),
+    });
+    const res = await stampOnce(h);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'upstream-invalid', reason: 'time-too-old' });
+    expect(h.stats().stamped).toBe(0);
+    expect(h.stats().refused['upstream-too-old']).toBe(1);
+    expect(h.stats().refused['upstream-invalid']).toBe(1);
+    await h.close();
+  });
+  it('the lower edge: exactly the slack before the request is fine, one second more is not', async () => {
+    const edge = await stampingAt(-slack);
+    expect((await stampOnce(edge)).status).toBe(200);
+    await edge.close();
+    const past = await stampingAt(-slack - 1_000);
+    const res = await stampOnce(past);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'upstream-invalid', reason: 'time-too-old' });
+    await past.close();
+  });
+  it('the upper edge: the slack ahead of the clock is fine, one second more is time-in-future', async () => {
+    const edge = await stampingAt(slack);
+    expect((await stampOnce(edge)).status).toBe(200);
+    await edge.close();
+    const ahead = await stampingAt(slack + 1_000);
+    const res = await stampOnce(ahead);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'upstream-invalid', reason: 'time-in-future' });
+    expect(ahead.stats().refused['upstream-too-old'] ?? 0).toBe(0);
+    await ahead.close();
+  });
+  it('is measured from the moment the request went out, not from the answer: a slow service is fine', async () => {
+    // the service stamps when it receives the request and answers 90 s later (longer than the slack)
+    const slow = await stampingAt(0, 90_000);
+    expect((await stampOnce(slow)).status).toBe(200);
+    await slow.close();
+  });
+  it('accepts a header signed with a non-extractable CryptoKey (Befund 11)', async () => {
+    const h = await start();
+    const key = await globalThis.crypto.subtle.importKey(
+      'pkcs8',
+      KEY_A.privateKey as BufferSource,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign'],
+    );
+    expect(key.extractable).toBe(false);
+    const path = '/v1/stamp/freetsa';
+    const text = hashJson(sha256('probe'));
+    const signed = await signRelayRequest({
+      privateKey: key,
+      keyId: 'app-a',
+      method: 'POST',
+      path,
+      body: new TextEncoder().encode(text),
+      nowMs: h.clock.now,
+    });
+    if (!signed.ok) throw new Error(signed.reason);
+    const res = await fetch(h.base + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Zeitstempel-Auth': signed.value },
+      body: text,
+    });
+    expect(res.status).toBe(200);
+    await h.close();
+  });
+  it('an old token costs the budget like any other answer (the request was sent)', async () => {
+    const h = await stampingAt(-3_600_000);
+    await stampOnce(h);
+    const per = Math.floor(RELAY_LIMITS.windowMs / SERVICES[0]!.minIntervalMs);
+    const codes: number[] = [];
+    for (let i = 0; i < per; i += 1) codes.push((await stampOnce(h)).status);
+    expect(codes.at(-1)).toBe(429); // `per` requests in the window, the last one is over the service's budget
+    await h.close();
   });
 });
 
@@ -458,7 +603,7 @@ describe('relay: start configuration', () => {
     expect(real.warnings[0]).toContain('/etc/z/keys.json');
     expect(real.warnings[0]).not.toContain(toBase64Url(KEYS[0]!.publicKey));
   });
-  it('with RELAY_AUTH=off it listens on 127.0.0.1 only and warns; with keys it does not narrow', async () => {
+  it('with RELAY_AUTH=off it listens on 127.0.0.1 only and warns; with keys 127.0.0.1 is the default, RELAY_HOST widens it', async () => {
     const off = readConfig({ RELAY_AUTH: 'off' }, () => SERVICES);
     expect(off.settings.host).toBe('127.0.0.1');
     expect(off.warnings).toHaveLength(1);
@@ -472,7 +617,7 @@ describe('relay: start configuration', () => {
       () => KEYS,
       () => null,
     );
-    expect(keyed.settings.host).toBeUndefined();
+    expect(keyed.settings.host).toBe('127.0.0.1'); // loopback is the default with keys too; RELAY_HOST widens it
     expect(keyed.warnings).toEqual([]);
     // the real bind: the address the server ends up on
     const { server } = createRelayServer({
@@ -766,6 +911,50 @@ describe('relay: start configuration', () => {
     expect(server.headersTimeout).toBe(RELAY_LIMITS.requestTimeoutMs);
     expect(RELAY_LIMITS.requestTimeoutMs).toBe(5_000);
   });
+  it('keeps idle connections open for 65 s (longer than a proxy idle timeout of 60 s), but not the other limits looser', () => {
+    const { server } = createRelayServer({
+      services: SERVICES,
+      origins: [ORIGIN],
+      allowPlainHttp: false,
+      upstream: networkUpstream,
+      random: () => FREETSA_NONCE,
+      now: () => NOW,
+      keys: 'off',
+    });
+    expect(server.keepAliveTimeout).toBe(RELAY_LIMITS.keepAliveTimeoutMs);
+    expect(RELAY_LIMITS.keepAliveTimeoutMs).toBe(65_000);
+    expect(server.keepAliveTimeout).toBeGreaterThan(60_000);
+    // the deadline of a request and the number of connections stay as they were
+    expect(server.requestTimeout).toBe(5_000);
+    expect(server.headersTimeout).toBe(5_000);
+    expect(server.maxConnections).toBe(256);
+  });
+  it('slowloris on a kept-alive connection: the long keep-alive does not lengthen the request deadline', async () => {
+    const r = await startShort({ requestTimeoutMs: 300 });
+    try {
+      const text = await new Promise<string>((resolve) => {
+        const s = net.connect(r.port, '127.0.0.1');
+        let got = '';
+        let second = false;
+        s.on('data', (c) => {
+          got += c.toString('utf8');
+          // the first answer is complete: the connection idles (keep-alive), then a request that never ends
+          if (!second && got.includes('\r\n\r\n') && got.includes('"ok":true')) {
+            second = true;
+            got = '';
+            s.write('POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\n');
+          }
+        });
+        s.on('error', () => undefined);
+        s.on('close', () => resolve(got));
+        s.write('GET /health HTTP/1.1\r\nHost: x\r\n\r\n');
+        setTimeout(() => s.destroy(), 4_000); // far below the 65 s keep-alive: a hang would show here
+      });
+      expect(text).toMatch(/^HTTP\/1\.1 408 /);
+    } finally {
+      await r.close();
+    }
+  }, 10_000);
 });
 
 describe('relay: origins (CORS)', () => {

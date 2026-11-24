@@ -119,6 +119,10 @@ export function createRelay(options: RelayOptions): Relay {
   const keepMs = windowMs + RELAY_LIMITS.requestTimeoutMs;
   const inWindow = (ts: number): boolean => Math.abs(options.now() - ts * 1000) <= windowMs;
 
+  function countOnce(kind: string): void {
+    stats.refused[kind] = (stats.refused[kind] ?? 0) + 1;
+  }
+
   function send(
     res: ServerResponse,
     status: number,
@@ -365,6 +369,7 @@ export function createRelay(options: RelayOptions): Relay {
     const nonce = options.random(8);
     const request = buildTimestampRequest(hash, nonce);
     if (!request.ok) return send(res, 500, { error: 'internal' }, origin);
+    const sentMs = options.now(); // the moment the request goes to the service: the token must not be older
     let answer;
     try {
       answer = await options.upstream(service, request.value);
@@ -378,13 +383,20 @@ export function createRelay(options: RelayOptions): Relay {
     const response = readTimestampResponse(answer.body);
     if (!response.ok)
       return send(res, 502, { error: 'upstream-invalid', reason: response.reason }, origin);
+    // The time of the token must lie around the moment of the request: not ahead of the relay's clock and not
+    // older than the request (both within `genTimeSlackMs`). Without the lower bound a service key that has
+    // expired or leaked could hand out back-dated tokens that still verify.
     const verified = await verifyTimestampToken(response.value.token, hash, service.anchorPems, {
       expectedNonce: nonce,
       now: new Date(options.now()),
-      maxSkewMs: RELAY_LIMITS.maxSkewMs,
+      maxSkewMs: RELAY_LIMITS.genTimeSlackMs,
+      minGenTime: new Date(sentMs - RELAY_LIMITS.genTimeSlackMs),
     });
-    if (!verified.ok)
+    if (!verified.ok) {
+      // a cause of its own in the counters (a service that back-dates is an alarm, not a client error)
+      if (verified.reason === 'time-too-old') countOnce('upstream-too-old');
       return send(res, 502, { error: 'upstream-invalid', reason: verified.reason }, origin);
+    }
     stats.stamped += 1;
     return send(
       res,

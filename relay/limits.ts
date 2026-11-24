@@ -35,10 +35,22 @@ export const RELAY_LIMITS = {
   authReplayKeyShare: 0.5,
   /** Window of the counters. */
   windowMs: 60_000,
-  /** How far a token's time may be ahead of the relay's clock (the future only; a token from the past is not limited by it). */
-  maxSkewMs: 5 * 60_000,
+  /**
+   * How far the time a service puts in its token may differ from the relay's clock, in both directions: it must
+   * lie in [the moment the request went to the service - this, the relay's clock after the answer + this].
+   * The lower bound keeps a service (or a middleman with an expired or leaked service key) from handing out
+   * back-dated tokens; the upper bound is the old future limit, now 60 s instead of 5 minutes.
+   */
+  genTimeSlackMs: 60_000,
   /** Largest number of origins that may be configured. */
   maxOrigins: 16,
   /** Open connections at the same time; further ones are refused by the server. */
   maxConnections: 256,
+  /**
+   * How long an idle connection stays open between two requests. Longer than the idle timeout of usual reverse
+   * proxies (60 s is common), so the proxy, not the relay, closes a pooled connection (else a request can hit a
+   * connection that is just being closed). An idle connection holds one of the `maxConnections` places for this
+   * long; `requestTimeoutMs` still applies to every request on it (docs/relay.md).
+   */
+  keepAliveTimeoutMs: 65_000,
 } as const;

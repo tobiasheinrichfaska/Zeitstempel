@@ -26,24 +26,30 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 | `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt                                         | alle passenden |
 | `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`         | keine          |
 | `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                  | aus            |
-| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt      | alle (auth an) |
+| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt      | `127.0.0.1`    |
 
-`RELAY_AUTH=off` lauscht **nur auf `127.0.0.1`** (Vorgabe, auch ohne `RELAY_HOST`; eine andere Adresse als
-`127.0.0.1`, `::1` oder `localhost` wird abgelehnt) und schreibt beim Start `{"event":"warning","message":"auth off,
-loopback only (…)"}` auf stderr. Ein Relay ohne Anmeldung ist so nicht von außen erreichbar. Mit Schlüsseldatei
-gilt die Vorgabe „alle Adressen“, außer `RELAY_HOST` ist gesetzt.
+**Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
+`RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
+demselben Rechner (siehe „Betrieb hinter einem Reverse-Proxy“). **Ein Container oder ein Proxy auf einem anderen
+Rechner braucht `RELAY_HOST=0.0.0.0`** (oder die eigene Adresse); das ist dann eine bewusste Entscheidung des
+Betreibers. Wer ein Relay von früher ohne `RELAY_HOST` startet und es von außen erreichen will, muss den Wert jetzt
+setzen (sonst ist es nur lokal erreichbar: der sichere Fehler).
+
+`RELAY_AUTH=off` lauscht ebenfalls auf `127.0.0.1` (eine andere Adresse als `127.0.0.1`, `::1` oder `localhost` wird
+abgelehnt) und schreibt beim Start `{"event":"warning","message":"auth off, loopback only (…)"}` auf stderr. Ein Relay
+ohne Anmeldung ist so nicht von außen erreichbar.
 
 `RELAY_AUTH=off` und `RELAY_KEYS_FILE` zusammen werden abgelehnt. Die Startzeile im Protokoll meldet
 `"auth":"on"` oder `"auth":"off"`.
 
 ## Schnittstelle
 
-| Anfrage                                                                                                                                                      | Antwort                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `POST /v1/stamp/<dienst>` mit `{"hash": "<base64url>"}` (`application/json`) oder 32 Rohbytes (`application/octet-stream`) und dem Kopf `X-Zeitstempel-Auth` | 200 `{service, genTime, accuracyMs, serial, token}`; `token` ist das Token (DER) in base64url |
-| `GET /v1/services` (ohne Anmeldung)                                                                                                                          | Liste der angebotenen Dienste (Kennung, Name, `qualified`, Verwendungszweck)                  |
-| `GET /health` (ohne Anmeldung)                                                                                                                               | `{ok: true, services: [...]}`                                                                 |
-| `OPTIONS …`                                                                                                                                                  | Vorabfrage (CORS) für die konfigurierten Herkünfte                                            |
+| Anfrage                                                                                                                                                      | Antwort                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `POST /v1/stamp/<dienst>` mit `{"hash": "<base64url>"}` (`application/json`) oder 32 Rohbytes (`application/octet-stream`) und dem Kopf `X-Zeitstempel-Auth` | 200 `{service, genTime, accuracyMs, serial, token}`; `token` ist das Token (DER) in base64url    |
+| `GET /v1/services` (ohne Anmeldung)                                                                                                                          | Liste der angebotenen Dienste (Kennung, Name, `qualified`, Verwendungszweck)                     |
+| `GET /health` (ohne Anmeldung)                                                                                                                               | `{ok: true, services: [...]}` (der Prozess läuft; **kein Dienst wird geprüft**, siehe „Betrieb“) |
+| `OPTIONS …`                                                                                                                                                  | Vorabfrage (CORS) für die konfigurierten Herkünfte                                               |
 
 ### Formate
 
@@ -56,7 +62,9 @@ gilt die Vorgabe „alle Adressen“, außer `RELAY_HOST` ist gesetzt.
   Bibliothek erwarten).
 - **`GET /v1/services`:** `{"services": [{"id", "name", "qualified", "intendedUse"}]}`. Die Reihenfolge ist die der Datei
   `services.json`; es gibt keine Vorgabe, die App wählt eine Kennung (eine Einstellung der App, nicht des Relays).
-- **`GET /health`:** `{"ok": true, "services": ["<id>", …]}`.
+- **`GET /health`:** `{"ok": true, "services": ["<id>", …]}`. Das heißt nur: der Prozess läuft und diese Dienste sind
+  eingerichtet. **`/health` ruft keinen Dienst auf** und sagt nichts darüber, ob ein Dienst erreichbar ist oder gültige
+  Token liefert (ein Aufruf wäre ein Stempel und kostete Budget).
 - Alle Antworten sind JSON (`application/json; charset=utf-8`), auch Fehler. Das Relay benutzt keine Cookies.
   Einen Stempel gibt es nur mit gültigem Kopf `X-Zeitstempel-Auth` (nächster Abschnitt); `GET /health`,
   `GET /v1/services` und die Vorabfrage `OPTIONS` brauchen ihn nicht.
@@ -225,13 +233,14 @@ aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen 
    ```ts
    const path = '/v1/stamp/' + id;
    const text = JSON.stringify({ hash: toBase64Url(hash) });
+   const sentMs = Date.now();
    const signed = await signRelayRequest({
      privateKey, // PKCS#8-Bytes: aus dem Speicher der App, nie aus dem Quelltext der Seite, wenn es sich vermeiden lässt
      keyId: 'app-1',
      method: 'POST',
      path,
      body: new TextEncoder().encode(text),
-     nowMs: Date.now(), // Millisekunden, nicht Sekunden
+     nowMs: sentMs, // Millisekunden, nicht Sekunden
    });
    if (!signed.ok) throw new Error(signed.reason);
    const res = await fetch(relay + path, {
@@ -240,6 +249,15 @@ aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen 
      body: text,
    });
    ```
+
+   `sentMs` (der Zeitpunkt des Sendens) wird für die Frische des Tokens in Schritt 2 gebraucht: **merken**.
+
+   `privateKey` darf auch ein `CryptoKey` sein (privat, ECDSA auf P-256, Verwendung `sign`, **auch nicht
+   extrahierbar**): Die App muss die Schlüsselbytes dann nie halten, zum Beispiel `await crypto.subtle.importKey('pkcs8',
+bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Start und danach nur den `CryptoKey`
+   weitergeben. Er wird unverändert benutzt (kein Export, kein neuer Import). Ein `CryptoKey` aus einem anderen Realm, ein
+   öffentlicher, ein anderer Algorithmus oder eine andere Kurve ergeben `bad-key`. (Auch dann gilt: wer den
+   Code der Seite ausführen kann, kann den Schlüssel **benutzen**, nur nicht auslesen.)
 
    **`nowMs` ist die Zeit in Millisekunden seit 1970 (`Date.now()`), nicht in Sekunden.** Die Bibliothek verlangt eine
    endliche Zahl ab 1e11 (Bruchteile sind erlaubt); ein kleinerer Wert, etwa Sekunden, ergibt `bad-options`, damit
@@ -254,11 +272,16 @@ aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen 
    Keine Cookies, kein `mode`-Zusatz nötig. Für jeden Versuch (auch nach `429`/`401`) neu signieren. Die Frist der App sollte **rund 17 s ab Sendebeginn** betragen: bis zu 5 bis 6 s für den Körper
    (`requestTimeoutMs`), bis zu 10 s für den Dienst (`upstreamTimeoutMs`) und die Prüfung des Tokens.
 
-2. Bei `200`: `fromBase64Url(body.token)` und `verifyTimestampToken(token, hash, [ankerPem…], {now})`
+2. Bei `200`: `fromBase64Url(body.token)` und
+   `verifyTimestampToken(token, hash, [ankerPem…], { now: new Date(), minGenTime: new Date(sentMs - 60_000) })`
    **ohne** `expectedNonce` (die Nonce wählt das Relay, die App kennt sie nicht; die Bindung an den Hash
-   prüft `imprint-mismatch`). Die Anker (`anchors/*.pem` des Dienstes aus `services.json`) liefert die App
+   prüft `imprint-mismatch`). Die Anker (`anchors/*.pem` des Dienstes aus `services.json`) liefern die App
    selbst mit; wem sie traut, entscheidet sie. `genTime` des Relays ist nur eine Anzeige: maßgeblich ist
-   `value.genTime` der eigenen Prüfung.
+   `value.genTime` der eigenen Prüfung. **`minGenTime` nicht weglassen:** ohne sie prüft die App **nicht, wie alt
+   das Token ist** (ein Dienst oder ein Relay mit Zugriff auf einen abgelaufenen oder gestohlenen Dienstschlüssel
+   könnte ein rückdatiertes Token liefern, das besteht; `docs/grenzen.md`). Mit `minGenTime` und `now` gilt das
+   Fenster [Senden − 60 s, jetzt + 5 min] (die Obergrenze lässt sich mit `maxSkewMs` enger fassen); die 60 s
+   entsprechen `genTimeSlackMs` des Relays und decken die Uhrabweichung zwischen Dienst und App.
 3. Bei `401`: Schlüssel, Kennung und die Uhr der App prüfen (±60 s); ein Wiederholungsversuch mit demselben
    Kopf wird ebenfalls mit `401` abgelehnt. **Eine weitere Ursache:** Der Kopf trägt die Zeit nur in ganzen
    Sekunden; zwei Anfragen mit demselben Pfad und demselben Körper in derselben Sekunde ergeben dieselbe
@@ -266,26 +289,30 @@ aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen 
    angenommen) deshalb **mindestens 1 s warten**, bevor man erneut signiert und sendet. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder
    fragen. Bei `502`/`504`/Netzwerkfehler: später
    noch einmal versuchen oder einen anderen Dienst nehmen; ein Fehlschlag ist kein Beweis für etwas.
-4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes und Hash aufbewahren; geprüft wird später
-   mit denselben Mitteln, ohne das Relay.
+4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes, Hash und dem Ergebnis der Prüfung
+   (`signerNotAfter`!) aufbewahren; die **Rechnung** (Hash, Signatur, Kette zur `genTime`) lässt sich später mit denselben
+   Mitteln ohne das Relay wiederholen, die **Aussage** wird aber schwächer: nach `signerNotAfter` des
+   Zeitstempel-Zertifikats oder wenn dessen Schlüssel kompromittiert wird, verfällt die Beweiskraft (es gibt keine
+   Sperrprüfung, die Frische lässt sich später nicht mehr prüfen; `docs/grenzen.md`, „Langzeitaussage“). Für Nachweise
+   über längere Zeit: **rechtzeitig neu stempeln** (vor `signerNotAfter`) und **mehrere Dienste** stempeln.
 
 Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 
-| Status | Code                                                                            | Bedeutung                                                                                                                 |
-| ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                            |
-| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                              |
-| 400    | `bad-request`                                                                   | Anfrageziel ist keine gültige Adresse (z. B. `//`, `//[`) oder nicht gleich dem kanonischen Pfad (`./`, `\`, Absolutform) |
-| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich |
-| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                          |
-| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                          |
-| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                |
-| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit       |
-| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                |
-| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                      |
-| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                               |
-| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token                                               |
-| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                       |
+| Status | Code                                                                            | Bedeutung                                                                                                                    |
+| ------ | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `bad-hash`                                                                      | Hash nicht 32 Byte, ungültiges base64url, zusätzliche Felder, kein JSON-Objekt                                               |
+| 400    | `no-query`                                                                      | Abfragezeichenfolge (`?…`) ist nicht erlaubt                                                                                 |
+| 400    | `bad-request`                                                                   | Anfrageziel ist keine gültige Adresse (z. B. `//`, `//[`) oder nicht gleich dem kanonischen Pfad (`./`, `\`, Absolutform)    |
+| 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich    |
+| 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                             |
+| 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                             |
+| 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                   |
+| 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit          |
+| 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                   |
+| 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                         |
+| 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                  |
+| 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`) |
+| 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                          |
 
 ## Lokal testen
 
@@ -312,8 +339,20 @@ einen Stub über http gilt die Anleitung oben.
   Anfrage und Nonce baut das Relay selbst. Der Aufrufer kann nichts in die Anfrage einschleusen, außer dem
   Hash.
 - **Die Antwort wird geprüft**, bevor sie weitergegeben wird: Hash, Nonce, Signatur, Kette zu den Ankern des
-  Dienstes, Zeit nicht in der Zukunft. Die App kann (und soll) das Token mit der Bibliothek selbst noch
-  einmal prüfen; sie muss dem Relay nicht vertrauen.
+  Dienstes und die **Zeit**: `genTime` muss in [Zeitpunkt der Anfrage an den Dienst − `genTimeSlackMs`, Uhr des
+  Relays nach der Antwort + `genTimeSlackMs`] liegen (je 60 s; früher galt nur eine Obergrenze von 5 Minuten, nach unten
+  war nichts begrenzt, ein rückdatiertes Token mit abgelaufenem oder gestohlenem Dienstschlüssel wäre durchgegangen).
+  Eine Abweichung ergibt `502 upstream-invalid` mit `reason` `time-too-old` bzw. `time-in-future`; ein zu altes Token
+  wird zusätzlich unter `upstream-too-old` gezählt. Das Budget des Dienstes ist dann verbraucht (die Anfrage ging
+  hinaus). Eine Grenze nach 60 s lässt eine Uhrabweichung zwischen Dienst und Relay von bis zu einer Minute zu; ein
+  Dienst, dessen Uhr mehr abweicht, wird abgelehnt.
+- **Die App muss dem Relay nicht vertrauen, soweit es um die Bindung an den Hash geht:** Die App prüft das Token
+  mit der Bibliothek selbst (Abdruck, Signatur, Kette zu ihren eigenen Ankern); ein Relay kann ihr keinen Stempel für
+  einen anderen Hash oder einen unbekannten Aussteller unterschieben. **Nicht** gilt das für: die **Frische** (die App
+  prüft sie nur, wenn sie `minGenTime` übergibt; Schritt 2), die **Verfügbarkeit** (das Relay kann Stempel verweigern,
+  verzögern oder verlieren), die **Vertraulichkeit des Hashes** (das Relay und der Dienst sehen ihn, bei einem Dienst nur
+  über `http` auch jeder auf der Strecke dorthin) und die Wahl des Dienstes (das Relay entscheidet, welche Dienste es
+  anbietet).
 - Keine Weiterleitungen, TLS-Zertifikate nach Node-Vorgabe, harte Frist für den ganzen Aufruf, Größenlimit.
 - `Cache-Control: no-store`, `Vary: Origin`, `X-Content-Type-Options: nosniff`.
 
@@ -327,21 +366,22 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 
 ## Grenzen (`relay/limits.ts`)
 
-| Name                 | Wert   | Bedeutung                                                               |
-| -------------------- | ------ | ----------------------------------------------------------------------- |
-| `bodyBytes`          | 512    | Größter Körper einer Anfrage                                            |
-| `upstreamBytes`      | 65536  | Größte Antwort eines Dienstes                                           |
-| `upstreamTimeoutMs`  | 10000  | Frist für den ganzen Aufruf beim Dienst                                 |
-| `requestTimeoutMs`   | 5000   | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)            |
-| `perMinuteTotal`     | 60     | Anfragen je Minute über alle Dienste                                    |
-| `windowMs`           | 60000  | Zeitfenster der Zähler                                                  |
-| `perMinutePerKey`    | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)              |
-| `authWindowSeconds`  | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr          |
-| `authReplayEntries`  | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`      |
-| `authReplayKeyShare` | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                   |
-| `maxSkewMs`          | 300000 | Erlaubter Vorsprung der Token-Zeit vor der Uhr des Relays (nur Zukunft) |
-| `maxOrigins`         | 16     | Zahl der einstellbaren Herkünfte                                        |
-| `maxConnections`     | 256    | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab           |
+| Name                 | Wert  | Bedeutung                                                                                                                       |
+| -------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `bodyBytes`          | 512   | Größter Körper einer Anfrage                                                                                                    |
+| `upstreamBytes`      | 65536 | Größte Antwort eines Dienstes                                                                                                   |
+| `upstreamTimeoutMs`  | 10000 | Frist für den ganzen Aufruf beim Dienst                                                                                         |
+| `requestTimeoutMs`   | 5000  | Frist für die ganze eingehende Anfrage (auch die Kopfzeilen)                                                                    |
+| `perMinuteTotal`     | 60    | Anfragen je Minute über alle Dienste                                                                                            |
+| `windowMs`           | 60000 | Zeitfenster der Zähler                                                                                                          |
+| `perMinutePerKey`    | 20    | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                      |
+| `authWindowSeconds`  | 60    | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                  |
+| `authReplayEntries`  | 512   | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                              |
+| `authReplayKeyShare` | 0.5   | Anteil des Speichers, den eine Kennung höchstens hält                                                                           |
+| `genTimeSlackMs`     | 60000 | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`) |
+| `maxOrigins`         | 16    | Zahl der einstellbaren Herkünfte                                                                                                |
+| `maxConnections`     | 256   | Gleichzeitig offene Verbindungen; weitere lehnt der Server ab                                                                   |
+| `keepAliveTimeoutMs` | 65000 | Leerlauf einer offenen Verbindung zwischen zwei Anfragen (länger als der Leerlauf-Timeout üblicher Proxys, 60 s)                |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4). `perMinuteTotal` und
 `minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht
@@ -361,8 +401,117 @@ genannten `Retry-After`-Wert, nicht für den Speicher selbst: seine Einträge bl
 ihrem **echten** Ablauf erhalten (der Wiederholungsschutz bleibt also bestehen); nur die Wartezeit, die das Relay
 nennt, wird begrenzt.
 
+**Leerlauf-Verbindungen (`keepAliveTimeoutMs`):** Der Leerlauf einer Verbindung zwischen zwei Anfragen beträgt 65 s
+(früher 5 s). Ein Reverse-Proxy hält Verbindungen zum Relay meist offen und schließt sie nach 60 s Leerlauf selbst; läge
+der Wert des Relays darunter, träfe eine Anfrage eine Verbindung, die das Relay gerade schließt (Fehler `502` am
+Proxy). **Wechselwirkung:** Eine Leerlauf-Verbindung belegt einen der `maxConnections` (256) Plätze bis zu 65 s statt
+5 s. Das ändert das Bild gegenüber einem bösartigen Client wenig (er konnte schon bisher 256 Verbindungen mit einer
+halben Anfrage jeweils 5 s halten und sofort neu öffnen, also dauerhaft), schwächt aber nichts ab: die Frist für eine
+**Anfrage** (`requestTimeoutMs`, 5 s, auch für die Kopfzeilen) gilt unverändert auch auf einer Verbindung, die schon
+benutzt wurde (ein Test belegt es: eine halbe zweite Anfrage endet mit `408`), und `maxConnections` ist unverändert 256.
+Mit einem Reverse-Proxy sieht das Relay nur dessen wenige Verbindungen; der Schutz vor vielen Verbindungen eines Clients
+ist Sache des Proxys (Verbindungs- und Ratenlimit je Adresse).
+
 **Verbindungen und Betrieb:** Das Relay kennt keine Adressen und führt keinen Zähler je Adresse (es protokolliert
 auch keine). Ein einzelner Client kann daher bis zu 256 Verbindungen (`maxConnections`) für etwa 5 bis 6 s belegen
 (`requestTimeoutMs`, die Frist gilt auch für die Kopfzeilen; der Server prüft sie einmal je Sekunde) und damit andere
 Aufrufer aussperren. Ein **Reverse-Proxy mit Verbindungs- und Ratenlimit je Adresse vor dem Relay ist für den Betrieb
 Pflicht**; das Relay allein schützt davor nicht.
+
+## Betrieb hinter einem Reverse-Proxy
+
+Das Relay ist **nicht** für das offene Netz gedacht. Es lauscht auf `127.0.0.1`; davor steht ein Reverse-Proxy mit TLS
+und einem Verbindungs- und Ratenlimit je Adresse. Die Beispiele unten sind **Beispiele**: sie wurden gelesen und gegen
+die Regeln des Relays abgeglichen, aber **nicht gegen einen echten Proxy getestet** (kein nginx und kein Caddy im Test).
+Anpassen und selbst prüfen (`nginx -t`, `caddy validate`).
+
+Was jede Einrichtung leisten muss:
+
+- Den **Pfad unverändert** weitergeben (das Relay verlangt das rohe Ziel gleich dem kanonischen Pfad, die Signatur
+  bindet ihn): keine Umschreibung, kein Präfix, keine Normalisierung, kein Anhängen einer Abfrage.
+- Die Köpfe **`Origin`** und **`X-Zeitstempel-Auth`** unverändert durchreichen (und `Content-Type`); `Origin` nicht
+  entfernen, sonst gilt der Aufruf als Aufruf ohne Browser. Die Antworten (auch `Access-Control-*`, `Retry-After`)
+  unverändert zurückgeben.
+- Eine **Lese-Frist von mindestens 17 s** (besser 20 s): bis zu 5 bis 6 s für den Körper, bis zu 10 s für den Dienst,
+  dazu die Prüfung. Kürzere Fristen des Proxys brechen Stempel ab, die das Relay noch zählt.
+- **Ratenlimit und Verbindungslimit je Adresse.** Das Relay selbst kennt keine Adressen. Der Rahmen ist klein: die vier
+  mitgelieferten Dienste erlauben zusammen 16 Anfragen je Minute (4 je Dienst).
+- Körper höchstens 512 Byte (das Relay lehnt mehr ab); der Proxy darf früher abweisen.
+- `GET /health` ist für Überwachung gedacht; es prüft keinen Dienst.
+
+**nginx** (Beispiel, nicht getestet):
+
+```nginx
+limit_req_zone  $binary_remote_addr zone=zs_rate:10m rate=20r/m;
+limit_conn_zone $binary_remote_addr zone=zs_conn:10m;
+
+server {
+    listen 443 ssl;
+    server_name relay.example;
+    # ssl_certificate / ssl_certificate_key: eigene Einrichtung
+
+    client_max_body_size   1k;
+    client_header_timeout  6s;
+    client_body_timeout    6s;
+
+    location / {
+        limit_req  zone=zs_rate burst=5 nodelay;
+        limit_conn zs_conn 10;
+        limit_req_status  429;
+        limit_conn_status 429;
+
+        proxy_pass http://127.0.0.1:8080;   # ohne Pfad hinter der Adresse: der Pfad bleibt unverändert
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";     # Verbindungen zum Relay offen halten
+        proxy_set_header Host $host;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    20s;
+        proxy_read_timeout    20s;          # mindestens 17 s
+        proxy_redirect off;
+        # Origin und X-Zeitstempel-Auth gibt nginx von sich aus weiter: nicht mit proxy_set_header leeren.
+    }
+}
+```
+
+**Caddy** (Beispiel, nicht getestet). Caddy kann ohne Zusatzmodul **kein** Ratenlimit je Adresse; das Modul (zum Beispiel
+`caddy-ratelimit`) muss hinzugebaut werden, sonst fehlt der wichtigste Teil. Die Zeilen dazu hängen von dessen Fassung
+ab und stehen deshalb hier nur als Gerüst:
+
+```caddyfile
+relay.example {
+    # rate_limit { zone je_adresse { key {remote_host}  events 20  window 1m } }   # Zusatzmodul nötig
+    reverse_proxy 127.0.0.1:8080 {
+        transport http {
+            dial_timeout            5s
+            response_header_timeout 20s    # mindestens 17 s
+        }
+    }
+}
+```
+
+`reverse_proxy` gibt Pfad und Köpfe (`Origin`, `X-Zeitstempel-Auth`) von sich aus unverändert weiter.
+
+**Hinweise für den Betrieb:**
+
+- **Vertraulichkeit des Hashes.** Das Relay und der Dienst sehen den Hash; bei einem Dienst, der nur über `http`
+  antwortet (`digicert`, `certum`), liest ihn auch jeder auf der Strecke mit. Ist der Inhalt **ratbar** (kurzer Text,
+  bekannte Datei, Werte aus einer kleinen Menge), lässt sich der Hash durch Raten bestätigen. Dann nicht den Hash des Inhalts
+  stempeln, sondern einen **gesalzenen Hash** (SHA-256 über Inhalt plus zufälliges Salz, das die App aufbewahrt) oder die
+  **Wurzel eines Merkle-Baums** über mehrere Hashes (ein Stempel für viele Inhalte).
+- **Kapazität.** Jeder Dienst erlaubt `60000 / minIntervalMs` Anfragen je Minute für **alle** Nutzer des Relays zusammen
+  (bei 15 s: **4 Stempel je Minute**). Mit FreeTSA allein (dem einzigen Dienst mit ausdrücklich erlaubter allgemeiner
+  Nutzung, `docs/dienste.md`) sind das 4 Stempel je Minute für alle. Das Budget wird **auch bei einem Fehler des Dienstes
+  oder einem ungültigen Token verbraucht** (die Anfrage ging hinaus). Wer mehr braucht, bündelt (Merkle-Wurzel) oder
+  braucht einen Vertragsdienst.
+- **`/health` prüft keinen Dienst** (s. o.); eine Überwachung, die nur `/health` ruft, meldet „gesund“, auch wenn alle
+  Dienste ausfallen.
+- **`upstream-invalid` ist ein Alarmzeichen.** In der Zeile der Zähler (alle fünf Minuten) steht unter `refused`
+  `upstream-invalid` (und `upstream-too-old` für rückdatierte Token). Normalerweise bleibt der Wert bei 0. Ein Anstieg
+  heißt: ein Dienst liefert Token, die das Relay nicht annimmt (neue Zertifikatskette, veraltete Anker in `anchors/`,
+  Uhr, ein Dienst oder jemand auf der Strecke betrügt) oder ein Token mit Schaltsekunde (`docs/grenzen.md`). Das
+  verdient eine Warnung, nicht nur eine Zahl im Protokoll; die Einzelheiten (`reason`) stehen nur in der Antwort an den
+  Aufrufer, nicht im Protokoll.
+- **Relay- und App-Stand müssen zusammenpassen.** Die Kopfform (`v2`), die Kennungen der Dienste (`services.json`), die
+  Anker und die Regeln der Prüfung (hier: die Zeitgrenzen) gehören zu einem Stand. Wird das Relay oder `services.json`
+  aktualisiert, die App gleich mitnehmen (und umgekehrt): eine App mit alten Ankern meldet `untrusted-chain`, ein Relay
+  mit alten Ankern `upstream-invalid`; eine App ohne `minGenTime` prüft die Frische nicht, auch wenn das Relay es tut.

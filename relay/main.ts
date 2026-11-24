@@ -6,8 +6,9 @@
 //   RELAY_KEYS_FILE          path of the key file (ids and public keys; no secret, but only the operator may
 //                            write it; never in the repo); required
 //   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
-//   RELAY_HOST               address to listen on (default: all interfaces; with RELAY_AUTH=off always
-//                            127.0.0.1, and only a loopback address is accepted)
+//   RELAY_HOST               address to listen on (default: 127.0.0.1, behind a reverse proxy on the same
+//                            machine; a container or another machine needs RELAY_HOST=0.0.0.0 on purpose;
+//                            with RELAY_AUTH=off only a loopback address is accepted)
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -61,8 +62,9 @@ export function readSettings(env: NodeJS.ProcessEnv) {
   if (authOff && hostEnv !== '' && !LOOPBACK.includes(hostEnv)) {
     throw new Error('RELAY_AUTH=off erlaubt nur eine Loopback-Adresse in RELAY_HOST');
   }
-  // undefined: listen on all interfaces (only with authentication)
-  const host: string | undefined = authOff ? hostEnv || '127.0.0.1' : hostEnv || undefined;
+  // Loopback unless the operator names an address: with authentication too (a relay that is reachable from the
+  // network must be made so on purpose, e.g. RELAY_HOST=0.0.0.0 in a container)
+  const host: string | undefined = hostEnv || '127.0.0.1';
   return {
     origins,
     port,
@@ -159,7 +161,7 @@ export function startEvent(
   };
 }
 
-/** Starts listening; a host of `undefined` means all interfaces. */
+/** Starts listening; a host of `undefined` means all interfaces (the settings never give one: the default is 127.0.0.1). */
 export function listenOn(
   server: Server,
   port: number,

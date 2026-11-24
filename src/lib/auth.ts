@@ -21,8 +21,12 @@ const MAX_BODY_BYTES = 512;
 const MIN_NOW_MS = 1e11;
 
 export interface SignRelayRequestInput {
-  /** The private key: ECDSA P-256, PKCS#8 (DER) bytes. It stays in the app and is never returned. */
-  privateKey: Uint8Array;
+  /**
+   * The private key: ECDSA P-256, either PKCS#8 (DER) bytes or a `CryptoKey` (type `private`, algorithm ECDSA on
+   * P-256, usage `sign`; it may be non-extractable, so the app never has to hold the key bytes). It stays in
+   * the app and is never returned. A `CryptoKey` of another realm is refused (`bad-key`).
+   */
+  privateKey: Uint8Array | CryptoKey;
   /** Key id as the relay's key file names it: `[a-z][a-z0-9-]{0,31}`. */
   keyId: string;
   /** HTTP method in capitals, e.g. `POST`. */
@@ -45,7 +49,8 @@ export interface SignRelayRequestInput {
  * path + "\n" + ts + "\n" + hex(SHA-256(body)))`. Never throws, also not for hostile Proxies as input, `privateKey` or
  * `body` (code `bad-options`/`bad-key`); each is read once, never iterated, and `privateKey` (at most 256 bytes) and
  * `body` (at most 512) are copied first. A `Uint8Array` of another realm is refused: pass `new Uint8Array(x)`.
- * The key is imported as non-extractable and is never returned or kept. ECDSA is randomised: two calls give two different signatures.
+ * Bytes are imported as a non-extractable key and are never returned or kept; a `CryptoKey` is used as it is
+ * (checked with the built-in getters: a Proxy or a look-alike is no `CryptoKey`, `bad-key`). ECDSA is randomised: two calls give two different signatures.
  */
 export async function signRelayRequest(input: SignRelayRequestInput): Promise<Result<string>> {
   try {
@@ -81,6 +86,36 @@ function copyOf(value: unknown, min: number, max: number): Uint8Array | null {
   }
 }
 
+type CryptoKeyGetter = (this: unknown) => unknown;
+const cryptoKeyGetter = (name: string): CryptoKeyGetter | undefined =>
+  typeof CryptoKey === 'function'
+    ? (Object.getOwnPropertyDescriptor(CryptoKey.prototype, name)?.get as
+        CryptoKeyGetter | undefined)
+    : undefined;
+const keyType = cryptoKeyGetter('type');
+const keyAlgorithm = cryptoKeyGetter('algorithm');
+const keyUsages = cryptoKeyGetter('usages');
+
+/**
+ * `value` when it is a real `CryptoKey` for signing with ECDSA on P-256 (private, usage `sign`), else null. Read
+ * with the built-in getters of `CryptoKey.prototype` (they throw for anything that is not a real key, a Proxy
+ * included) and each exactly once; anything that throws gives null.
+ */
+function usableCryptoKey(value: unknown): CryptoKey | null {
+  try {
+    if (typeof CryptoKey !== 'function' || !(value instanceof CryptoKey)) return null;
+    if (!keyType || !keyAlgorithm || !keyUsages) return null;
+    if (keyType.call(value) !== 'private') return null;
+    const algorithm = keyAlgorithm.call(value) as { name?: unknown; namedCurve?: unknown } | null;
+    if (algorithm?.name !== 'ECDSA' || algorithm.namedCurve !== 'P-256') return null;
+    const usages = keyUsages.call(value);
+    if (!Array.isArray(usages) || !usages.includes('sign')) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
   if (typeof input !== 'object' || input === null) return fail('bad-options');
   let fields: SignRelayRequestInput;
@@ -92,8 +127,11 @@ async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
     return fail('bad-options'); // a throwing getter or Proxy trap on the input
   }
   const { keyId, method, path, nowMs } = fields;
-  const privateKey = copyOf(fields.privateKey, 1, MAX_PRIVATE_KEY_BYTES);
-  if (privateKey === null) return fail('bad-key');
+  // a real CryptoKey is used as it is; anything else must be PKCS#8 bytes (copied before any use)
+  const given = fields.privateKey;
+  const readyKey = usableCryptoKey(given);
+  const privateKey = readyKey === null ? copyOf(given, 1, MAX_PRIVATE_KEY_BYTES) : null;
+  if (readyKey === null && privateKey === null) return fail('bad-key');
   if (typeof keyId !== 'string' || !KEY_ID.test(keyId)) return fail('bad-key-id');
   if (typeof method !== 'string' || !METHOD.test(method)) return fail('bad-options');
   if (typeof path !== 'string' || !PATH.test(path) || /[?#]/.test(path)) return fail('bad-options');
@@ -105,16 +143,20 @@ async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
   const subtle = globalThis.crypto?.subtle;
   if (typeof subtle?.importKey !== 'function') return fail('unsupported-signature'); // e.g. plain http
   let key: CryptoKey;
-  try {
-    key = await subtle.importKey(
-      'pkcs8',
-      privateKey as BufferSource,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['sign'],
-    );
-  } catch {
-    return fail('bad-key'); // not PKCS#8, or not an ECDSA P-256 key
+  if (readyKey !== null) {
+    key = readyKey;
+  } else {
+    try {
+      key = await subtle.importKey(
+        'pkcs8',
+        privateKey as BufferSource,
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        false,
+        ['sign'],
+      );
+    } catch {
+      return fail('bad-key'); // not PKCS#8, or not an ECDSA P-256 key
+    }
   }
   const ts = Math.floor(nowMs / 1000);
   try {

@@ -100,6 +100,126 @@ describe('signRelayRequest', () => {
       spy.mockRestore();
     }
   });
+  describe('a CryptoKey as privateKey (Befund 11)', () => {
+    const importKey = (extractable: boolean) =>
+      globalThis.crypto.subtle.importKey(
+        'pkcs8',
+        KEY.privateKey as BufferSource,
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        extractable,
+        ['sign'],
+      );
+    it('signs with a non-extractable CryptoKey: the header is the one node:crypto verifies', async () => {
+      const key = await importKey(false);
+      expect(key.extractable).toBe(false);
+      const r = await signRelayRequest(input({ privateKey: key }));
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.value.split('.').slice(0, 3)).toEqual(['v2', 'app-1', String(TS)]);
+      expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY)).toBe(true);
+    });
+    it('uses the key as it is: nothing is imported or exported, and the result holds only the header', async () => {
+      const key = await importKey(false);
+      const imp = vi.spyOn(globalThis.crypto.subtle, 'importKey');
+      const exp = vi.spyOn(globalThis.crypto.subtle, 'exportKey');
+      try {
+        const r = await signRelayRequest(input({ privateKey: key }));
+        expect(r.ok).toBe(true);
+        expect(imp).not.toHaveBeenCalled();
+        expect(exp).not.toHaveBeenCalled();
+        expect(Object.keys(r).sort()).toEqual(['ok', 'value']);
+      } finally {
+        imp.mockRestore();
+        exp.mockRestore();
+      }
+    });
+    it('also takes an extractable key', async () => {
+      const r = await signRelayRequest(input({ privateKey: await importKey(true) }));
+      expect(r.ok).toBe(true);
+    });
+    it('refuses every other CryptoKey with bad-key: public, other curve, other algorithm, no signing use', async () => {
+      const subtle = globalThis.crypto.subtle;
+      const p256 = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, [
+        'sign',
+        'verify',
+      ]);
+      const p384 = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-384' }, false, [
+        'sign',
+        'verify',
+      ]);
+      const ecdh = await subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, [
+        'deriveBits',
+      ]);
+      const rsa = await subtle.generateKey(
+        {
+          name: 'RSASSA-PKCS1-v1_5',
+          modulusLength: 2048,
+          publicExponent: Uint8Array.of(1, 0, 1),
+          hash: 'SHA-256',
+        },
+        false,
+        ['sign', 'verify'],
+      );
+      const hmac = await subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const cases: [string, unknown][] = [
+        ['the public key of P-256', p256.publicKey],
+        ['a private P-384 key', p384.privateKey],
+        ['a private ECDH key', ecdh.privateKey],
+        ['a private RSA key', rsa.privateKey],
+        ['a secret HMAC key', hmac],
+      ];
+      for (const [name, privateKey] of cases) {
+        expect(await signRelayRequest(input({ privateKey })), name).toEqual({
+          ok: false,
+          reason: 'bad-key',
+        });
+      }
+    });
+    it('a look-alike object and a Proxy with a throwing trap are no CryptoKey (bad-key, never a throw)', async () => {
+      const key = await importKey(false);
+      const lookAlike = {
+        type: 'private',
+        algorithm: { name: 'ECDSA', namedCurve: 'P-256' },
+        usages: ['sign'],
+        extractable: false,
+      };
+      const boom = () => {
+        throw new Error('hostile');
+      };
+      const cases: [string, unknown][] = [
+        ['look-alike', lookAlike],
+        [
+          'look-alike with the prototype of CryptoKey',
+          Object.setPrototypeOf({ ...lookAlike }, CryptoKey.prototype),
+        ],
+        ['Proxy, get trap', new Proxy(key, { get: boom })],
+        ['Proxy, getPrototypeOf trap', new Proxy(key, { getPrototypeOf: boom })],
+      ];
+      for (const [name, privateKey] of cases) {
+        expect(await signRelayRequest(input({ privateKey })), name).toEqual({
+          ok: false,
+          reason: 'bad-key',
+        });
+      }
+    });
+    it('a Proxy that forwards everything is whatever the platform makes of it, and never a throw', async () => {
+      const r = await signRelayRequest(
+        input({ privateKey: new Proxy(await importKey(false), {}) }),
+      );
+      expect(typeof r.ok).toBe('boolean');
+    });
+    it('reads the key property of the input once', async () => {
+      const key = await importKey(false);
+      const reads: Record<string, number> = {};
+      const counted = new Proxy(input({ privateKey: key }), {
+        get(target, k, receiver) {
+          reads[String(k)] = (reads[String(k)] ?? 0) + 1;
+          return Reflect.get(target, k, receiver);
+        },
+      });
+      expect(await signRelayRequest(counted as never)).toMatchObject({ ok: true });
+      expect(Object.values(reads).every((n) => n === 1)).toBe(true);
+    });
+  });
   it('answers with codes and never throws', async () => {
     const other = generateKeyPairSync('ec', { namedCurve: 'secp384r1' }).privateKey.export({
       format: 'der',

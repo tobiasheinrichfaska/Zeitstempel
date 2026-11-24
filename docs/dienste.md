@@ -15,7 +15,14 @@ Deutschland aus, mit dem SHA-256 eines kurzen Testtexts. Jeder Dienst bekam je L
 - DigiCert über `https://` lief in einen Timeout (8 bis 15 s), Certum über `https://` kam nicht zustande
   (Verbindungsfehler). Beide werden deshalb über `http://` angesprochen. Das Token ist signiert; `http`
   schützt nicht die Echtheit, aber die Vertraulichkeit der Anfrage (nur ein Hash) geht verloren. Das Relay
-  verwendet solche Dienste nur, wenn `RELAY_ALLOW_PLAIN_HTTP=1` gesetzt ist.
+  verwendet solche Dienste nur, wenn `RELAY_ALLOW_PLAIN_HTTP=1` gesetzt ist. **Was ein Angreifer auf der Strecke
+  über `http` kann:** den Hash **mitlesen** (bei ratbarem Inhalt bestätigt das den Inhalt), das **Budget des Dienstes
+  verbrennen** (Anfragen oder Antworten stören; das Relay zählt jede gesendete Anfrage) und die Antwort **nicht
+  fälschen** (das Token ist signiert; eine veränderte oder fremde Antwort besteht die Prüfung nicht). Ein altes, echt
+  signiertes Token einzuspielen scheitert an der Nonce, die das Relay je Anfrage neu wählt (`nonce-mismatch`). Eine
+  **Rückdatierung** (Token mit früherer `genTime` zu diesem Hash) gelingt nur mit dem Signierschlüssel des Dienstes (abgelaufen oder
+  gestohlen), nicht über die Strecke; sie wird jetzt durch die Frischeprüfung abgefangen (Relay: `genTimeSlackMs`,
+  `docs/relay.md`; Bibliothek: `minGenTime`, `docs/grenzen.md`), die App muss `minGenTime` aber selbst übergeben.
 - Die Antwortzeiten sind einzelne Messungen, keine Statistik und kein Versprechen der Dienste.
 - Die Zeit in den Token stimmte bei allen vier Diensten auf die Sekunde mit der Zeit der Anfrage überein.
 

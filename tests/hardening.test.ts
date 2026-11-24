@@ -49,6 +49,31 @@ describe('E1: a named signature OID must agree with the digestAlgorithm of the S
   });
 });
 
+describe('ESSCertIDv2: the hash of the signing certificate attribute', () => {
+  const SHA1 = '1.3.14.3.2.26';
+  const SHA256 = '2.16.840.1.101.3.4.2.1';
+  it('refuses SHA-1 in the v2 attribute (unsupported-hash), SHA-1 stays fine only in v1', async () => {
+    expect(await reason({ essCertId: { v2Hash: SHA1 } })).toBe('unsupported-hash');
+    expect(await reason({ essCertId: { v1: true } })).toBe('ok');
+  });
+  it('refuses an unknown hash OID in the v2 attribute: no silent fallback to SHA-256', async () => {
+    // the attribute carries a correct SHA-256 of the certificate, so a fallback to SHA-256 would accept it
+    expect(await reason({ essCertId: { v2Hash: '1.2.3.4' } })).toBe('unsupported-hash');
+    expect(await reason({ essCertId: { v2Hash: '2.16.840.1.101.3.4.2.99' } })).toBe(
+      'unsupported-hash',
+    );
+  });
+  it('accepts the default (no algorithm) and an explicit SHA-256', async () => {
+    expect(await reason()).toBe('ok');
+    expect(await reason({ essCertId: { v2Hash: SHA256 } })).toBe('ok');
+  });
+  it('a named SHA-384 with the SHA-256 value is a mismatch, not a fallback', async () => {
+    expect(await reason({ essCertId: { v2Hash: '2.16.840.1.101.3.4.2.2' } })).toBe(
+      'signing-certificate-mismatch',
+    );
+  });
+});
+
 describe('the accuracy of a token', () => {
   const accuracyMs = async (accuracy?: Opts['accuracy']) => {
     const t = build(accuracy ? { accuracy } : {});

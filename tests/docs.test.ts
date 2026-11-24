@@ -43,6 +43,7 @@ const REASONS: Record<lib.Reason, true> = {
   'unsupported-hash': true,
   'bad-time': true,
   'time-in-future': true,
+  'time-too-old': true,
   'imprint-mismatch': true,
   'nonce-mismatch': true,
   'one-signer-required': true,
@@ -149,6 +150,75 @@ describe('docs against the code', () => {
       services: { id: string; url: string }[];
     };
     for (const s of file.services) expect(doc, s.id).toContain(s.url);
+  });
+});
+
+describe('the audit fixes are written down where a reader looks (Befunde 1-12)', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const services = readFileSync(new URL('../services.json', import.meta.url), 'utf8');
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  it('data-model.html: minGenTime, time-too-old, signerNotAfter, the two-sided `at`, the CryptoKey', () => {
+    for (const word of ['minGenTime', 'signerNotBefore', 'signerNotAfter', 'CryptoKey']) {
+      expect(model, word).toContain(word);
+    }
+    expect(model).toContain('<td>time-too-old</td>');
+    expect(flat(model)).toContain('sowohl zur <code>genTime</code> als auch zu <code>at</code>');
+    expect(flat(model)).toContain('Ohne diese Option wird die Frische nicht geprüft');
+    expect(model).toContain('ESSCertIDv2');
+  });
+  it('relay.md: the client recipe passes minGenTime, the time window and the idle timeout are in the limits', () => {
+    expect(relayDoc).toContain('minGenTime: new Date(sentMs - 60_000)');
+    expect(relayDoc).toContain('genTimeSlackMs');
+    expect(relayDoc).toContain('upstream-too-old');
+    expect(relayDoc).toContain('time-too-old');
+    expect(relayDoc).not.toMatch(/\|\s*`maxSkewMs`/); // replaced by genTimeSlackMs
+    expect(relayDoc).toContain('signerNotAfter');
+  });
+  it('relay.md: binding, proxy examples (marked as untested), trust, hash confidentiality, capacity, health, alarm', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**');
+    expect(doc).toContain('`RELAY_HOST=0.0.0.0`');
+    expect(relayDoc).toContain('**nginx**');
+    expect(relayDoc).toContain('**Caddy**');
+    expect(doc).toContain('nicht gegen einen echten Proxy getestet');
+    expect(doc).toContain('mindestens 17 s');
+    expect(relayDoc).toContain('X-Zeitstempel-Auth');
+    expect(doc).toContain('soweit es um die Bindung an den Hash geht');
+    for (const word of ['Frische', 'Verfügbarkeit', 'Vertraulichkeit des Hashes']) {
+      expect(doc, word).toContain(word);
+    }
+    expect(doc).toContain('gesalzenen Hash');
+    expect(doc).toContain('Merkle');
+    expect(doc).toContain('4 Stempel je Minute');
+    expect(doc).toContain('`/health` ruft keinen Dienst auf');
+    expect(doc).toContain('`upstream-invalid` ist ein Alarmzeichen');
+    expect(doc).toContain('Relay- und App-Stand müssen zusammenpassen');
+    expect(doc).toContain('keepAliveTimeoutMs');
+  });
+  it('grenzen.md: freshness is not checked without minGenTime, the long-term statement, the leap second, ESSCertIDv2', () => {
+    const doc = flat(limitsDoc);
+    expect(doc).toContain(
+      'Ohne die Option `minGenTime` wird **nicht geprüft, wie alt das Token ist**',
+    );
+    expect(doc).toContain('rückdatierten');
+    expect(doc).toContain('## Langzeitaussage');
+    expect(doc).toContain('signerNotAfter');
+    expect(doc).toContain('rechtzeitig neu stempeln');
+    expect(doc).toContain('Schaltsekunde');
+    expect(doc).toContain('`502 upstream-invalid`');
+    expect(doc).toContain('SHA-1 und eine unbekannte Hash-OID dort werden abgelehnt');
+    expect(doc).toContain('zusätzlich zu `at`');
+  });
+  it('README and services.json do not overstate: a certificate under the anchor, not "the service"', () => {
+    expect(readme).not.toContain('„Dienst X bestätigt');
+    expect(flat(readme)).toContain(
+      'ein Zeitstempel-Zertifikat unter dem übergebenen Anker bestätigt',
+    );
+    expect(readme).toContain('minGenTime: new Date(sentMs - 60_000)');
+    expect(flat(read('dienste.md'))).toContain(
+      'Was ein Angreifer auf der Strecke über `http` kann',
+    );
+    expect(services).toContain('cannot forge the answer');
   });
 });
 

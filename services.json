@@ -32,7 +32,7 @@
       "qualified": false,
       "minIntervalMs": 15000,
       "intendedUse": "Public service for time stamping signed code (Authenticode). Other uses are neither offered nor forbidden in the documentation found (read 2026-11-23).",
-      "terms": "No terms found (knowledge base page and legal repository, read 2026-11-23): no rate limit, availability, liability or purpose stated. Answered over plain http only; an https request timed out on 2026-11-23. The token is signed, so the transport adds privacy, not authenticity. Not legally reviewed, operator not asked."
+      "terms": "No terms found (knowledge base page and legal repository, read 2026-11-23): no rate limit, availability, liability or purpose stated. Answered over plain http only; an https request timed out on 2026-11-23. The token is signed: a man in the middle can read the hash and use up the budget but cannot forge the answer; back-dating needs the service's signing key and is stopped by the freshness check. Not legally reviewed, operator not asked."
     },
     {
       "id": "certum",
@@ -43,7 +43,7 @@
       "qualified": false,
       "minIntervalMs": 15000,
       "intendedUse": "Public service of a certification authority; its policy v1.7 lists transactions, archived data and signatures, but frees only Microsoft Authenticode from fees and contract.",
-      "terms": "Policy v1.7 (Polish, read 2026-11-23): only Authenticode use is free of licence fee and contract; for other users it threatens damages without a contract, so a contract is probably needed. No rate limit named. Plain http only (https failed). General terms (annex 1) not read. Not legally reviewed, operator not asked."
+      "terms": "Policy v1.7 (Polish, read 2026-11-23): only Authenticode use is free of licence fee and contract; for other users it threatens damages without a contract, so a contract is probably needed. No rate limit named. Plain http only (https failed): a man in the middle can read the hash and use up the budget, not forge the answer; back-dating needs the service's key and is stopped by the freshness check. General terms (annex 1) not read. Not legally reviewed, operator not asked."
     }
   ]
 }

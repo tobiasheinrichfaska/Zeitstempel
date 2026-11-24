@@ -11,8 +11,19 @@ export type TrustAnchors = readonly string[];
 export interface VerifyOptions {
   /** The nonce that was sent. When given, the token must carry exactly this nonce. */
   expectedNonce?: Uint8Array;
-  /** The moment at which certificates must be valid. Default: the token's own time. Must be a valid Date. */
+  /**
+   * An additional moment at which the signer certificate and the chain must be valid: they must be valid at the
+   * token's own time (`genTime`) AND at `at` (both, `at` does not replace `genTime`). Default: only `genTime`.
+   * Must be a valid Date, else `bad-options`.
+   */
   at?: Date;
+  /**
+   * The earliest `genTime` that is accepted: an older token is refused (`time-too-old`). Without it freshness is
+   * NOT checked: a token whose time lies far in the past passes as long as the signer certificate was valid
+   * then (a back-dated token from a service whose key has expired or leaked; docs/grenzen.md). Pass the moment
+   * the request was sent minus a small tolerance. Given but not a valid Date: `bad-options`.
+   */
+  minGenTime?: Date;
   /** The current time: a token from the future (beyond the skew) is refused. Default: not checked. Given but not a valid Date: `bad-options`. */
   now?: Date;
   /** Allowed difference between the token time and `now`. Default 5 minutes; a number >= 0 (Infinity allowed), else `bad-options`. */
@@ -31,6 +42,14 @@ export interface VerifiedTimestamp {
   signer: string;
   /** Number of certificates from the signer up to the trust anchor (anchor included). */
   chainLength: number;
+  /**
+   * Start of the validity of the signer certificate, ISO 8601 (UTC). The verification judged the certificates at
+   * `genTime`; after `signerNotAfter` (or once the key leaks or is revoked) the proof loses its weight
+   * (docs/grenzen.md).
+   */
+  signerNotBefore: string;
+  /** End of the validity of the signer certificate, ISO 8601 (UTC); see `signerNotBefore`. */
+  signerNotAfter: string;
 }
 
 const MAX_CHAIN = 6;
@@ -177,6 +196,7 @@ const NONCE_BYTES = { min: 1, max: 16 } as const;
 interface OptionSnapshot {
   readonly now: number | undefined;
   readonly at: number | undefined;
+  readonly minGenTime: number | undefined;
   readonly maxSkewMs: number;
   readonly expectedNonce: Uint8Array | undefined;
   readonly requireCriticalEku: boolean;
@@ -194,12 +214,14 @@ function checkOptions(options: unknown): OptionSnapshot {
   const snapshot = (read: (key: string) => unknown): OptionSnapshot => {
     const now = read('now');
     const at = read('at');
+    const minGen = read('minGenTime');
     const skew = read('maxSkewMs');
     const nonce = read('expectedNonce');
     const critical = read('requireCriticalEku');
     const nowMs = now === undefined ? undefined : dateMs(now);
     const atMs = at === undefined ? undefined : dateMs(at);
-    if (nowMs === null || atMs === null) throw bad();
+    const minGenMs = minGen === undefined ? undefined : dateMs(minGen);
+    if (nowMs === null || atMs === null || minGenMs === null) throw bad();
     if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
       throw bad();
     }
@@ -211,6 +233,7 @@ function checkOptions(options: unknown): OptionSnapshot {
     return Object.freeze({
       now: nowMs,
       at: atMs,
+      minGenTime: minGenMs,
       maxSkewMs: skew ?? DEFAULT_SKEW_MS,
       expectedNonce: nonceCopy,
       requireCriticalEku: critical ?? true,
@@ -239,7 +262,11 @@ async function checkSigningCertificate(token: ParsedToken, signer: Certificate):
   let hash: HashName = v2 ? 'SHA-256' : 'SHA-1';
   let at = 0;
   if (v2 && first[0]?.tag === TAG.sequence) {
-    hash = HASHES[oid(children(first[0])[0]!)]?.name ?? hash;
+    // ESSCertIDv2: an unknown hash OID or SHA-1 is refused, never a silent fallback to SHA-256 (SHA-1 stays
+    // accepted only in the v1 attribute)
+    const named = HASHES[oid(children(first[0])[0]!)]?.name;
+    if (!named || named === 'SHA-1') throw new ReaderError('unsupported-hash');
+    hash = named;
     at = 1;
   }
   const expected = octets(first[at]!);
@@ -248,12 +275,17 @@ async function checkSigningCertificate(token: ParsedToken, signer: Certificate):
   }
 }
 
-function validAt(cert: Certificate, at: number): boolean {
-  return cert.notBefore <= at && at <= cert.notAfter;
+/** Valid at every one of the given moments (`genTime`, and `at` when the caller gave one). */
+function validAt(cert: Certificate, times: readonly number[]): boolean {
+  return times.every((t) => cert.notBefore <= t && t <= cert.notAfter);
 }
 
 /** Why a candidate issuer is unusable at time `at`, or null when it is fine. */
-function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: number) {
+function issuerFlaw(
+  issuer: Certificate,
+  anchors: readonly Certificate[],
+  times: readonly number[],
+) {
   const isAnchor = anchors.some((a) => same(a.raw, issuer.raw));
   // no basicConstraints at all (an X.509 v1 root): a CA only when the caller handed it over as an anchor
   // (the caller's decision); an explicit cA=false and every intermediate without the extension stay refused
@@ -261,7 +293,7 @@ function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: nu
   if (isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
     return 'not-a-ca' as const;
   }
-  if (!validAt(issuer, at)) return 'certificate-not-valid-at-time' as const;
+  if (!validAt(issuer, times)) return 'certificate-not-valid-at-time' as const;
   if (issuer.unknownCritical && !isAnchor) {
     return 'bad-certificate' as const; // a trust anchor is the caller's decision, not checked
   }
@@ -289,7 +321,7 @@ async function buildChain(
   signer: Certificate,
   anchors: readonly Certificate[],
   pool: readonly Certificate[],
-  at: number,
+  times: readonly number[],
 ): Promise<number> {
   type Flawed = { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> };
   type Failure = ReaderError | { current: Certificate; flawed: Flawed[] };
@@ -330,7 +362,7 @@ async function buildChain(
     const usable: Certificate[] = [];
     const flawed: Flawed[] = [];
     for (const candidate of named) {
-      const flaw = issuerFlaw(candidate, anchors, at);
+      const flaw = issuerFlaw(candidate, anchors, times);
       if (flaw) flawed.push({ candidate, flaw });
       else usable.push(candidate);
     }
@@ -369,9 +401,9 @@ async function buildChain(
 /**
  * Verifies a time stamp token against the SHA-256 hash it must cover:
  * imprint, nonce (when given), the CMS signature, the signing-certificate attribute, the key usage of
- * the signer, the validity of every certificate at the stamped time, and a chain that ends in one
- * of the given trust anchors. Revocation is NOT checked; name constraints and path length are not
- * evaluated (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
+ * the signer, the validity of every certificate at the stamped time (and at `at`, when given), and a chain
+ * that ends in one of the given trust anchors. The age of the token is checked only with `minGenTime`.
+ * Revocation is NOT checked; name constraints and path length are not evaluated (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
  */
 export async function verifyTimestampToken(
   tokenBytes: Uint8Array,
@@ -432,7 +464,11 @@ async function verifyChecked(
     if (opts.now !== undefined && info.genTime > opts.now + opts.maxSkewMs) {
       throw new ReaderError('time-in-future');
     }
-    const at = opts.at ?? info.genTime;
+    if (opts.minGenTime !== undefined && info.genTime < opts.minGenTime) {
+      throw new ReaderError('time-too-old');
+    }
+    // the certificates must be valid at the stamped time and, when given, at `at` as well
+    const times = opts.at === undefined ? [info.genTime] : [info.genTime, opts.at];
 
     // signed attributes: content type, message digest, signing certificate
     const attrs = token.signer.attributes;
@@ -484,11 +520,11 @@ async function verifyChecked(
     }
     if (signer.keyUsage !== null && (signer.keyUsage & 0xc0) === 0)
       throw new ReaderError('bad-eku');
-    if (!validAt(signer, at)) throw new ReaderError('certificate-not-valid-at-time');
+    if (!validAt(signer, times)) throw new ReaderError('certificate-not-valid-at-time');
 
     // chain to a trust anchor
     const pool = dedupe([...anchors, ...token.certificates]); // anchors first: a cross-signed twin of an anchor must not win
-    const length = await buildChain(signer, anchors, pool, at);
+    const length = await buildChain(signer, anchors, pool, times);
     return ok({
       genTime: new Date(info.genTime).toISOString(),
       accuracyMs: info.accuracyMs,
@@ -496,6 +532,8 @@ async function verifyChecked(
       serial: info.serial,
       signer: nameToString(signer.subject),
       chainLength: length,
+      signerNotBefore: new Date(signer.notBefore).toISOString(),
+      signerNotAfter: new Date(signer.notAfter).toISOString(),
     });
   } catch (e) {
     return fail(e instanceof ReaderError ? e.reason : 'malformed');

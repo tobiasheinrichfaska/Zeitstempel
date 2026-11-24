@@ -5,7 +5,7 @@ import { RELAY_LIMITS } from './limits.ts';
 /** How long a socket may stay open after the relay wrote its last word to it. */
 const CLOSE_GRACE_MS = 1_000;
 
-/** The HTTP server around a relay: short deadlines, no keep-alive surprises, nothing logged. */
+/** The HTTP server around a relay: short request deadlines, a keep-alive longer than a proxy's idle timeout, nothing logged. */
 export function createRelayServer(
   options: RelayOptions,
   /** For tests: smaller limits to see the behaviour quickly. */
@@ -34,7 +34,7 @@ export function createRelayServer(
   });
   server.requestTimeout = timeout;
   server.headersTimeout = timeout;
-  server.keepAliveTimeout = 5_000;
+  server.keepAliveTimeout = RELAY_LIMITS.keepAliveTimeoutMs;
   server.maxHeadersCount = 50;
   server.maxConnections = limits.maxConnections ?? RELAY_LIMITS.maxConnections;
   return { server, relay };
