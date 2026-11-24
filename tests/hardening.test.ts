@@ -323,7 +323,8 @@ describe('L7: ECDSA signature structure', () => {
       const r = await reason({
         sigMangle: (d) => {
           const [a, b] = rawInts(d);
-          if (a![0] !== 0 || (a![1]! & 0x80) === 0) return d;
+          // 00 ff 8x: without the 00 the INTEGER is negative AND not minimal (ff 8x): `malformed`, by chance; skip it
+          if (a![0] !== 0 || (a![1]! & 0x80) === 0 || a![1] === 0xff) return d;
           had = true;
           return withInts([a!.subarray(1), b!]);
         },

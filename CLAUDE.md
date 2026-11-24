@@ -99,7 +99,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
 
 ## Known Limitations
 
-- **Browser: checked once, in headless Chromium 157 only, without the relay authentication (`signRelayRequest` not run in a browser)** (2026-11-23, `node scripts/browser-check.mjs`, by
+- **Browser: checked in headless Chromium 157 only; on 2026-11-24 an audit script (not in the repo, hard-coded paths) also ran `signRelayRequest` (key bytes and non-extractable `CryptoKey`), signed cross-origin calls with preflight, batch mode with `verifyBatchedTimestamp` and a solo call against a stub relay: 47 checks, no difference to Node; the checked-in script is the older one** (2026-11-23, `node scripts/browser-check.mjs`, by
   hand, needs Playwright with Chromium, which is not a dependency; the script starts its own relay with `keys: 'off'`
   inside the script: no environment variable, no key): the four recorded tokens verify (ECDSA P-384
   and RSA-4096 signers), wrong hash / wrong anchor / changed bytes are refused, and a cross-origin call to the
@@ -208,8 +208,8 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   so the comparison is `cms -verify` (it takes the first match and ignores the version). Measured only with own tokens
   and one written by `openssl cms -sign -keyid` (no signing certificate attribute, so it stops at
   `signing-certificate-missing`), not with a real service.
-- **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
-  2026-11-23 ran without it, with `keys: 'off'` in the script). A private key in a web
+- **Relay authentication: not security-reviewed by a human, tested in Chromium only (audit script of 2026-11-24, not in the repo;
+  the checked-in browser check of 2026-11-23 ran with `keys: 'off'`).** A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key
   rotation. Anyone who can write the key file can add a key. Replay cache (digest of the signed message, at most
   180 entries by the limits) and counters live in memory only (empty after a restart; a head with `ts` from the start on, up to +60 s when the app clock runs ahead, can be replayed after a restart until its window ends, i.e. up to 120 s after the relay start: `ts` <= start + 60 s plus the 60 s window; the replay cache is empty then; no code fix); client and relay clocks

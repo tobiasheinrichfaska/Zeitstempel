@@ -57,12 +57,13 @@ const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 export function toBase64(input: Uint8Array): string {
   const bytes = needBytes(input);
+  const length = byteLength(bytes)!; // the built-in length, once: a subclass or an own `length` cannot change it
   let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
+  for (let i = 0; i < length; i += 3) {
     const n = ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
     out += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]!;
-    out += i + 1 < bytes.length ? B64[(n >> 6) & 63]! : '=';
-    out += i + 2 < bytes.length ? B64[n & 63]! : '=';
+    out += i + 1 < length ? B64[(n >> 6) & 63]! : '=';
+    out += i + 2 < length ? B64[n & 63]! : '=';
   }
   return out;
 }
@@ -102,7 +103,11 @@ export function fromBase64Url(text: string): Uint8Array | null {
 }
 
 export function toHex(input: Uint8Array): string {
-  return Array.from(needBytes(input), (b) => b.toString(16).padStart(2, '0')).join('');
+  const bytes = needBytes(input);
+  const length = byteLength(bytes)!;
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += (bytes[i] ?? 0).toString(16).padStart(2, '0');
+  return out;
 }
 
 /**

@@ -108,3 +108,17 @@ describe('L3: equalBytes reads each length once, from the built-in getter, and o
     }
   });
 });
+
+describe('writers read the built-in length (a subclass or an own length cannot change the output)', () => {
+  class Liar extends Uint8Array {
+    override get length(): number {
+      return 5;
+    }
+  }
+  it('toBase64, toBase64Url and toHex ignore a lying length', () => {
+    const x = new Liar([1, 2]);
+    expect(toBase64(x)).toBe(toBase64(new Uint8Array([1, 2])));
+    expect(toBase64Url(x)).toBe(toBase64Url(new Uint8Array([1, 2])));
+    expect(toHex(x)).toBe('0102');
+  });
+});
