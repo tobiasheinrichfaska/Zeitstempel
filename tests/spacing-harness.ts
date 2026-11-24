@@ -63,7 +63,10 @@ export interface Harness {
   calls: { imprint: Uint8Array; at: number; token?: string }[];
   /** The relay's clock is the real one plus `offset` ms (the tests set it back); requests are signed with it. */
   clock: { offset: number };
-  /** The relay's monotonic clock is `performance.now()` plus `offset` ms (a test lets it jump to stand in for a stalled loop). */
+  /**
+   * The relay's monotonic clock is `performance.now()` plus `offset` ms (a test lets it jump to stand in for a stalled
+   * loop). The wall clock (`clock`) and this one are steered apart.
+   */
   mono: { offset: number };
   relay: ReturnType<typeof createRelayServer>['relay'];
   stats: ReturnType<typeof createRelayServer>['relay']['stats'];

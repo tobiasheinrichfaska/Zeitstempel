@@ -685,9 +685,11 @@ Solo-Stempel der Art 2; **der Rest wartet**.
 - **Der Platz wird zur Zeit des Stempels gebucht.** Ein Solo-Stempel bucht seinen Platz, wenn er an den Dienst geht. Ein
   Fenster hält seinen Platz **ab dem Öffnen** und bucht ihn für den Zeitpunkt, an dem es gestempelt wird (Öffnung plus
   Fensterlänge, bei einem vollen Fenster der tatsächliche frühere Zeitpunkt). Solo-Stempel, die während des offenen
-  Fensters kommen, sehen den Platz schon als belegt. Folge: der Dienst sieht in **jeder** gleitenden Minute höchstens
-  `60000 / minIntervalMs` Aufrufe, auch bei einem Gemisch aus Fenstern und Solo-Stempeln. Zur Schließzeit ist der Platz
-  immer frei (er war reserviert und jeder Stempel danach hat ihn mitgezählt); das Fenster wartet dann nie. Wartende
+  Fensters kommen, sehen den Platz schon als belegt. Folge: der Dienst sieht in jeder gleitenden Minute **der monotonen
+  Uhr des Prozesses** höchstens `60000 / minIntervalMs` Aufrufe, auch bei einem Gemisch aus Fenstern und Solo-Stempeln;
+  ein Sprung der Wanduhr (auch nach vorn, etwa ein NTP-Schritt) ändert daran nichts, weil der Planer die Wanduhr nicht liest.
+  Zur Schließzeit ist der **Mengenplatz** immer frei (er war reserviert und jeder Stempel danach hat ihn mitgezählt); auf
+  den Mindestabstand (nächster Punkt) kann ein Fenster dann noch warten. Wartende
   bekommen den Platz in der Reihenfolge, die der Abschnitt beschreibt; ihre Wartegrenze ist `RELAY_MAX_WAIT_MS`.
   Der Start prüft weiter `RELAY_BATCH_MS` >= `minIntervalMs`.
 - **Mindestabstand.** Zwei Aufrufe des Relays an denselben Dienst (und dieselbe Zugangsdaten-Identität, also dieselbe Spur)
@@ -710,11 +712,16 @@ Solo-Stempel der Art 2; **der Rest wartet**.
     Fristen“). Ein Fenster nach einem Fenster mit
     `RELAY_BATCH_MS` >= `minIntervalMs` braucht den Abstand ohnehin schon (es stempelt erst nach seiner Sammelzeit); nur ein
     volles Fenster wäre früher dran und wartet.
-  - Der Abstand rechnet mit der Uhr des Relays; eine zurückgestellte Uhr hält ein Fenster nicht länger als seine Stelle in
-    der Kette (`k · minIntervalMs`), und das Warten eines Fensters ist ein Zeitgeber (eine stehende Uhr hält kein Fenster
-    fest). Beim Ablauf des Zeitgebers prüft das Relay den Abstand **noch einmal** gegen die monotone Uhr des Prozesses
-    (ein Stillstand der Ereignisschleife, nach dem mehrere Zeitgeber zugleich fällig sind, bringt zwei Aufrufe nicht näher
-    zusammen als `minIntervalMs`; ein Sprung der Uhr nach vorn zählt dagegen als vergangene Zeit); ist er noch nicht erreicht, wartet das Fenster den Rest.
+  - **Uhr des Planers:** Abstand, Dienstbudget (Plätze im gleitenden Fenster), die Zeit der Fenster und jede Wartezeit
+    rechnen im Sammelbetrieb mit **einer** Uhr, der monotonen Uhr des Prozesses (`performance.now()`, im Relay die
+    Funktion `mono`), nicht mit der Wanduhr. Ein Sprung der Wanduhr nach vorn (30 s oder 59 s; mehr lässt die Anmeldung
+    nicht zu) gibt weder Abstand noch Plätze zurück, ein Sprung zurück hält nichts fest (kein Dauerlock). Die Wanduhr
+    bleibt für die Anmeldung (`ts`, Wiederholungsspeicher), die Prüfung von `genTime` und die Startzeit. Das Warten eines
+    Fensters ist **ein** Zeitgeber auf den berechneten Zeitpunkt (kein Abfragen im Millisekundentakt): kommt er zu früh
+    (Stillstand der Ereignisschleife, ein Zeitgeber, der früh feuert), prüft das Relay den Abstand noch einmal und wartet
+    den Rest; ein Fenster hinter einem wartenden Fenster wird von diesem angestoßen, sobald es gerufen hat. Ein Stillstand
+    der Ereignisschleife, nach dem mehrere Zeitgeber zugleich fällig sind, bringt zwei Aufrufe daher nicht näher zusammen
+    als `minIntervalMs`; das `k`-te wartende Fenster wartet höchstens `k · minIntervalMs`.
 - **Warten nur im Mangelfall.** Ist ein Platz frei (und für ein Solo der Mindestabstand erfüllt), wird die Anfrage sofort
   bedient (ein Fenster öffnet, ein Solo-Stempel geht an den Dienst); eine Anfrage in ein **offenes** Fenster braucht keinen Platz.
 - **Abwechselnd.** Warten ein Solo-Stempel und ein Sammelfenster zugleich, bekommen sie die Plätze **abwechselnd**: nichts
@@ -957,7 +964,8 @@ einen Stub über http gilt die Anleitung oben.
   war nichts begrenzt, ein rückdatiertes Token mit abgelaufenem oder gestohlenem Dienstschlüssel wäre durchgegangen).
   Eine Abweichung ergibt `502 upstream-invalid` mit `reason` `time-too-old` bzw. `time-in-future`; ein zu altes Token
   wird zusätzlich unter `upstream-too-old` gezählt. Das Budget des Dienstes ist dann verbraucht (die Anfrage ging
-  hinaus). Eine Grenze nach 60 s lässt eine Uhrabweichung zwischen Dienst und Relay von bis zu einer Minute zu; ein
+  hinaus). Springt die **eigene** Uhr des Relays während eines Dienstaufrufs um mehr als 60 s zurück, ergibt das
+  `time-in-future` für das **ganze** Fenster (der Dienststempel ist verbraucht, alle Anfragen des Fensters bekommen `502`). Eine Grenze nach 60 s lässt eine Uhrabweichung zwischen Dienst und Relay von bis zu einer Minute zu; ein
   Dienst, dessen Uhr mehr abweicht, wird abgelehnt.
 - **Die App muss dem Relay nicht vertrauen, soweit es um die Bindung an den Hash geht:** Die App prüft das Token
   mit der Bibliothek selbst (Abdruck, Signatur, Kette zu ihren eigenen Ankern); ein Relay kann ihr keinen Stempel für
@@ -1034,7 +1042,10 @@ höchstens `RELAY_MAX_WAIT_MS` (Vorgabe 30 s). Liegt der Zeitpunkt schon beim Ei
 warten, eine weitere bekommt `503 busy`. Läuft ein Aufruf später als geplant (das Relay stand still) und würde die Anfrage
 dadurch die Wartegrenze überschreiten, bekommt sie `503 busy`, ohne gestempelt zu werden; `close()` beantwortet alle
 Wartenden mit `503 shutting-down`. Das Mengenbudget gilt zusätzlich, und gezählt wird weiter die Annahme. Gemessen wird auf der
-monotonen Uhr des Prozesses (`performance.now()`), nicht auf der Wanduhr. Die Anmeldung (60 s) und die Prüfung von `genTime` (±60 s)
+monotonen Uhr des Prozesses (`performance.now()`), nicht auf der Wanduhr. **Welche Zähler auf welcher Uhr laufen:** im Sammelbetrieb
+**alle** Zähler je Minute (Dienst je Spur, gesamt `perMinuteTotal`, je Schlüssel `perMinutePerKey`, Solo je Schlüssel) sowie
+Abstand und Wartezeiten auf der monotonen Uhr; im Einzelbetrieb nur der Mindestabstand, die Mengenzähler dort weiter auf der
+Wanduhr (ein Sprung der Wanduhr nach vorn gibt dort Plätze des Mengenbudgets zurück; der Abstand bleibt davon unberührt). Die Anmeldung (60 s) und die Prüfung von `genTime` (±60 s)
 werden von der Wartezeit nicht berührt: der Kopf wird beim Eingang geprüft und gemerkt, die Wartegrenze ist höchstens 60 s,
 und der Token wird erst beim Senden an den Dienst (nach dem Warten) angefordert und gegen diesen Zeitpunkt geprüft.
 
@@ -1044,7 +1055,9 @@ Schlüssel hat, kann sein Budget und das gemeinsame Limit für alle ausschöpfen
 Aufrufer ist Aufgabe der Infrastruktur davor.
 
 **Uhr zurückgestellt:** Die Zähler der Fenster (gesamt, je Dienst, je Kennung) und die Restzeit der Einträge des
-Wiederholungsspeichers rechnen Zeitpunkte in der Zukunft beim Lesen als „jetzt“. Ein Rückwärtssprung der Uhr sperrt
+Wiederholungsspeichers rechnen Zeitpunkte in der Zukunft beim Lesen als „jetzt“. (Im Sammelbetrieb läuft der Planer mit den
+Zählern je Minute auf der monotonen Uhr und sieht die Wanduhr nicht; die Regel gilt dort für die Wanduhr-Teile, also den
+Wiederholungsspeicher, und gegen eine künstlich zurückgesetzte monotone Uhr.) Ein Rückwärtssprung der Uhr sperrt
 das Budget also nicht für die Länge des Sprungs: nach höchstens einem Fenster (60 s) ist es wieder frei, und
 `Retry-After` nennt nie mehr als ein Fenster (beim Wiederholungsspeicher nie mehr als die Lebensdauer eines Eintrags). Die Zusage „höchstens 125 s“ gilt für den
 genannten `Retry-After`-Wert, nicht für den Speicher selbst: seine Einträge bleiben nach einem Rücksprung bis zu

@@ -88,13 +88,15 @@ describe('buildRelayOptions: every setting reaches the relay', () => {
         body: replyFor(body, clock.now),
       };
     };
-    const { server, relay } = createRelayServer(
-      buildRelayOptions(config, {
+    const { server, relay } = createRelayServer({
+      ...buildRelayOptions(config, {
         upstream,
         random: (n) => new Uint8Array(randomBytes(n)),
         now: () => clock.now,
       }),
-    );
+      // the planner of the collecting operation runs on the monotonic clock: here it follows the clock of the test
+      monotonicNow: () => clock.now,
+    });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     let n = 0;

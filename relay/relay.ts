@@ -66,7 +66,9 @@ export interface RelayOptions {
   maxWaitMs?: number;
   /**
    * The monotonic clock in ms (default `performance.now()`): every wait of single operation (the minimum distance between
-   * two calls to a service) is measured on it, never on the wall clock (`now`). A parameter so a test can let it jump.
+   * two calls to a service) and, in collecting operation, the whole planner (distance, sliding budget of the service,
+   * counters per minute, windows, waits) is measured on it, never on the wall clock (`now`). A parameter so a test can
+   * let it jump.
    */
   monotonicNow?: () => number;
   /** Window of the budget counters in ms (default `RELAY_LIMITS.windowMs`); a parameter so a test need not wait a minute. */
@@ -238,6 +240,11 @@ export function createRelay(options: RelayOptions): Relay {
   const maxWaitMs = options.maxWaitMs ?? RELAY_LIMITS.maxWaitDefaultMs;
   // The one place single operation reads the time of its waits (the monotonic clock of the process).
   const mono = options.monotonicNow ?? (() => performance.now());
+  // The time of the planner and of the counters per minute: the monotonic clock in collecting operation (a jump of the
+  // wall clock must not give back a distance or a budget), the wall clock in single operation (its sliding budget and
+  // counters stay as they were; its minimum distance runs on `mono`). The wall clock stays for the authentication (`ts`,
+  // replay cache), `genTime` and the start time.
+  const tick = (): number => (options.batch === undefined ? options.now() : mono());
   const soloWindows = new Map<string, number[]>(); // key id -> solo request times (memory only, never logged)
   // A replay can arrive with its head at the edge of the window and its body up to the request
   // timeout later: an entry must outlive `ts + window` by that much.
@@ -297,7 +304,7 @@ export function createRelay(options: RelayOptions): Relay {
     /** A solo stamp: it also has to keep the minimum distance to the last call of the service (`slotMs` counts it). */
     forSolo = false,
   ): { wait: number | null; slotMs: number; spend: () => void } {
-    const now = options.now();
+    const now = tick();
     // Times in the future (the clock was set back) count as `now`: a jump back must not lock the budget
     // for the length of the jump, and the wait stays within one window.
     const fresh = (times: number[]): number[] =>
@@ -341,7 +348,7 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** The solo requests of one key in the last window: the seconds to wait when the limit is reached, and `spend`. Memory only. */
   function soloBudget(kid: string): { wait: number | null; spend: () => void } {
-    const now = options.now();
+    const now = tick();
     const times = (soloWindows.get(kid) ?? [])
       .filter((t) => now - t < bw)
       .map((t) => Math.min(t, now));
@@ -625,7 +632,7 @@ export function createRelay(options: RelayOptions): Relay {
     } finally {
       if (entry) {
         entry.pending -= 1;
-        entry.lastMs = options.now(); // the identity lives a whole window after its last answer
+        entry.lastMs = tick(); // the identity lives a whole window after its last answer
       }
     }
   }
@@ -669,7 +676,7 @@ export function createRelay(options: RelayOptions): Relay {
    * until the first one expires (at least 1).
    */
   function identitiesFullWait(serviceId: string): number | null {
-    const now = options.now();
+    const now = tick();
     let count = 0;
     let soonest = Infinity;
     for (const [key, e] of known) {
@@ -678,7 +685,6 @@ export function createRelay(options: RelayOptions): Relay {
         known.delete(key);
         windows.delete(key);
         lastCall.delete(key);
-        lastCallMono.delete(key);
         lanes.delete(key);
         gates.delete(key);
         continue;
@@ -695,10 +701,10 @@ export function createRelay(options: RelayOptions): Relay {
   function touchIdentity(key: string, serviceId: string) {
     let e = known.get(key);
     if (e === undefined) {
-      e = { serviceId, lastMs: options.now(), pending: 0 };
+      e = { serviceId, lastMs: tick(), pending: 0 };
       known.set(key, e);
     }
-    e.lastMs = options.now();
+    e.lastMs = tick();
     return e;
   }
 
@@ -923,14 +929,8 @@ export function createRelay(options: RelayOptions): Relay {
     return lane;
   };
 
-  /** The time of the last call to a service per lane (service and identity); memory only, never output. */
+  /** The time (`tick`: the monotonic clock) of the last call to a service per lane (service and identity); memory only, never output. */
   const lastCall = new Map<string, number>();
-  /**
-   * The same moment on the monotonic clock of the process (timers run on it, whatever the clock says): a timer that
-   * fires checks the distance against this one, so a stopped or set-back clock cannot hold a window and a loop that
-   * stood still cannot let two timers call together. Memory only.
-   */
-  const lastCallMono = new Map<string, number>();
   /**
    * A window that is closed but must wait for the minimum distance to the last call of its service before it is
    * stamped; in the order of their stamps.
@@ -980,14 +980,6 @@ export function createRelay(options: RelayOptions): Relay {
     return last === -Infinity ? 0 : Math.max(0, last + minIntervalMs - now);
   }
 
-  /** Milliseconds until the distance to the last call made holds on the monotonic clock (0: it holds already). */
-  function monoWaitMs(key: string, minIntervalMs: number): number {
-    const madeMono = lastCallMono.get(key);
-    return madeMono === undefined
-      ? 0
-      : Math.max(0, Math.ceil(madeMono + minIntervalMs - performance.now()));
-  }
-
   /**
    * Milliseconds until the service has a free slot (0: now). A slot is counted at the time of the STAMP, the
    * moment the service sees the call: the times of the stamps made, and for an open window the time it will be
@@ -997,7 +989,7 @@ export function createRelay(options: RelayOptions): Relay {
    * (`spacingMs`) that the solo stamps and the stamps of the windows keep on top of this one.
    */
   function slotWaitMs(key: string, service: RelayService): number {
-    const now = options.now();
+    const now = tick();
     // times in the future (the clock was set back) count as `now` and are stored so: a request that waits and looks again
     // (no new request passes `budget`) would else see the same future time every time and wait for the length of the jump
     const own = (windows.get(key) ?? []).filter((t) => now - t < bw).map((t) => Math.min(t, now));
@@ -1010,12 +1002,11 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** Books a call to the service at this moment: the budget and the last call (the distance counts from here). */
   function takeSlot(key: string): void {
-    const now = options.now();
+    const now = tick();
     const own = windows.get(key) ?? [];
     own.push(now);
     windows.set(key, own);
     lastCall.set(key, now);
-    lastCallMono.set(key, performance.now());
   }
 
   /** A request joins a window that is open (it takes no slot: the window has one). */
@@ -1034,7 +1025,7 @@ export function createRelay(options: RelayOptions): Relay {
       creds: lane.creds,
       waiting: items,
       timer: null,
-      stampAt: options.now() + batch!.windowMs,
+      stampAt: tick() + batch!.windowMs,
     };
     created.timer = setTimeout(() => closeWindow(created), batch!.windowMs);
     openWindows.set(lane.key, created);
@@ -1062,7 +1053,7 @@ export function createRelay(options: RelayOptions): Relay {
         list.splice(at, 1);
         const waitMs = Math.max(
           slotWaitMs(key, service),
-          solo ? spacingMs(key, service.minIntervalMs, options.now()) : 0,
+          solo ? spacingMs(key, service.minIntervalMs, tick()) : 0,
         );
         resolve({
           status: 503,
@@ -1086,10 +1077,7 @@ export function createRelay(options: RelayOptions): Relay {
     lane.timer = null;
     while (!closed && lane.solo.length + lane.normal.length > 0) {
       const countWait = slotWaitMs(lane.key, service);
-      const soloWait = Math.max(
-        countWait,
-        spacingMs(lane.key, service.minIntervalMs, options.now()),
-      );
+      const soloWait = Math.max(countWait, spacingMs(lane.key, service.minIntervalMs, tick()));
       const canSolo = lane.solo.length > 0 && soloWait === 0;
       const canNormal = lane.normal.length > 0 && countWait === 0;
       if (!canSolo && !canNormal) {
@@ -1149,35 +1137,40 @@ export function createRelay(options: RelayOptions): Relay {
    * (`delayedWindows`: counted by the budget, the distance counts from it).
    */
   function stampWindow(w: Window): void {
-    const wait = spacingMs(w.key, w.service.minIntervalMs, options.now());
+    const now = tick();
+    const wait = spacingMs(w.key, w.service.minIntervalMs, now);
     if (wait <= 0) return callService(w);
-    const d: Delayed = { at: options.now() + wait, w, timer: null };
+    const d: Delayed = { at: now + wait, w, timer: null };
     delayedWindows.set(w.key, [...(delayedWindows.get(w.key) ?? []), d]);
     armDelayed(d, wait);
   }
 
   function armDelayed(d: Delayed, ms: number): void {
-    d.timer = setTimeout(() => fireDelayed(d), ms);
+    if (d.timer !== null) clearTimeout(d.timer);
+    d.timer = setTimeout(() => fireDelayed(d), Math.ceil(ms));
   }
 
   /**
-   * The wait is over (a timer of the length of the distance, whatever the clock says now: a clock that stands still
-   * or jumps cannot hold a window forever). Windows call in the order they closed: one that is not the first waits a
-   * moment for the one before it.
+   * The wait is over (a timer of the length of the distance, on the monotonic clock like the distance itself). Windows
+   * call in the order they closed: one that is not the first does not look again on its own (no polling): the one in
+   * front arms it when that has called (or has to wait longer than it thought: a loop that stood still, a timer
+   * that fired early).
    */
   function fireDelayed(d: Delayed): void {
+    d.timer = null;
     const list = delayedWindows.get(d.w.key) ?? [];
     const index = list.indexOf(d);
-    if (index < 0) return;
-    if (index > 0) return armDelayed(d, 1);
-    // the distance again, on the monotonic clock: the loop may have stood still while this and the one before were due
-    const wait = monoWaitMs(d.w.key, d.w.service.minIntervalMs);
+    if (index < 0 || index > 0) return;
+    const mi = d.w.service.minIntervalMs;
+    // the distance again: the loop may have stood still while this and the one before were due
+    const now = tick();
+    const wait = spacingMs(d.w.key, mi, now, d);
     if (wait > 0) {
-      d.at = options.now() + wait;
+      d.at = now + wait;
       let before = d.at;
       for (const e of list.slice(1)) {
-        // the windows behind it keep their distance to it (their own timers check again when they fire)
-        before += d.w.service.minIntervalMs;
+        // the windows behind it keep their distance to it
+        before += mi;
         e.at = Math.max(e.at, before);
         before = e.at;
       }
@@ -1186,6 +1179,9 @@ export function createRelay(options: RelayOptions): Relay {
     list.splice(index, 1);
     if (list.length === 0) delayedWindows.delete(d.w.key);
     callService(d.w);
+    // the next one calls one distance after this call (a timer of that length, once)
+    const next = list[0];
+    if (next !== undefined) armDelayed(next, Math.max(1, spacingMs(d.w.key, mi, tick(), next)));
   }
 
   /** The window is stamped now: the slot is booked at this time, then the tree is built and the service is called. */

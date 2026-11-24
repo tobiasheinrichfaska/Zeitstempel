@@ -462,6 +462,29 @@ describe('key types, solo stamps and the key file read again are written down wh
     expect(source).toContain('function spacingMs');
     expect(source).toContain('function stampWindow');
   });
+  it('relay.md and CLAUDE.md: the planner runs on one monotonic clock, a wall-clock step gives nothing back, tied to the code', () => {
+    const doc = flat(relayDoc);
+    const claude = flat(readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8'));
+    expect(doc).toContain('**Uhr des Planers:**');
+    expect(doc).toContain(
+      'monotonen Uhr des Prozesses (`performance.now()`, im Relay die Funktion `mono`)',
+    );
+    expect(doc).toContain('Ein Sprung der Wanduhr nach vorn (30 s oder 59 s');
+    expect(doc).toContain('**Welche Zähler auf welcher Uhr laufen:**');
+    expect(doc).not.toContain('ein Sprung der Uhr nach vorn zählt dagegen als vergangene Zeit');
+    expect(doc).not.toContain('das Fenster wartet dann nie');
+    expect(doc).toContain('`time-in-future` für das **ganze** Fenster');
+    expect(claude).toContain('ONE monotonic clock, the function `mono`');
+    expect(claude).toContain('gives back neither distance nor slots');
+    expect(source).toContain('const mono = options.monotonicNow');
+    expect(source).toContain('const tick = ');
+    expect(source).not.toContain('lastCallMono');
+    expect(source).not.toContain('monoWaitMs');
+    expect(source).not.toContain('armDelayed(d, 1)');
+    expect(readFileSync(new URL('./solo-clock.test.ts', import.meta.url), 'utf8')).toContain(
+      'do not poll',
+    );
+  });
   it('relay.md: the deadline formula counts the chain of windows that wait for the distance, with its limits tied to the code', () => {
     const doc = flat(relayDoc);
     // the old statements (a window waits at most one distance; window + 17 s) are gone everywhere
@@ -484,7 +507,7 @@ describe('key types, solo stamps and the key file read again are written down wh
     const project = flat(readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8'));
     expect(project).toContain('`RELAY_MAX_WAIT_MS` + window + chain + 17 s');
     expect(project).not.toContain('timeouts at least window');
-    expect(source).toContain('lastCallMono');
+    expect(source).toContain('function armDelayed');
     expect(source).toContain('function fireDelayed');
   });
   it('relay.md: the order of the refusals of a solo request (form first) and the case without authentication', () => {

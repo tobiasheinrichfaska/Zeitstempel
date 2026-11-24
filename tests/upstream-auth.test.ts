@@ -143,7 +143,9 @@ async function start(
     upstream: over.upstream ?? stub,
     random: (n) => new Uint8Array(randomBytes(n)),
     now: () => clock.now,
-    monotonicNow: fastMonotonic(), // the minimum distance has its own tests (single-spacing.test.ts)
+    // single operation: the minimum distance has its own tests (single-spacing.test.ts); collecting operation: the planner
+    // runs on the monotonic clock, which here follows the clock of the test (it moves it to let budgets expire)
+    monotonicNow: over.batch ? () => clock.now : fastMonotonic(),
     keys: KEYS,
     upstreamAuth: over.upstreamAuth ?? RELAY_CREDS,
     ...(over.batch ? { batch: over.batch } : {}),
