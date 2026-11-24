@@ -23,7 +23,7 @@ const MIN_NOW_MS = 1e11;
 export interface SignRelayRequestInput {
   /**
    * The private key: ECDSA P-256, either PKCS#8 (DER) bytes or a `CryptoKey` (type `private`, algorithm ECDSA on
-   * P-256, usage `sign`; it may be non-extractable, so the app never has to hold the key bytes). It stays in
+   * P-256; it may be non-extractable, so the app never has to hold the key bytes). It stays in
    * the app and is never returned. A `CryptoKey` of another realm is refused (`bad-key`).
    */
   privateKey: Uint8Array | CryptoKey;
@@ -94,22 +94,21 @@ const cryptoKeyGetter = (name: string): CryptoKeyGetter | undefined =>
     : undefined;
 const keyType = cryptoKeyGetter('type');
 const keyAlgorithm = cryptoKeyGetter('algorithm');
-const keyUsages = cryptoKeyGetter('usages');
 
 /**
- * `value` when it is a real `CryptoKey` for signing with ECDSA on P-256 (private, usage `sign`), else null. Read
+ * `value` when it is a real `CryptoKey` for signing with ECDSA on P-256, else null: type `private` (a private ECDSA
+ * key can only be used to `sign`, so no separate check of the usages is needed, and a key pair cannot be made
+ * without it). Read
  * with the built-in getters of `CryptoKey.prototype` (they throw for anything that is not a real key, a Proxy
  * included) and each exactly once; anything that throws gives null.
  */
 function usableCryptoKey(value: unknown): CryptoKey | null {
   try {
     if (typeof CryptoKey !== 'function' || !(value instanceof CryptoKey)) return null;
-    if (!keyType || !keyAlgorithm || !keyUsages) return null;
+    if (!keyType || !keyAlgorithm) return null;
     if (keyType.call(value) !== 'private') return null;
     const algorithm = keyAlgorithm.call(value) as { name?: unknown; namedCurve?: unknown } | null;
     if (algorithm?.name !== 'ECDSA' || algorithm.namedCurve !== 'P-256') return null;
-    const usages = keyUsages.call(value);
-    if (!Array.isArray(usages) || !usages.includes('sign')) return null;
     return value;
   } catch {
     return null;

@@ -136,7 +136,7 @@ describe('signRelayRequest', () => {
       const r = await signRelayRequest(input({ privateKey: await importKey(true) }));
       expect(r.ok).toBe(true);
     });
-    it('refuses every other CryptoKey with bad-key: public, other curve, other algorithm, no signing use', async () => {
+    it('refuses every other CryptoKey with bad-key: public, other curve, other algorithm, secret', async () => {
       const subtle = globalThis.crypto.subtle;
       const p256 = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, [
         'sign',

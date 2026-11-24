@@ -252,7 +252,7 @@ aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen 
 
    `sentMs` (der Zeitpunkt des Sendens) wird für die Frische des Tokens in Schritt 2 gebraucht: **merken**.
 
-   `privateKey` darf auch ein `CryptoKey` sein (privat, ECDSA auf P-256, Verwendung `sign`, **auch nicht
+   `privateKey` darf auch ein `CryptoKey` sein (privat, ECDSA auf P-256, **auch nicht
    extrahierbar**): Die App muss die Schlüsselbytes dann nie halten, zum Beispiel `await crypto.subtle.importKey('pkcs8',
 bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Start und danach nur den `CryptoKey`
    weitergeben. Er wird unverändert benutzt (kein Export, kein neuer Import). Ein `CryptoKey` aus einem anderen Realm, ein
