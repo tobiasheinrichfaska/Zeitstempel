@@ -32,7 +32,8 @@
     "build": "tsc -p tsconfig.build.json && node scripts/fix-declarations.mjs",
     "relay": "node relay/main.ts",
     "probe": "node scripts/probe.ts",
-    "spike": "node scripts/spike.ts"
+    "spike": "node scripts/spike.ts",
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
