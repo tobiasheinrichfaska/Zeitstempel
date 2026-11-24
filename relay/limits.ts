@@ -16,9 +16,10 @@ export const RELAY_LIMITS = {
   perMinuteTotal: 60,
   /**
    * Requests per minute for one key id (on top of the total). With the four shipped services (4 per
-   * minute each at 15 s, 16 together) neither this limit nor the total is ever reached: the per-service
-   * counters, which are global and not per key, bite first, so one valid key can use up a service for all
-   * others. There is no fairness per key at a service's budget (a known limit, docs/relay.md).
+   * minute each at 15 s, 12 for FreeTSA at 5 s, 24 together) the total is never reached and this limit only
+   * by a key that uses several services: the per-service counters, which are global and not per key, bite
+   * first, so one valid key can use up a service for all others. There is no fairness per key at a service's
+   * budget (a known limit, docs/relay.md). In collecting operation both count every request, not every stamp.
    */
   perMinutePerKey: 20,
   /** Allowed difference (seconds) between the time in a signed request and the relay's clock. */
@@ -64,4 +65,14 @@ export const RELAY_LIMITS = {
   keepAliveMinMs: 1_000,
   /** RELAY_KEEPALIVE_MS: largest accepted value. */
   keepAliveMaxMs: 120_000,
+  /** RELAY_BATCH_MS: smallest accepted window (0 or empty means off). */
+  batchMsMin: 1_000,
+  /** RELAY_BATCH_MS: largest accepted window. */
+  batchMsMax: 60_000,
+  /** RELAY_BATCH_MAX: value when not set. */
+  batchMaxDefault: 128,
+  /** RELAY_BATCH_MAX: smallest accepted value. */
+  batchMaxMin: 2,
+  /** RELAY_BATCH_MAX: largest accepted value (the library accepts trees of this size). */
+  batchMaxMax: 1_024,
 } as const;

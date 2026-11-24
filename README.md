@@ -88,9 +88,16 @@ base64url-Text auf das Terminal (im Beispiel oben macht `fromBase64Url` daraus d
 Besucher der Seite lesbar. Das Relay und die Werkzeuge (`relay/`, `scripts/`) sind **nicht im Paket** (nur Bibliothek,
 Dienstliste und Anker): dafür das Repository klonen. Einzelheiten und „Lokal testen“ in [`docs/relay.md`](docs/relay.md).
 
+**Sammelbetrieb (Betriebsart des Relays, Vorgabe aus):** Mit `RELAY_BATCH_MS` sammelt das Relay die Hashes eines Fensters in
+einem Merkle-Baum und lässt den Dienst **einen** Stempel für alle geben (hält die Grenzen der Dienste ein, die Antwort
+kommt nach dem Fenster). Die Antwort trägt dann zusätzlich `batch` (`salt`, `index`, `size`, `path`); die App prüft sie mit
+`verifyBatchedTimestamp({ token, hash, batch }, [ankerPem], { now, minGenTime })` und bewahrt Token und Beleg mit dem Hash
+auf. Das ist **kein Einzelstempel** auf den Hash, und das Relay sieht alle Hashes; Einzelheiten in
+[`docs/relay.md`](docs/relay.md) („Sammelbetrieb“) und [`docs/grenzen.md`](docs/grenzen.md).
+
 Betriebshinweise (Einzelheiten im Abschnitt „Betrieb hinter einem Reverse-Proxy“ von `docs/relay.md`): Das Relay und der Dienst
-sehen den **Hash**; bei ratbarem Inhalt einen gesalzenen Hash oder eine Merkle-Wurzel stempeln. Jeder Dienst erlaubt nur
-wenige Stempel je Minute für alle zusammen (mitgeliefert: 4 je Dienst), auch ein Fehlschlag kostet davon; `/health` prüft
+sehen den **Hash**; bei ratbarem Inhalt einen gesalzenen Hash oder eine Merkle-Wurzel stempeln (oder den Sammelbetrieb nutzen). Jeder Dienst erlaubt nur
+wenige Stempel je Minute für alle zusammen (mitgeliefert: 4 je Dienst, FreeTSA 12), auch ein Fehlschlag kostet davon; `/health` prüft
 keinen Dienst; ein Anstieg von `upstream-invalid` in den Zählern ist ein Alarmzeichen. Die Dienste wählt der Betreiber ausdrücklich
 (`RELAY_SERVICES`, Pflicht: ohne Angabe startet das Relay nicht; Bedingungen in `docs/dienste.md`). Das Relay lauscht ohne `RELAY_HOST`
 nur auf `127.0.0.1` (ein Container braucht `RELAY_HOST=0.0.0.0`) und gehört hinter einen Reverse-Proxy.

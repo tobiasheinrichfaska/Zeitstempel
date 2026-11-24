@@ -150,6 +150,13 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   in `genTime` stays `bad-time`. `signRelayRequest` also takes a `CryptoKey`.
 - **The shipped anchors are roots:** any time stamping certificate in the hierarchy passes, also one of another
   operator; narrower trust is the caller's choice (an intermediate or the signer as anchor).
+- **Batch mode (collecting operation, optional, off by default):** `RELAY_BATCH_MS` (1000 to 60000) collects the hashes of
+  one window per service into a Merkle tree with blinded leaves and stamps only the root (the service never sees a
+  single hash); `RELAY_BATCH_MAX` (2 to 1024, default 128) caps a window. The start refuses a window shorter than
+  `minIntervalMs` of a chosen service. The app checks the answer with `verifyBatchedTimestamp` (`src/lib/batch.ts`):
+  imprint = binding of version, size and root. Latency grows by the window (proxy and client timeouts at least window
+  - 17 s). Not yet security-reviewed by a human; direct (solo) stamping for PDF document time stamps and two key
+    types are planned (`docs/recherche.md` §6), not built.
 - **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
   2026-11-23 ran without it, with `keys: 'off'` in the script). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key

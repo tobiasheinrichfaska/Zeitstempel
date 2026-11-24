@@ -21,16 +21,18 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 Exit-Code 1, die Meldung nennt die möglichen Kennungen aus `services.json`). Wer wählt, liest vorher die
 Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich.
 
-| Einstellung              | Bedeutung                                                                                                                                   | Vorgabe                                      |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `PORT`                   | Port                                                                                                                                        | 8080                                         |
-| `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                             | keine                                        |
-| `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                                                                          | aus                                          |
-| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                | keine                                        |
-| `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`                                                     | keine                                        |
-| `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                                                              | aus                                          |
-| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt                                                  | `127.0.0.1`                                  |
-| `RELAY_KEEPALIVE_MS`     | Leerlauf einer Verbindung zwischen zwei Anfragen in ms, ganze Zahl 1000 bis 120000 (übersteuert beide Werte, siehe „Leerlauf-Verbindungen“) | nach Bindung: 65000 bei Loopback, sonst 5000 |
+| Einstellung              | Bedeutung                                                                                                                                        | Vorgabe                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| `PORT`                   | Port                                                                                                                                             | 8080                                         |
+| `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                                  | keine                                        |
+| `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                                                                               | aus                                          |
+| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                     | keine                                        |
+| `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`                                                          | keine                                        |
+| `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                                                                   | aus                                          |
+| `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt                                                       | `127.0.0.1`                                  |
+| `RELAY_KEEPALIVE_MS`     | Leerlauf einer Verbindung zwischen zwei Anfragen in ms, ganze Zahl 1000 bis 120000 (übersteuert beide Werte, siehe „Leerlauf-Verbindungen“)      | nach Bindung: 65000 bei Loopback, sonst 5000 |
+| `RELAY_BATCH_MS`         | Sammelbetrieb: Fenster in ms, ganze Zahl 1000 bis 60000; leer oder `0` = aus (jede Anfrage bekommt einen eigenen Stempel); siehe „Sammelbetrieb“ | aus                                          |
+| `RELAY_BATCH_MAX`        | Sammelbetrieb: höchstens so viele Anfragen in einem Fenster, ganze Zahl 2 bis 1024; ein volles Fenster schließt sofort                           | 128                                          |
 
 **Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
 `RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
@@ -48,12 +50,12 @@ ohne Anmeldung ist so nicht von außen erreichbar.
 
 ## Schnittstelle
 
-| Anfrage                                                                                                                                                      | Antwort                                                                                          |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `POST /v1/stamp/<dienst>` mit `{"hash": "<base64url>"}` (`application/json`) oder 32 Rohbytes (`application/octet-stream`) und dem Kopf `X-Zeitstempel-Auth` | 200 `{service, genTime, accuracyMs, serial, token}`; `token` ist das Token (DER) in base64url    |
-| `GET /v1/services` (ohne Anmeldung)                                                                                                                          | Liste der angebotenen Dienste (Kennung, Name, `qualified`, Verwendungszweck)                     |
-| `GET /health` (ohne Anmeldung)                                                                                                                               | `{ok: true, services: [...]}` (der Prozess läuft; **kein Dienst wird geprüft**, siehe „Betrieb“) |
-| `OPTIONS …`                                                                                                                                                  | Vorabfrage (CORS) für die konfigurierten Herkünfte                                               |
+| Anfrage                                                                                                                                                      | Antwort                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/stamp/<dienst>` mit `{"hash": "<base64url>"}` (`application/json`) oder 32 Rohbytes (`application/octet-stream`) und dem Kopf `X-Zeitstempel-Auth` | 200 `{service, genTime, accuracyMs, serial, token}`; `token` ist das Token (DER) in base64url; im Sammelbetrieb zusätzlich `batch` |
+| `GET /v1/services` (ohne Anmeldung)                                                                                                                          | Liste der angebotenen Dienste (Kennung, Name, `qualified`, Verwendungszweck)                                                       |
+| `GET /health` (ohne Anmeldung)                                                                                                                               | `{ok: true, services: [...]}` (der Prozess läuft; **kein Dienst wird geprüft**, siehe „Betrieb“)                                   |
+| `OPTIONS …`                                                                                                                                                  | Vorabfrage (CORS) für die konfigurierten Herkünfte                                                                                 |
 
 ### Formate
 
@@ -204,9 +206,10 @@ eigenen Besuchern verbergen; der Schlüssel schützt das Relay vor fremden Apps 
 einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus der Datei, Relay neu starten).
 **Aussperren:** Die Dienst-Zähler gelten **global**, nicht je Kennung. Mit den mitgelieferten Diensten (je 4
 Anfragen je Minute bei 15 s) sperrt ein einziger gültiger Schlüssel mit 4 Anfragen in einer Minute einen Dienst für
-alle anderen Kennungen bis zum Ende des Zeitfensters. `perMinutePerKey` (20) und `perMinuteTotal` (60) werden mit
-den mitgelieferten Diensten nie erreicht (die vier Dienstgrenzen ergeben zusammen nur 16 je Minute); sie greifen
-erst, wenn die Dienstgrenzen zusammen mehr ergeben. Das Relay verteilt das Budget eines Dienstes nicht fair auf die
+alle anderen Kennungen bis zum Ende des Zeitfensters (bei FreeTSA mit 5 s: 12 Anfragen). `perMinuteTotal` (60) wird mit
+den mitgelieferten Diensten nie erreicht (die vier Dienstgrenzen ergeben zusammen nur 24 je Minute); `perMinutePerKey`
+(20) kann ein Schlüssel erreichen, der mehrere Dienste zugleich nutzt. Beide greifen im Sammelbetrieb früher
+(siehe dort: sie zählen jede Anfrage). Das Relay verteilt das Budget eines Dienstes nicht fair auf die
 Kennungen: Wer einen gültigen Schlüssel hat (auch einen gestohlenen), kann einen Dienst für alle übrigen
 aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen (Eintrag entfernen, Relay neu starten).
 
@@ -366,7 +369,192 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                         |
 | 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                  |
 | 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`) |
+| 503    | `shutting-down`                                                                 | Nur im Sammelbetrieb: das Relay wird beendet; die Anfrage war nicht (mehr) in einem Fenster, die App versucht es später neu  |
 | 504    | `upstream-timeout`                                                              | Dienst antwortete nicht rechtzeitig                                                                                          |
+
+## Sammelbetrieb
+
+**Betriebsart des Relays, standardmäßig aus.** Ohne `RELAY_BATCH_MS` bekommt jede Anfrage einen eigenen Stempel (so
+war und ist es der Normalfall). Mit `RELAY_BATCH_MS` sammelt das Relay die Hashes mehrerer Anfragen für einen Dienst
+in einem **Fenster** und lässt den Dienst **einen einzigen Wert** stempeln, der alle Hashes des Fensters bindet. Das
+hält den Takt des Dienstes (`minIntervalMs`) ein, gleich wie viele Nutzer es gibt (bei FreeTSA zählt das Limit von 1
+Anfrage je Sekunde für das ganze Relay), und es kostet je Nutzer nur wenige hundert Byte mehr.
+
+### Funktionsweise
+
+1. Die erste angenommene Anfrage für einen Dienst (nach Anmeldung, Prüfung des Hashes und den Budgets je Schlüssel
+   und gesamt) **öffnet das Fenster**. Weitere angenommene Anfragen für denselben Dienst kommen in dasselbe Fenster.
+   Das Fenster schließt nach `RELAY_BATCH_MS` oder sobald `RELAY_BATCH_MAX` Anfragen darin warten (dann öffnet die
+   nächste Anfrage ein neues). Je Dienst gibt es ein eigenes Fenster.
+2. Beim Schließen zieht das Relay für jede Anfrage ein **Salz** `r_i` (32 Zufallsbytes) und bildet das **Blatt**
+   `leaf_i = SHA-256(0x00 ‖ r_i ‖ h_i)` (`h_i` ist der Hash des Einreichers). Die Blätter werden **gemischt**
+   (Fisher-Yates mit der Zufallsquelle des Relays; die Reihenfolge verrät nichts über die Ankunft) und zu einem
+   Merkle-Baum nach **RFC 6962** zusammengesetzt: innerer Knoten `SHA-256(0x01 ‖ links ‖ rechts)`; bei `n` Blättern
+   wird bei der größten Zweierpotenz unter `n` geteilt, **das letzte Blatt wird nie verdoppelt**. Die Präfixe `0x00`
+   und `0x01` trennen Blätter von inneren Knoten (kein innerer Knoten lässt sich als Blatt ausgeben und umgekehrt).
+3. Gestempelt wird `imprint = SHA-256("zeitstempel-batch-v1\n" ‖ uint32be(n) ‖ Wurzel)`: der Wert bindet die
+   Fassung und die Blattzahl. Das Relay verfährt damit wie mit jedem Hash: eigene Nonce, Prüfung des Tokens gegen
+   `imprint` (Signatur, Kette, Nonce), Frische (`genTimeSlackMs`). Die Prüfung der Antwort ist dieselbe wie im
+   Einzelbetrieb.
+4. Jede wartende Anfrage bekommt **dasselbe Token** und ihren **Beleg** `batch`.
+
+Beispiel für `n = 5` (Teilung bei 4); der Beleg für `L2` ist `index 2`, `size 5`, `path [L3, B, L4]`:
+
+```text
+                   Wurzel = H(01 ‖ A ‖ L4)
+                  /                       \
+        A = H(01 ‖ B ‖ C)                  L4
+         /              \
+ B = H(01 ‖ L0 ‖ L1)   C = H(01 ‖ L2 ‖ L3)
+    /      \              /      \
+   L0      L1            L2      L3        Li = SHA-256(00 ‖ Salz_i ‖ Hash_i)
+
+ gestempelt: SHA-256("zeitstempel-batch-v1\n" ‖ uint32be(5) ‖ Wurzel)
+```
+
+### Antwort
+
+Wie im Einzelbetrieb (`service`, `genTime`, `accuracyMs`, `serial`, `token`), dazu das Feld `batch`:
+
+```json
+{
+  "service": "freetsa",
+  "genTime": "2026-11-23T13:05:56.000Z",
+  "accuracyMs": null,
+  "serial": "…",
+  "token": "<base64url, dasselbe Token für alle im Fenster>",
+  "batch": {
+    "v": 1,
+    "size": 5,
+    "index": 2,
+    "salt": "<base64url, 32 Byte>",
+    "path": ["<base64url, 32 Byte>", "<…>", "<…>"]
+  }
+}
+```
+
+`v` ist die Fassung (1), `size` die Zahl der Blätter, `index` die Stelle des Blattes im gemischten Baum, `salt` das Salz
+`r_i`, `path` der Prüfpfad nach RFC 6962/9162 (Geschwister von der Blattebene aufwärts). **Die Länge von `path` ergibt
+sich aus `size` und `index`** (höchstens 10). `genTime` und `accuracyMs` sind die des Tokens: sie gelten für den Baum.
+Ohne `RELAY_BATCH_MS` gibt es das Feld `batch` nicht.
+
+**Größe der Antwort** (gemessen mit dem echten FreeTSA-Token der Fixture, 4634 Byte, JSON mit base64url): ohne Sammeln
+6294 Byte; `n = 1`: 6392 Byte (+98: Salz, leerer Pfad); `n = 16`: 6576 Byte (Pfad von 4: +282); `n = 128`: 6715 Byte (Pfad
+von 7: +421). Das Token macht fast alles aus; der Beleg (`batch`) allein ist bei `n = 128` etwa 420 Byte groß.
+
+### Einstellungen
+
+| Einstellung       | Bedeutung                                                                                    |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| `RELAY_BATCH_MS`  | Fenster in ms, ganze Zahl 1000 bis 60000, streng gelesen; leer, nicht gesetzt oder `0` = aus |
+| `RELAY_BATCH_MAX` | Höchstzahl wartender Anfragen je Fenster und Dienst, 2 bis 1024, Vorgabe 128                 |
+
+Ungültige Werte (`999`, `60001`, `1.5`, `abc`, `1e4`, mit Leerzeichen …) beenden den Start mit einer deutschen Zeile
+`config-error`. **Der Start prüft zusätzlich:** `RELAY_BATCH_MS` muss mindestens so groß sein wie `minIntervalMs`
+**jedes** gewählten Dienstes, sonst `config-error` (ein Fenster **kürzer als das Mindestintervall** würde das Limit des Dienstes verletzen; FreeTSA: 5000; Sectigo, DigiCert, Certum: 15000, also mit ihnen
+mindestens `RELAY_BATCH_MS=15000`). Die Startzeile im Protokoll nennt dann `batchMs`.
+
+### Budgets und Zähler
+
+- Das **Dienstbudget** (`60000 / minIntervalMs` je Minute) zählt **einen Stempel je Fenster**: nur die Anfrage, die ein
+  Fenster öffnet, braucht freies Budget (sonst `429`, wie sonst auch); wer in ein offenes Fenster kommt, verbraucht
+  davon nichts. Der Stempel des Dienstes ist verbraucht, auch wenn der Dienst fehlschlägt (wie im Einzelbetrieb).
+- `perMinutePerKey` und `perMinuteTotal` **zählen weiter jede Anfrage**, auch innerhalb eines Fensters. **Folge:** das
+  Relay nimmt höchstens `perMinuteTotal` = 60 Anfragen je Minute an (ein Schlüssel höchstens 20), ein Fenster wird
+  also nie größer als das; ein `RELAY_BATCH_MAX` über 60 füllt sich nur, wenn die Grenzen geändert werden (sie wurden
+  für den Sammelbetrieb **nicht** geändert, siehe „Offene Punkte“).
+- Eine abgewiesene Anfrage (`401`, `400`, `415`, `429`, `503`) kommt nie in ein Fenster und kostet kein Budget.
+- Der Wiederholungsspeicher gegen abgespielte Köpfe und die Prüfung der Frische arbeiten unverändert.
+- **Zähler:** `stamped` zählt die Stempel, die der Dienst gegeben hat (im Sammelbetrieb einen je Fenster), und es gibt
+  `batched`, die Zahl der mit einem Beleg beantworteten Anfragen. Beides sind reine Summen. Ein Fehler im Fenster zählt
+  unter `refused` **je Anfrage** (`upstream-failed` usw.), `upstream-too-old` einmal je Fenster. Das Relay protokolliert
+  weder Hashes noch Salze, Pfade, Kennungen oder Adressen.
+- **Speicher:** je Fenster und Dienst warten höchstens `RELAY_BATCH_MAX` Anfragen; ein volles Fenster nimmt keine
+  weiteren auf (die nächste Anfrage öffnet ein neues, wenn das Dienstbudget es zulässt). Dazu kommen Fenster, deren
+  Aufruf beim Dienst läuft (höchstens `upstreamTimeoutMs`, 10 s). Insgesamt warten nie mehr Anfragen, als
+  `perMinuteTotal` (60 je Minute) in Fenster plus Dienstzeit hineinlässt.
+
+### Fehlerfälle
+
+| Fall                                                            | Folge                                                                                                                         |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Dienst nicht erreichbar, Frist, Ablehnung, ungültiges Token     | **Alle** Anfragen des Fensters bekommen dieselbe Antwort wie sonst (`502`/`504` mit demselben Code und `reason`)              |
+| Das Relay wird beendet (`SIGTERM`), Fenster ist offen           | Die wartenden Anfragen bekommen `503 shutting-down`, nichts hängt; ein Fenster, dessen Aufruf läuft, wird noch fertig         |
+| Neue Anfrage nach dem Beenden                                   | `503 shutting-down`                                                                                                           |
+| Prozess stirbt, Neustart                                        | Wartende Anfragen verlieren die Verbindung (kein Zustand wird gespeichert); die App versucht es neu, mit frischem Kopf        |
+| Ein Client bricht ab, während er wartet                         | Sein Blatt bleibt im Baum (der Baum ist beim Schließen schon festgelegt), die anderen werden bedient; Zähler `client-aborted` |
+| Dienstbudget aufgebraucht, wenn ein neues Fenster öffnen müsste | `429` mit `Retry-After` für die Anfrage, die es öffnen wollte; sie ist in keinem Fenster                                      |
+
+### Latenz und Fristen
+
+Die Antwort kommt **nach dem Fenster** plus der Zeit des Dienstes, im ungünstigsten Fall nach `RELAY_BATCH_MS` + 10 s
+(`upstreamTimeoutMs`) + Prüfung. Die Frist von 5 s (`requestTimeoutMs`) gilt nur dem **Lesen der Anfrage**; die Antwort
+darf später kommen. **Folge für die Fristen:**
+
+- Die Frist der App ab Sendebeginn ist **mindestens `RELAY_BATCH_MS` + 17 s** (statt 17 s); bei 5000 ms also 22 s
+  (`AbortSignal.timeout(batchMs + 17_000)`).
+- Der Reverse-Proxy braucht ein Lese-Timeout von mindestens **Fenster + 17 s** (nginx `proxy_read_timeout`, Caddy
+  `response_header_timeout`), besser 3 s mehr. Mit dem Wert aus „Betrieb hinter einem Reverse-Proxy“ (17 bis 20 s)
+  bricht der Proxy Anfragen ab, die das Relay noch zählt.
+- Sie ist **keine Echtzeit**: wer sofort einen Stempel braucht, nimmt den Einzelbetrieb (eine zweite Relay-Instanz
+  ohne `RELAY_BATCH_MS`).
+
+### Client-Rezept
+
+```ts
+import { fromBase64Url, verifyBatchedTimestamp, verifyTimestampToken } from 'zeitstempel';
+
+// … Anfrage wie in „Die App als Client“ signieren und senden, mit der längeren Frist:
+//   fetch(relay + path, { method: 'POST', headers, body, signal: AbortSignal.timeout(batchMs + 17_000) })
+const body = await res.json(); // 200 { service, genTime, accuracyMs, serial, token, batch? }
+const token = fromBase64Url(body.token)!;
+const options = { now: new Date(), minGenTime: new Date(sentMs - 60_000) };
+const verified =
+  body.batch === undefined
+    ? await verifyTimestampToken(token, hash, [ankerPem], options) // Einzelstempel
+    : await verifyBatchedTimestamp({ token, hash, batch: body.batch }, [ankerPem], options);
+if (!verified.ok) throw new Error(verified.reason);
+// Aufbewahren, zusammen mit dem Hash: Kennung des Dienstes, body.token und das GANZE body.batch
+// (salt, index, size, path). Ohne das Salz und den Pfad lässt sich der Beleg nicht mehr rechnen.
+const record = {
+  service: body.service,
+  hash: toBase64Url(hash),
+  token: body.token,
+  batch: body.batch,
+};
+```
+
+`verifyBatchedTimestamp` rechnet das Blatt aus `hash` und `salt`, folgt dem Pfad bis zur Wurzel, bildet `imprint` und
+prüft das Token dagegen mit `verifyTimestampToken` (dieselben Anker und Optionen, dasselbe Ergebnis, dazu
+`batch: { size, index }`). Ein Pfad, der zu einer anderen Wurzel führt, ein verändertes Salz, ein anderer Hash,
+`index` oder `size` und ein Token eines anderen Fensters enden alle in **`imprint-mismatch`**; es gibt dafür keinen
+eigenen Code. Eine Form, die kein Beleg dieses Baumes sein kann (`size` oder `index` außerhalb, Pfad der falschen
+Länge, falscher Typ oder falsche Größe eines Feldes, unbekanntes Feld), ist **`bad-batch`**.
+
+### Was der Beleg sagt, und was nicht
+
+- **Vertraulichkeit gegenüber dem Dienst:** Der externe Dienst sieht **nur `imprint`**, keinen Hash eines Einreichers
+  und nicht einmal die Wurzel. Ein Dienst nur über `http` (`digicert`, `certum`) lässt diesen Wert auf der Strecke
+  mitlesen, aber auch er verrät keinen Hash.
+- **Vertraulichkeit gegenüber anderen Einreichern:** Der Beleg enthält die Geschwister-Knoten des Pfades. Jedes Blatt ist
+  mit einem Salz verschleiert, das nur der Einreicher kennt (256 Bit, vom Relay gezogen); ein anderer Einreicher kann
+  daraus keinen fremden Hash erraten oder bestätigen. Er erfährt die Zahl der Blätter (`size`).
+- **Das Relay sieht alle Hashes** (wie im Einzelbetrieb), dazu zieht es die Salze: wer dem Relay nicht traut, was die
+  Vertraulichkeit angeht, stempelt einen gesalzenen Hash. Die Bindung an den Hash muss die App dem Relay nicht glauben:
+  sie rechnet den Beleg selbst nach.
+- **Beweiskraft:** Der Beleg zeigt, dass der Hash **in der Menge** lag, die der Dienst zu `genTime` gestempelt hat. Es
+  gibt **keinen Einzelstempel auf den Hash**. Wie jeder Stempel der mitgelieferten Dienste ist er **nicht qualifiziert**
+  und hat keine Sperrprüfung (`docs/grenzen.md`). Das Relay könnte weitere Blätter in den Baum legen; es kann aber keinen
+  Hash nachträglich aus einem gestempelten Baum nehmen oder zurückdatieren.
+- **Aufbewahren:** Hash, Token und der ganze Beleg gehören zusammen. Geht das Salz oder der Pfad verloren, ist der
+  Stempel für diesen Hash nicht mehr nachzuweisen (er lässt sich nicht aus dem Token wiederherstellen).
+
+### Offene Punkte
+
+- `perMinuteTotal` (60) und `perMinutePerKey` (20) bremsen die Fenstergröße; für große Fenster müssten sie im Sammelbetrieb
+  je Fenster statt je Anfrage zählen oder höher stehen (Entscheidung des Eigentümers, derzeit nicht geändert).
+- Nicht ausgerollt, nicht von einem Menschen geprüft, nicht im Browser getestet; der Test nutzt einen Stub als Dienst,
+  gegen einen echten Dienst lief der Sammelbetrieb nicht (kein Netz).
 
 ## Lokal testen
 
@@ -408,11 +596,14 @@ einen Stub über http gilt die Anleitung oben.
   über `http` auch jeder auf der Strecke dorthin) und die Wahl des Dienstes (das Relay entscheidet, welche Dienste es
   anbietet).
 - Keine Weiterleitungen, TLS-Zertifikate nach Node-Vorgabe, harte Frist für den ganzen Aufruf, Größenlimit.
+- **Im Sammelbetrieb** prüft das Relay das Token gegen den `imprint` des Baumes (nicht gegen die Hashes der
+  Einreicher); die Hashes bindet der Beleg, den die App selbst prüft.
 - `Cache-Control: no-store`, `Vary: Origin`, `X-Content-Type-Options: nosniff`.
 
 ## Was das Relay sieht
 
-Zeitpunkt und Netzadresse des Aufrufers (wie jeder Server), den **Hash** und den Kopf `X-Zeitstempel-Auth`
+Zeitpunkt und Netzadresse des Aufrufers (wie jeder Server), den **Hash** (im Sammelbetrieb zusätzlich die Salze, die es
+zieht, und die Bäume; sie bleiben im Speicher, bis das Fenster beantwortet ist) und den Kopf `X-Zeitstempel-Auth`
 (Kennung, Zeit, Signatur), nie Inhalte und nie den privaten Schlüssel. Es schreibt **nichts** über Anfragen ins Protokoll:
 keine Adresse, keinen Hash, kein Token, keine Kennung, keine Signatur. Alle fünf Minuten steht eine
 Zeile mit Zählern im Protokoll (Anzahl gestempelter Anfragen und Zahl der Ablehnungen je Art). Die
@@ -439,8 +630,13 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `keepAliveDirectMs`  | 5000   | Leerlauf bei jeder anderen Bindung (entspricht `requestTimeoutMs`)                                                                                             |
 | `keepAliveMinMs`     | 1000   | `RELAY_KEEPALIVE_MS`: kleinster Wert                                                                                                                           |
 | `keepAliveMaxMs`     | 120000 | `RELAY_KEEPALIVE_MS`: größter Wert                                                                                                                             |
+| `batchMsMin`         | 1000   | `RELAY_BATCH_MS`: kleinster Wert (0 oder leer schaltet den Sammelbetrieb aus)                                                                                  |
+| `batchMsMax`         | 60000  | `RELAY_BATCH_MS`: größter Wert                                                                                                                                 |
+| `batchMaxDefault`    | 128    | `RELAY_BATCH_MAX`: Wert ohne Angabe                                                                                                                            |
+| `batchMaxMin`        | 2      | `RELAY_BATCH_MAX`: kleinster Wert                                                                                                                              |
+| `batchMaxMax`        | 1024   | `RELAY_BATCH_MAX`: größter Wert (so große Bäume prüft die Bibliothek, `MAX_SIZE`)                                                                              |
 
-Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4). `perMinuteTotal` und
+Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4, bei FreeTSA mit 5 s: 12). `perMinuteTotal` und
 `minIntervalMs` sind ein **Mengenbudget je Minute**, kein Mindestabstand: Das Relay verteilt die Anfragen nicht
 zeitlich, sondern lässt in einem Fenster von einer Minute höchstens so viele durch; danach kommen Anfragen mit
 `429` und `Retry-After`.
@@ -506,7 +702,8 @@ Was jede Einrichtung leisten muss:
   entfernen, sonst gilt der Aufruf als Aufruf ohne Browser. Die Antworten (auch `Access-Control-*`, `Retry-After`)
   unverändert zurückgeben.
 - Eine **Lese-Frist von mindestens 17 s** (besser 20 s): bis zu 5 bis 6 s für den Körper, bis zu 10 s für den Dienst,
-  dazu die Prüfung. Kürzere Fristen des Proxys brechen Stempel ab, die das Relay noch zählt.
+  dazu die Prüfung. Kürzere Fristen des Proxys brechen Stempel ab, die das Relay noch zählt. **Im Sammelbetrieb**
+  kommt das Fenster dazu: mindestens `RELAY_BATCH_MS` + 17 s („Sammelbetrieb“, „Latenz und Fristen“).
 - **Ratenlimit und Verbindungslimit je Adresse.** Das Relay selbst kennt keine Adressen. Der Rahmen ist klein: die vier
   mitgelieferten Dienste erlauben zusammen 16 Anfragen je Minute (4 je Dienst).
 - Körper höchstens 512 Byte (das Relay lehnt mehr ab); der Proxy darf früher abweisen.
@@ -572,9 +769,9 @@ relay.example {
   stempeln, sondern einen **gesalzenen Hash** (SHA-256 über Inhalt plus zufälliges Salz, das die App aufbewahrt) oder die
   **Wurzel eines Merkle-Baums** über mehrere Hashes (ein Stempel für viele Inhalte).
 - **Kapazität.** Jeder Dienst erlaubt `60000 / minIntervalMs` Anfragen je Minute für **alle** Nutzer des Relays zusammen
-  (bei 15 s: **4 Stempel je Minute**). Mit FreeTSA allein (dem einzigen Dienst mit ausdrücklich erlaubter allgemeiner
-  Nutzung, `docs/dienste.md`) sind das 4 Stempel je Minute für alle. Das Budget wird **auch bei einem Fehler des Dienstes
-  oder einem ungültigen Token verbraucht** (die Anfrage ging hinaus). Wer mehr braucht, bündelt (Merkle-Wurzel) oder
+  (bei 15 s: **4 Stempel je Minute**; FreeTSA hat 5 s: 12). Mit FreeTSA allein (dem einzigen Dienst mit ausdrücklich erlaubter
+  allgemeiner Nutzung, `docs/dienste.md`) sind das 12 Stempel je Minute für alle. Das Budget wird **auch bei einem Fehler des Dienstes
+  oder einem ungültigen Token verbraucht** (die Anfrage ging hinaus). Wer mehr braucht, bündelt (Merkle-Wurzel; das Relay kann das selbst: „Sammelbetrieb“) oder
   braucht einen Vertragsdienst.
 - **`/health` prüft keinen Dienst** (s. o.); eine Überwachung, die nur `/health` ruft, meldet „gesund“, auch wenn alle
   Dienste ausfallen.

@@ -8,6 +8,7 @@ export type Reason =
   | 'bad-key'
   | 'bad-key-id'
   | 'bad-key-file'
+  | 'bad-batch'
   // DER / structure
   | 'too-large'
   | 'malformed'

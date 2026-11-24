@@ -13,7 +13,9 @@ import {
   toBase64Url,
   verifyTimestampToken,
   type Service,
+  type VerifiedTimestamp,
 } from '../src/index.ts';
+import { buildBatch } from './batch.ts';
 import { publicKeyObject, type RelayKey } from './keys.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { UpstreamError, type Upstream } from './upstream.ts';
@@ -43,6 +45,12 @@ export interface RelayOptions {
   authReplayEntries?: number;
   /** The ECDSA check (default `node:crypto` verify); a parameter so a test can count the verifications. */
   verifySignature?: typeof verifySignatureNode;
+  /**
+   * Collecting operation (docs/relay.md, "Sammelbetrieb"): requests for one service are collected for
+   * `windowMs` (or until `max` are waiting), their hashes become the leaves of a Merkle tree and the service
+   * stamps the one value that covers the tree. Absent: every request gets a stamp of its own (the default).
+   */
+  batch?: { windowMs: number; max: number };
 }
 
 /** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
@@ -54,8 +62,11 @@ interface Auth {
 
 /** Counters only: no address, no hash, no token ever leaves a request. */
 export interface RelayStats {
+  /** Stamps obtained from a service (in collecting operation: one per window). */
   stamped: number;
   refused: Record<string, number>;
+  /** Only in collecting operation: requests answered with a receipt (a sum, nothing about who or what). */
+  batched?: number;
 }
 
 const JSON_TYPE = 'application/json';
@@ -73,6 +84,12 @@ export interface Relay {
    */
   requestTimedOut: (socket: Duplex) => void;
   stats: () => RelayStats;
+  /**
+   * Ends collecting operation: the requests that wait in an open window are answered with `503
+   * shutting-down`, no timer is left, and new requests get the same answer. A window whose call to the
+   * service is already running finishes normally (bounded by `upstreamTimeoutMs`). Does nothing for single stamps.
+   */
+  close: () => void;
 }
 
 export function createRelay(options: RelayOptions): Relay {
@@ -80,7 +97,20 @@ export function createRelay(options: RelayOptions): Relay {
     (s) => options.allowPlainHttp || new URL(s.url).protocol === 'https:',
   );
   const byId = new Map(usable.map((s) => [s.id, s]));
-  const stats: RelayStats = { stamped: 0, refused: {} };
+  const batch = options.batch;
+  if (
+    batch !== undefined &&
+    !(
+      Number.isInteger(batch.windowMs) &&
+      batch.windowMs >= 1 &&
+      Number.isInteger(batch.max) &&
+      batch.max >= 2 &&
+      batch.max <= RELAY_LIMITS.batchMaxMax
+    )
+  ) {
+    throw new Error('relay batch settings are invalid'); // at start, no content
+  }
+  const stats: RelayStats = { stamped: 0, refused: {}, ...(batch ? { batched: 0 } : {}) };
   const timedOut = new WeakSet<Duplex>(); // connections the server itself ended for being too slow
   const windows = new Map<string, number[]>(); // service id → request times in the window
   const keyWindows = new Map<string, number[]>(); // key id → request times in the window (memory only)
@@ -165,6 +195,8 @@ export function createRelay(options: RelayOptions): Relay {
     serviceId: string,
     minIntervalMs: number,
     kid: string | null,
+    /** false: the request joins a window that is open already, the service's own budget is not touched */
+    forService = true,
   ): { wait: number | null; spend: () => void } {
     const now = options.now();
     // Times in the future (the clock was set back) count as `now`: a jump back must not lock the budget
@@ -184,7 +216,7 @@ export function createRelay(options: RelayOptions): Relay {
     if (total.length >= RELAY_LIMITS.perMinuteTotal) {
       waits.push(until(total, RELAY_LIMITS.perMinuteTotal));
     }
-    if (own.length >= ownLimit) waits.push(until(own, ownLimit));
+    if (forService && own.length >= ownLimit) waits.push(until(own, ownLimit));
     if (kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey) {
       waits.push(until(mine, RELAY_LIMITS.perMinutePerKey));
     }
@@ -192,7 +224,7 @@ export function createRelay(options: RelayOptions): Relay {
       wait: waits.length === 0 ? null : Math.max(...waits),
       spend: () => {
         total.push(now);
-        own.push(now);
+        if (forService) own.push(now);
         if (kid !== null) mine.push(now);
       },
     };
@@ -356,9 +388,18 @@ export function createRelay(options: RelayOptions): Relay {
     if (hash === 'unsupported') return send(res, 415, { error: 'unsupported-media-type' }, origin);
     if (hash === 'bad') return send(res, 400, { error: 'bad-hash' }, origin);
 
+    // Collecting operation: a window that is open already takes this request without touching the service's
+    // budget (one stamp per window); the budget of a key and the total still count every request.
+    if (batch && closed) return send(res, 503, { error: 'shutting-down' }, origin);
+    const open = batch ? openWindows.get(service.id) : undefined;
     // Look at the budget and at the replay cache first, spend and write only if both let the request
     // pass: a 429 never costs budget and never leaves an entry. (No await between look and write.)
-    const budgetNow = budget(service.id, service.minIntervalMs, auth?.kid ?? null);
+    const budgetNow = budget(
+      service.id,
+      service.minIntervalMs,
+      auth?.kid ?? null,
+      open === undefined,
+    );
     const cache = auth ? cacheWait(auth.kid) : null;
     const waits = [budgetNow.wait, cache].filter((w): w is number => w !== null);
     if (waits.length > 0) {
@@ -369,23 +410,66 @@ export function createRelay(options: RelayOptions): Relay {
     budgetNow.spend();
     if (auth && signedId !== null) remember(signedId, auth);
 
+    if (batch) {
+      // The answer comes when the window is closed and the service has answered (the 5 s request deadline
+      // is over by now: it only governs the reading of the request).
+      const reply = await join(service, hash, open);
+      if (res.destroyed) return countAborted(req, res);
+      return send(res, reply.status, reply.body, origin);
+    }
+    const got = await obtain(service, hash);
+    if (!got.ok) return send(res, got.status, got.body, origin);
+    stats.stamped += 1;
+    return send(res, 200, stampBody(service, got), origin);
+  }
+
+  /** What a stamp obtained from a service tells the caller (the fields of the 200 answer, without `batch`). */
+  function stampBody(service: RelayService, got: Obtained & { ok: true }) {
+    return {
+      service: service.id,
+      genTime: got.verified.genTime,
+      accuracyMs: got.verified.accuracyMs,
+      serial: got.verified.serial,
+      token: toBase64Url(got.token),
+    };
+  }
+
+  type Obtained =
+    | { ok: true; token: Uint8Array; verified: VerifiedTimestamp }
+    | { ok: false; status: number; body: { error: string; reason?: string } };
+
+  /**
+   * One stamp from a service for `hash`: builds the request with a nonce of the relay, calls the one address of
+   * the service, reads and checks the answer (hash, nonce, signature, chain, and a time around the moment of
+   * the request). The same for a single request and for the imprint of a batch.
+   */
+  async function obtain(service: RelayService, hash: Uint8Array): Promise<Obtained> {
     const nonce = options.random(8);
     const request = buildTimestampRequest(hash, nonce);
-    if (!request.ok) return send(res, 500, { error: 'internal' }, origin);
+    if (!request.ok) return { ok: false, status: 500, body: { error: 'internal' } };
     const sentMs = options.now(); // the moment the request goes to the service: the token must not be older
     let answer;
     try {
       answer = await options.upstream(service, request.value);
     } catch (e) {
       const kind = e instanceof UpstreamError ? e.kind : 'failed';
-      return send(res, kind === 'timeout' ? 504 : 502, { error: `upstream-${kind}` }, origin);
+      return {
+        ok: false,
+        status: kind === 'timeout' ? 504 : 502,
+        body: { error: `upstream-${kind}` },
+      };
     }
     if (answer.status !== 200 || answer.contentType !== 'application/timestamp-reply') {
-      return send(res, 502, { error: 'upstream-refused' }, origin);
+      return { ok: false, status: 502, body: { error: 'upstream-refused' } };
     }
     const response = readTimestampResponse(answer.body);
-    if (!response.ok)
-      return send(res, 502, { error: 'upstream-invalid', reason: response.reason }, origin);
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: 502,
+        body: { error: 'upstream-invalid', reason: response.reason },
+      };
+    }
     // The time of the token must lie around the moment of the request: not ahead of the relay's clock and not
     // older than the request (both within `genTimeSlackMs`). Without the lower bound a service key that has
     // expired or leaked could hand out back-dated tokens that still verify.
@@ -398,21 +482,124 @@ export function createRelay(options: RelayOptions): Relay {
     if (!verified.ok) {
       // a cause of its own in the counters (a service that back-dates is an alarm, not a client error)
       if (verified.reason === 'time-too-old') countOnce('upstream-too-old');
-      return send(res, 502, { error: 'upstream-invalid', reason: verified.reason }, origin);
+      return {
+        ok: false,
+        status: 502,
+        body: { error: 'upstream-invalid', reason: verified.reason },
+      };
     }
+    return { ok: true, token: response.value.token, verified: verified.value };
+  }
+
+  // ---- Collecting operation ----
+
+  interface Reply {
+    status: number;
+    body: unknown;
+  }
+  interface Waiting {
+    hash: Uint8Array;
+    resolve: (reply: Reply) => void;
+  }
+  interface Window {
+    service: RelayService;
+    waiting: Waiting[];
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+  const openWindows = new Map<string, Window>(); // service id -> the window that takes requests
+  let closed = false;
+
+  /** Puts a request into the open window of its service, or opens one (the timer starts with the first). */
+  function join(
+    service: RelayService,
+    hash: Uint8Array,
+    existing: Window | undefined,
+  ): Promise<Reply> {
+    return new Promise((resolve) => {
+      let w = existing;
+      if (w === undefined) {
+        const created: Window = { service, waiting: [], timer: null };
+        created.timer = setTimeout(() => closeWindow(created), batch!.windowMs);
+        openWindows.set(service.id, created);
+        w = created;
+      }
+      w.waiting.push({ hash, resolve });
+      if (w.waiting.length >= batch!.max) closeWindow(w); // full: the next request opens a new window
+    });
+  }
+
+  const answerAll = (waiting: readonly Waiting[], reply: Reply): void => {
+    for (const w of waiting) w.resolve(reply);
+  };
+
+  function closeWindow(w: Window): void {
+    if (openWindows.get(w.service.id) !== w) return; // closed already (timer and full window meet)
+    openWindows.delete(w.service.id);
+    if (w.timer !== null) clearTimeout(w.timer);
+    flush(w).catch(() => answerAll(w.waiting, { status: 500, body: { error: 'internal' } }));
+  }
+
+  /** An integer 0 <= x < m from the relay's random source, without bias (rejection sampling). */
+  function randomBelow(m: number): number {
+    const limit = Math.floor(0x1_0000_0000 / m) * m;
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      const b = options.random(4);
+      if (b.length !== 4) throw new Error('random source gave the wrong length');
+      const v = ((b[0]! << 24) | (b[1]! << 16) | (b[2]! << 8) | b[3]!) >>> 0;
+      if (v < limit) return v % m;
+    }
+    throw new Error('random source does not spread');
+  }
+
+  /** The tree order: a Fisher-Yates shuffle, so the order of the leaves tells nothing about the order of arrival. */
+  function shuffled(n: number): number[] {
+    const order = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i -= 1) {
+      const j = randomBelow(i + 1);
+      [order[i], order[j]] = [order[j]!, order[i]!];
+    }
+    return order;
+  }
+
+  /** One window: salts, tree, one stamp for the imprint, and a receipt for each waiting request. */
+  async function flush(w: Window): Promise<void> {
+    const waiting = w.waiting;
+    const entries = waiting.map((x) => {
+      const salt = options.random(32);
+      if (salt.length !== 32) throw new Error('random source gave the wrong length');
+      return { hash: x.hash, salt: new Uint8Array(salt) };
+    });
+    const built = buildBatch(entries, shuffled(waiting.length));
+    const got = await obtain(w.service, new Uint8Array(built.imprint));
+    if (!got.ok) return answerAll(waiting, { status: got.status, body: got.body });
     stats.stamped += 1;
-    return send(
-      res,
-      200,
-      {
-        service: service.id,
-        genTime: verified.value.genTime,
-        accuracyMs: verified.value.accuracyMs,
-        serial: verified.value.serial,
-        token: toBase64Url(response.value.token),
-      },
-      origin,
-    );
+    stats.batched = (stats.batched ?? 0) + waiting.length;
+    const base = stampBody(w.service, got);
+    waiting.forEach((x, i) => {
+      const proof = built.proofs[i]!;
+      x.resolve({
+        status: 200,
+        body: {
+          ...base,
+          batch: {
+            v: 1,
+            size: proof.size,
+            index: proof.index,
+            salt: toBase64Url(entries[i]!.salt),
+            path: proof.path.map((node) => toBase64Url(new Uint8Array(node))),
+          },
+        },
+      });
+    });
+  }
+
+  function close(): void {
+    closed = true;
+    for (const w of [...openWindows.values()]) {
+      openWindows.delete(w.service.id);
+      if (w.timer !== null) clearTimeout(w.timer);
+      answerAll(w.waiting, { status: 503, body: { error: 'shutting-down' } });
+    }
   }
 
   /** One answer for every authentication failure: nothing says whether id, time or signature was wrong. */
@@ -534,6 +721,11 @@ export function createRelay(options: RelayOptions): Relay {
   return {
     handle,
     requestTimedOut,
-    stats: () => ({ stamped: stats.stamped, refused: { ...stats.refused } }),
+    stats: () => ({
+      stamped: stats.stamped,
+      refused: { ...stats.refused },
+      ...(batch ? { batched: stats.batched ?? 0 } : {}),
+    }),
+    close,
   };
 }

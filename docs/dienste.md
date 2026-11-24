@@ -79,8 +79,12 @@ Zusage der Betreiber.
   address is permitted"; "Timestamps issued by FreeTSA may be used for commercial purposes"; "provided on a
   best-effort basis, without any guarantee of availability". Gespeichert werden nur IP-Adressen (Missbrauchs-
   erkennung), keine Hashes. Mehr Last gegen Spende (eigene Instanz). Nicht geregelt: Haftung, Rechtswirkung.
-  **Das Relay ist eine einzige IP: das Limit gilt für alle Nutzer des Relays zusammen.** Das Intervall von 15 s in
-  `services.json` ist strenger als nötig (belegt wären 1 s, besser mit Reserve); geändert wurde es hier nicht.
+  **Das Relay ist eine einzige IP: das Limit gilt für alle Nutzer des Relays zusammen.** Das Intervall (`minIntervalMs`)
+  von FreeTSA in `services.json` ist **5 s** (12 Stempel je Minute): belegt ist 1 Anfrage je Sekunde, 5 s sind die
+  vorsichtige Reserve (das Fünffache des erlaubten Takts). Im **Sammelbetrieb** (`RELAY_BATCH_MS`, `docs/relay.md`)
+  macht das Relay je Fenster einen einzigen Stempel für beliebig viele Hashes und hält den Takt des Dienstes damit
+  unabhängig von der Zahl der Nutzer ein; das Fenster darf dann nicht kürzer sein als `minIntervalMs` (sonst startet das Relay nicht).
+  Die anderen drei Dienste behalten 15 s.
 - **Sectigo** (`https://www.sectigo.com/resource-library/time-stamping-server`, Seite von 2018): bittet um
   "a delay of 15 seconds or more" zwischen Anfragen; beschreibt nur Code-Signing, ohne Nutzung für anderes zu
   verbieten; für eIDAS verweist sie auf `/qualified`, der freie Endpunkt ist also nicht qualifiziert. Ausdrückliche

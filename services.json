@@ -8,9 +8,9 @@
       "hash": "sha256",
       "anchors": ["anchors/freetsa-root.pem"],
       "qualified": false,
-      "minIntervalMs": 15000,
+      "minIntervalMs": 5000,
       "intendedUse": "General RFC 3161 service run by a private operator, free of charge; commercial use is allowed by its usage policy (read 2026-11-23, not legally reviewed).",
-      "terms": "Usage policy (freetsa.org/freetsa.html, read 2026-11-23): at most one request per second per IP address; best-effort, no SLA; commercial use allowed; only IP addresses are kept, no hashes. The relay is one IP, so the limit holds for all its users together. Legal effect not regulated. Not legally reviewed, operator not asked."
+      "terms": "Usage policy (freetsa.org/freetsa.html, read 2026-11-23): at most one request per second per IP address; best-effort, no SLA; commercial use allowed; only IP addresses are kept, no hashes. The relay is one IP, so the limit holds for all its users together; 5 s between stamps is cautious (five times the allowed pace), and in collecting operation (RELAY_BATCH_MS) the relay makes one stamp per window for many hashes. Legal effect not regulated. Not legally reviewed, operator not asked."
     },
     {
       "id": "sectigo",

@@ -12,6 +12,9 @@
 //                            with RELAY_AUTH=off only a loopback address is accepted)
 //   RELAY_KEEPALIVE_MS       idle time of a connection between two requests, 1000 to 120000 (default: 65 s
 //                            for a loopback binding, 5 s for any other; docs/relay.md)
+//   RELAY_BATCH_MS           collecting operation: window in ms, 1000 to 60000 (not set, empty or 0: off, every
+//                            request gets a stamp of its own; docs/relay.md, "Sammelbetrieb")
+//   RELAY_BATCH_MAX          most requests in one window, 2 to 1024 (default 128)
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -78,11 +81,35 @@ export function readSettings(env: NodeJS.ProcessEnv) {
       );
     }
   }
+  // Collecting operation: strictly read, an invalid value ends the start (0, empty or not set is off).
+  const batchRaw = env.RELAY_BATCH_MS ?? '';
+  let batchMs: number | undefined;
+  if (batchRaw !== '' && batchRaw !== '0') {
+    const value = /^[0-9]{1,9}$/.test(batchRaw) ? Number(batchRaw) : NaN;
+    if (!(value >= RELAY_LIMITS.batchMsMin && value <= RELAY_LIMITS.batchMsMax)) {
+      throw new Error(
+        `RELAY_BATCH_MS: ungültig (ganze Zahl von ${RELAY_LIMITS.batchMsMin} bis ${RELAY_LIMITS.batchMsMax} erwartet; leer oder 0 schaltet den Sammelbetrieb aus)`,
+      );
+    }
+    batchMs = value;
+  }
+  const batchMaxRaw = env.RELAY_BATCH_MAX ?? '';
+  let batchMax: number = RELAY_LIMITS.batchMaxDefault;
+  if (batchMaxRaw !== '') {
+    batchMax = /^[0-9]{1,9}$/.test(batchMaxRaw) ? Number(batchMaxRaw) : NaN;
+    if (!(batchMax >= RELAY_LIMITS.batchMaxMin && batchMax <= RELAY_LIMITS.batchMaxMax)) {
+      throw new Error(
+        `RELAY_BATCH_MAX: ungültig (ganze Zahl von ${RELAY_LIMITS.batchMaxMin} bis ${RELAY_LIMITS.batchMaxMax} erwartet)`,
+      );
+    }
+  }
   return {
     origins,
     port,
     host,
     keepAliveMs,
+    batchMs,
+    batchMax,
     allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
     only,
     authOff,
@@ -148,6 +175,15 @@ export function readConfig(
 ) {
   const settings = readSettings(env);
   const services = chooseServices(load(), settings.only, settings.allowPlainHttp);
+  // A window shorter than the interval a service asks for would call it more often than it wants.
+  if (settings.batchMs !== undefined) {
+    const tooShort = services.filter((s) => s.minIntervalMs > settings.batchMs!);
+    if (tooShort.length > 0) {
+      throw new Error(
+        `RELAY_BATCH_MS (${settings.batchMs}) ist kürzer als das Mindestintervall (minIntervalMs) von: ${tooShort.map((s) => `${s.id} (${s.minIntervalMs})`).join(', ')}`,
+      );
+    }
+  }
   if (settings.authOff) {
     return {
       settings,
@@ -171,12 +207,14 @@ export function startEvent(
   port: number,
   services: readonly { id: string }[],
   keys: readonly RelayKey[] | 'off',
+  batchMs?: number,
 ) {
   return {
     event: 'start',
     port,
     services: services.map((s) => s.id),
     auth: keys === 'off' ? 'off' : 'on',
+    ...(batchMs === undefined ? {} : { batchMs }),
   };
 }
 
@@ -222,17 +260,23 @@ function main(): void {
       random: (n) => new Uint8Array(randomBytes(n)),
       now: () => Date.now(),
       keys,
+      ...(settings.batchMs === undefined
+        ? {}
+        : { batch: { windowMs: settings.batchMs, max: settings.batchMax } }),
     },
     serverLimits(settings),
   );
   listenOn(server, settings.port, settings.host, () => {
-    console.log(JSON.stringify(startEvent(settings.port, services, keys)));
+    console.log(JSON.stringify(startEvent(settings.port, services, keys, settings.batchMs)));
   });
   setInterval(
     () => console.log(JSON.stringify({ event: 'counts', ...relay.stats() })),
     300_000,
   ).unref();
-  process.on('SIGTERM', () => server.close(() => process.exit(0)));
+  process.on('SIGTERM', () => {
+    relay.close(); // requests that wait in a window are answered (503), nothing hangs
+    server.close(() => process.exit(0));
+  });
 }
 
 if (import.meta.main) main();

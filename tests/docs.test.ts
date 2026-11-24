@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as lib from '../src/index.ts';
 import { DER_LIMITS } from '../src/lib/der.ts';
+import { BATCH_LIMITS } from '../src/lib/batch.ts';
 import { VERIFY_LIMITS } from '../src/lib/verify.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
 
@@ -28,6 +29,7 @@ const REASONS: Record<lib.Reason, true> = {
   'bad-key': true,
   'bad-key-id': true,
   'bad-key-file': true,
+  'bad-batch': true,
   'too-large': true,
   malformed: true,
   'indefinite-length': true,
@@ -77,6 +79,11 @@ describe('docs against the code', () => {
       expect(model, name).toMatch(new RegExp(`<td>${name}</td><td>${value}</td>`));
     }
   });
+  it('data-model.html lists the batch limits with their values', () => {
+    for (const [name, value] of Object.entries(BATCH_LIMITS)) {
+      expect(model, name).toMatch(new RegExp(`<td>${name}</td><td>${value}</td>`));
+    }
+  });
   it('grenzen.md names where this library differs from openssl (E1-E4)', () => {
     expect(limitsDoc).toContain('ecdsa-with-SHA384');
     expect(limitsDoc).toContain('signature failure');
@@ -106,6 +113,7 @@ describe('docs against the code', () => {
       'readTimestampResponse',
       'readToken',
       'verifyTimestampToken',
+      'verifyBatchedTimestamp',
       'parsePemCertificates',
       'parseCertificate',
       'nameToString',
@@ -259,6 +267,76 @@ describe('owner decisions: roots as anchors, RELAY_SERVICES required, clock skew
     expect(doc).toContain('liegt es am Schlüssel oder an der Kennung, nicht an der Uhr');
     expect(doc).toContain('mindestens 1 s warten');
     expect(relayDoc).toContain('stampWithClockFix');
+  });
+});
+
+describe('collecting operation (Sammelbetrieb) is written down where a reader looks', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const libSource = readFileSync(new URL('../src/lib/batch.ts', import.meta.url), 'utf8');
+  const relayTree = readFileSync(new URL('../relay/batch.ts', import.meta.url), 'utf8');
+  it('relay.md: the settings, the format, the tree rules and the stamped value', () => {
+    const doc = flat(relayDoc);
+    expect(relayDoc).toContain('## Sammelbetrieb');
+    expect(relayDoc).toMatch(/\|\s*`RELAY_BATCH_MS`\s*\|/);
+    expect(relayDoc).toMatch(/\|\s*`RELAY_BATCH_MAX`\s*\|/);
+    expect(doc).toContain('`leaf_i = SHA-256(0x00 ‖ r_i ‖ h_i)`');
+    expect(doc).toContain('`SHA-256(0x01 ‖ links ‖ rechts)`');
+    expect(doc).toContain('RFC 6962');
+    expect(doc).toContain('das letzte Blatt wird nie verdoppelt');
+    expect(doc).toContain('`imprint = SHA-256("zeitstempel-batch-v1\\n" ‖ uint32be(n) ‖ Wurzel)`');
+    expect(doc).toContain('`batch`');
+    for (const field of ['`v`', '`size`', '`index`', '`salt`', '`path`'])
+      expect(doc).toContain(field);
+    // the tag in the documentation is the tag in both implementations
+    expect(libSource).toContain("'zeitstempel-batch-v1\\n'");
+    expect(relayTree).toContain("'zeitstempel-batch-v1\\n'");
+  });
+  it('relay.md: budgets, failures, closing, latency and the proxy timeout', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('einen Stempel je Fenster');
+    expect(doc).toContain('zählen weiter jede Anfrage');
+    expect(doc).toContain('**Alle** Anfragen des Fensters bekommen dieselbe Antwort');
+    expect(doc).toContain('`503 shutting-down`');
+    expect(doc).toContain('mindestens `RELAY_BATCH_MS` + 17 s');
+    expect(doc).toContain('Fenster + 17 s');
+    expect(doc).toContain('nur dem **Lesen der Anfrage**');
+    expect(doc).toContain('kürzer als das Mindestintervall');
+    expect(doc).toContain('`verifyBatchedTimestamp`');
+    expect(doc).toContain('`imprint-mismatch`');
+    expect(doc).toContain('`bad-batch`');
+  });
+  it('relay.md: honest about hashes, other submitters, proof value and keeping the receipt', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('sieht **nur `imprint`**');
+    expect(doc).toContain('**Das Relay sieht alle Hashes**');
+    expect(doc).toContain('keinen Einzelstempel auf den Hash');
+    expect(doc).toContain('**nicht qualifiziert**');
+    expect(doc).toContain('das GANZE body.batch');
+    expect(doc).toContain('(salt, index, size, path)');
+  });
+  it('grenzen.md, README, dienste.md and services.json agree', () => {
+    const limits = flat(limitsDoc);
+    expect(limits).toContain('## Beleg im Sammelbetrieb: was er aussagt und was nicht');
+    expect(limits).toContain('**Kein Einzelstempel auf den Hash.**');
+    expect(limits).toContain('Nicht, wer sonst in der Menge war');
+    expect(flat(readme)).toContain('**kein Einzelstempel**');
+    expect(readme).toContain('verifyBatchedTimestamp');
+    expect(flat(read('dienste.md'))).toContain('**5 s**');
+    expect(read('dienste.md')).toContain('RELAY_BATCH_MS');
+    const file = JSON.parse(readFileSync(new URL('../services.json', import.meta.url), 'utf8')) as {
+      services: { id: string; minIntervalMs: number; terms: string }[];
+    };
+    const freetsa = file.services.find((s) => s.id === 'freetsa')!;
+    expect(freetsa.minIntervalMs).toBe(5000);
+    expect(freetsa.terms).toContain('RELAY_BATCH_MS');
+  });
+  it('data-model.html describes the structure and the function', () => {
+    const doc = flat(model);
+    expect(doc).toContain('BatchProof');
+    expect(doc).toContain('VerifiedBatchedTimestamp');
+    expect(doc).toContain('<td>bad-batch</td>');
+    expect(doc).toContain('RFC 6962');
   });
 });
 

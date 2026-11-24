@@ -238,6 +238,35 @@ folgt ehrlich:
 - Ein frisch ausgestelltes Token prüft man mit `minGenTime` (s. „Frische“ oben), solange man weiß, wann man es
   angefordert hat; später nicht mehr.
 
+## Beleg im Sammelbetrieb: was er aussagt und was nicht
+
+`verifyBatchedTimestamp` prüft einen Stempel, den das Relay im Sammelbetrieb für viele Hashes zugleich beim Dienst
+geholt hat (`docs/relay.md`, „Sammelbetrieb“). Sie rechnet das Blatt `SHA-256(0x00 ‖ Salz ‖ Hash)`, folgt dem Pfad
+nach RFC 9162 (§ 2.1.3.2) bis zur Wurzel, bildet `SHA-256("zeitstempel-batch-v1\n" ‖ uint32be(Blattzahl) ‖ Wurzel)` und
+prüft das Token mit `verifyTimestampToken` gegen diesen Wert (gleiche Anker, gleiche Optionen, gleiches Ergebnis).
+Alles aus „Was geprüft wird“ und „Was NICHT geprüft wird“ gilt unverändert für das Token.
+
+**Der Beleg sagt:** Der Hash lag **in der Menge**, die ein Zeitstempel-Zertifikat unter dem Anker zu `genTime` gestempelt
+hat. Die Bindung ist hart: Blatt und innere Knoten sind durch die Präfixe `0x00` und `0x01` getrennt, die Pfadlänge
+muss genau zu `size` und `index` passen, und die Blattzahl steckt im gestempelten Wert. Ein Pfad, der nicht zur
+gestempelten Wurzel führt, ein anderes Salz, ein anderer Hash, `index` oder `size` und ein Token eines anderen
+Baumes werden abgelehnt (`imprint-mismatch`, bei unmöglicher Form `bad-batch`).
+
+**Der Beleg sagt nicht:**
+
+- **Kein Einzelstempel auf den Hash.** Wer einen Stempel gerade auf diesen Hash braucht, nimmt den Einzelbetrieb.
+- **Nicht, wer sonst in der Menge war.** Das Relay kann weitere Blätter in den Baum legen, und die Prüfung kann das
+  nicht sehen; sie zeigt nur, dass dieses Blatt darin steht. Zurückdatieren oder einen Hash nachträglich aus einem
+  gestempelten Baum nehmen kann es nicht.
+- **Nichts ohne den ganzen Beleg.** Salz, `index`, `size` und Pfad gehören mit dem Hash und dem Token zusammen aufbewahrt;
+  das Salz ist nicht aus dem Token wiederherstellbar. Ohne sie lässt sich der Stempel für diesen Hash nicht nachweisen.
+- **Dasselbe wie ein einzelnes Token sonst auch nicht:** nicht qualifiziert, keine Sperrprüfung, Frische nur mit
+  `minGenTime`, Langzeitaussage begrenzt (siehe die Abschnitte oben).
+- **Vertraulichkeit:** der Dienst sieht nur den gestempelten Wert, ein anderer Einreicher nur verschleierte Knoten (das
+  Salz ist 256 Bit lang); das Relay sieht die Hashes und zieht die Salze (`docs/relay.md`).
+- Die Grenzen der Form: `size` 1 bis 1024, Pfad höchstens 10 Elemente zu je 32 Byte, Salz 32 Byte, ein unbekanntes Feld
+  ist ein Fehler. Eine Eingabe aus einem anderen Realm wird wie bei den anderen Funktionen abgelehnt (`bad-hash`, `malformed`).
+
 ## Was ein bestandener Test aussagt
 
 „Ein Dienst, dessen Zertifikatskette bei einem übergebenen Anker endet, hat bestätigt: diesen Hash gab es

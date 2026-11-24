@@ -12,3 +12,5 @@ export { readServices } from './services.ts';
 export type { Service } from './services.ts';
 export { signRelayRequest } from './auth.ts';
 export type { SignRelayRequestInput } from './auth.ts';
+export { verifyBatchedTimestamp } from './batch.ts';
+export type { BatchProof, BatchedInput, VerifiedBatchedTimestamp } from './batch.ts';
