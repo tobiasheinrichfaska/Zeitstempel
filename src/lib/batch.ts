@@ -181,12 +181,24 @@ export async function verifyBatchedTimestamp(
 ): Promise<Result<VerifiedBatchedTimestamp>> {
   try {
     if (typeof input !== 'object' || input === null) return fail('bad-options');
-    const proto: unknown = Object.getPrototypeOf(input);
+    let proto: unknown;
+    try {
+      proto = Object.getPrototypeOf(input);
+    } catch {
+      return fail('bad-options'); // a proxy whose trap throws is no plain object
+    }
     if (proto !== Object.prototype && proto !== null) return fail('bad-options');
     const given = input as unknown as Record<string, unknown>;
-    const token = own(given, 'token');
-    const hashValue = own(given, 'hash');
-    const batchValue = own(given, 'batch');
+    let token: unknown;
+    let hashValue: unknown;
+    let batchValue: unknown;
+    try {
+      token = own(given, 'token');
+      hashValue = own(given, 'hash');
+      batchValue = own(given, 'batch');
+    } catch {
+      return fail('bad-options'); // a getter or proxy trap that throws
+    }
     const hash = copyBytes(hashValue, 32, 32);
     if (!hash) return fail('bad-hash');
     // the token is only measured here; verifyTimestampToken copies it once, with its own rules

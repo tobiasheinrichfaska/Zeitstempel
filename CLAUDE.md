@@ -210,6 +210,14 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   rotation. Anyone who can write the key file can add a key. Replay cache (digest of the signed message, at most
   180 entries by the limits) and counters live in memory only (empty after a restart; a head with `ts` from the start on, up to +60 s when the app clock runs ahead, can be replayed after a restart until its window ends, i.e. up to 120 s after the relay start: `ts` <= start + 60 s plus the 60 s window; the replay cache is empty then; no code fix); client and relay clocks
   must agree within ±60 s.
+- **Reader rules after the audit of 2026-11-24 (`tests/strict-readers.test.ts`, `tests/openssl-interop.test.ts`: 40 tokens
+  written by `openssl ts -reply` must still be read and verified):** a SEQUENCE of fixed shape has exactly its elements
+  (`EncapsulatedContentInfo`, `issuerAndSerialNumber`, an Attribute, an AttributeTypeAndValue of a name: `bad-structure`,
+  in a name: unreadable). `readTimestampResponse`, `readToken` and `parseCertificate` copy their input first (by length,
+  at most 262144 bytes, another realm allowed): nothing they return points into the caller's buffer. A bad `accuracy` or
+  `ordering` is `bad-tst-info`; `verifyBatchedTimestamp` answers a hostile input object with `bad-options`. An empty or
+  unreadable subjectAltName of the signer is read only when `tsa` needs it (decision: not rejected otherwise; the rules
+  that are deliberately stricter than OpenSSL and may cost availability are listed in `docs/grenzen.md`).
 - **Package and build:** the package holds `dist`, `services.json` and `anchors` (plus README, LICENSE, `package.json`);
   the relay and the tools need a clone. `prepare` builds on a Git install (an install without typescript builds no
   `dist`; a type error makes `prepare` fail loudly); `exports` has `./services.json` and `./anchors/*.pem`; the CI

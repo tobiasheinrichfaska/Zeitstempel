@@ -25,6 +25,19 @@ export function byteLength(value: unknown): number | null {
   }
 }
 
+/**
+ * The length of any genuine typed array (internal slot, so a `Uint8Array` of another realm counts, an own `length`
+ * does not); `null` for anything else (a proxy included); never throws.
+ */
+export function typedLength(value: unknown): number | null {
+  try {
+    const n = typedArrayLength.call(value) as unknown;
+    return typeof n === 'number' ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 const needBytes = (bytes: unknown): Uint8Array => {
   // a genuine Uint8Array only (a proxy, also a transparent one, and a trap that throws are a TypeError)
   if (byteLength(bytes) === null) throw new TypeError('a Uint8Array is required');

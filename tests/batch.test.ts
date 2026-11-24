@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { BATCH_LIMITS, batchImprint, leafHash, verifyBatchedTimestamp } from '../src/lib/batch.ts';
-import { verifyTimestampToken, toHex, type BatchProof } from '../src/index.ts';
+import { verifyTimestampToken, toBase64Url, toHex, type BatchProof } from '../src/index.ts';
 import { buildBatch } from '../relay/batch.ts';
 import { build } from './token-builder.ts';
 import { refBatch, refPath, refProof, refRoot, type RefBatch } from './batch-reference.ts';
@@ -561,4 +561,56 @@ describe('batched time stamps: the form of the receipt', () => {
     expect(r.ok).toBe(true);
     expect(refProof(c.b, 1023).path).toHaveLength(10);
   }, 60_000);
+});
+
+describe('the limits of the proof form (size, index, path length)', () => {
+  const nodes = (n: number) =>
+    Array.from({ length: n }, (_, i) => toBase64Url(new Uint8Array(32).fill(i + 1)));
+  const salt = toBase64Url(new Uint8Array(32).fill(9));
+  const reasonOf = async (batch: unknown): Promise<string> => {
+    const c = caseOf(1);
+    const r = await verifyBatchedTimestamp(input(c, 0, { batch }), TRUST);
+    return r.ok ? 'ok' : r.reason;
+  };
+
+  it('a path of 10 elements fits a tree of 1024 leaves (the form passes, the token then says imprint-mismatch)', async () => {
+    expect(
+      await reasonOf({ v: 1, size: BATCH_LIMITS.MAX_SIZE, index: 0, salt, path: nodes(10) }),
+    ).toBe('imprint-mismatch');
+    expect(
+      await reasonOf({ v: 1, size: BATCH_LIMITS.MAX_SIZE, index: 1023, salt, path: nodes(10) }),
+    ).toBe('imprint-mismatch');
+  });
+  it('a path of 11 elements is bad-batch, and its elements are never read (the length decides first)', async () => {
+    let touched = 0;
+    const path = nodes(11);
+    Object.defineProperty(path, 10, {
+      get() {
+        touched += 1;
+        return toBase64Url(new Uint8Array(32));
+      },
+    });
+    expect(await reasonOf({ v: 1, size: BATCH_LIMITS.MAX_SIZE, index: 0, salt, path })).toBe(
+      'bad-batch',
+    );
+    expect(touched).toBe(0);
+    // far over the limit: the same, without walking the array
+    const huge: unknown[] = [];
+    huge.length = 2 ** 31;
+    expect(await reasonOf({ v: 1, size: 8, index: 0, salt, path: huge })).toBe('bad-batch');
+    expect(BATCH_LIMITS.MAX_PATH).toBe(10);
+  });
+  it('a size above 1024 is bad-batch even where a short path would fit (the rightmost leaf of 1025)', async () => {
+    // in a tree of 1025 leaves the last leaf has a path of ONE element (the root of the 1024 leaves before it)
+    expect(await reasonOf({ v: 1, size: 1025, index: 1024, salt, path: nodes(1) })).toBe(
+      'bad-batch',
+    );
+    expect(await reasonOf({ v: 1, size: 2 ** 20 + 1, index: 2 ** 20, salt, path: nodes(1) })).toBe(
+      'bad-batch',
+    );
+    // the same shape one leaf smaller is inside the limit
+    expect(await reasonOf({ v: 1, size: 1024, index: 1023, salt, path: nodes(10) })).toBe(
+      'imprint-mismatch',
+    );
+  });
 });

@@ -2,9 +2,10 @@
 // the chain; trust anchors are exempt (the caller chose them). `openssl ts -verify` accepts such keys (see
 // tests/openssl.test.ts), so this is a deliberate difference.
 import { verifyTimestampToken, parseCertificate } from '../src/lib/index.ts';
+import { tlv } from '../src/lib/der.ts';
 import type { Reason } from '../src/lib/index.ts';
 import { rsaModulusBits } from '../src/lib/x509.ts';
-import { build, type Opts } from './token-builder.ts';
+import { build, int, oidT, seq, type Opts } from './token-builder.ts';
 
 async function reason(o: Opts = {}, options: object = {}, anchor?: 'tsa'): Promise<Reason | 'ok'> {
   const t = build(o);
@@ -84,4 +85,54 @@ describe('the modulus size is counted in bits', () => {
     expect(rsaModulusBits(parseCertificate(build({ rsa: { tsa: 2048 } }).tsaCert))).toBe(2048);
     expect(rsaModulusBits(parseCertificate(build().tsaCert))).toBeNull();
   });
+});
+
+describe('a modulus whose size is no multiple of 8 bits is counted exactly', () => {
+  it('RSA 2047 bits: weak-key by default, fine at minRsaBits 2047 and below, weak-key from 2048 on', async () => {
+    const cert = parseCertificate(build({ rsa: { tsa: 2047 } }).tsaCert);
+    expect(rsaModulusBits(cert)).toBe(2047);
+    expect(await reason({ rsa: { tsa: 2047 } })).toBe('weak-key');
+    expect(await reason({ rsa: { tsa: 2047 } }, { minRsaBits: 2048 })).toBe('weak-key');
+    expect(await reason({ rsa: { tsa: 2047 } }, { minRsaBits: 2047 })).toBe('ok');
+    expect(await reason({ rsa: { tsa: 2047 } }, { minRsaBits: 2046 })).toBe('ok');
+    expect(await reason({ rsa: { tsa: 2047 } }, { minRsaBits: 0 })).toBe('ok');
+    // 2048 stays fine by default
+    expect(await reason({ rsa: { tsa: 2048 } })).toBe('ok');
+  });
+  it('the bit count follows the top byte (2041 to 2047 bits are all below 2048)', () => {
+    for (const bits of [2041, 2047]) {
+      expect(
+        rsaModulusBits(parseCertificate(build({ rsa: { tsa: bits } }).tsaCert)),
+        String(bits),
+      ).toBe(bits);
+    }
+  });
+  it('a weak intermediate of 2047 bits is weak-key, too', async () => {
+    expect(await reason({ intermediate: {}, rsa: { int: 2047 } })).toBe('weak-key');
+  });
+});
+
+describe('an RSA key that cannot be read is refused by the size rule (fails closed)', () => {
+  const rsaAlg = seq(oidT('1.2.840.113549.1.1.1'), tlv(5, new Uint8Array()));
+  const spkiWith = (keyBytes: Uint8Array) => seq(rsaAlg, tlv(3, Uint8Array.of(0), keyBytes));
+  const unreadable: [string, Uint8Array][] = [
+    ['not DER at all', Uint8Array.of(1, 2, 3)],
+    ['a SEQUENCE of one element', seq(int(5))],
+    ['a SEQUENCE of three elements', seq(int(5), int(3), int(1))],
+    ['a negative modulus', seq(tlv(2, Uint8Array.of(0x80)), int(3))],
+    ['a negative exponent', seq(int(5), tlv(2, Uint8Array.of(0x80)))],
+    ['no INTEGER', seq(tlv(5, new Uint8Array()), int(3))],
+  ];
+  for (const [label, key] of unreadable) {
+    it(`${label}: 0 bits, weak-key before the signature is looked at`, async () => {
+      const t = build({ tsaSpki: spkiWith(key) });
+      const cert = parseCertificate(t.tsaCert);
+      expect(rsaModulusBits(cert)).toBe(0);
+      expect(await reason({ tsaSpki: spkiWith(key) })).toBe('weak-key');
+      // with the rule off the unreadable key is no longer a size question: the signature cannot be checked
+      expect(await reason({ tsaSpki: spkiWith(key) }, { minRsaBits: 0 })).toBe(
+        'unsupported-signature',
+      );
+    });
+  }
 });

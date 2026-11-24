@@ -48,6 +48,16 @@ export interface Opts {
   tstExtra?: Uint8Array[]; // extra TSTInfo fields after genTime
   /** Replaces everything after genTime in the TSTInfo (accuracy, nonce, `tstExtra` are then ignored): the fields in this order. */
   tstFields?: Uint8Array[];
+  /** The TSTInfo version number (default 1). */
+  tstVersion?: number;
+  /** Extra elements appended inside the EncapsulatedContentInfo (after contentType and `[0]`). */
+  encapExtra?: Uint8Array[];
+  /** Extra elements appended inside the `issuerAndSerialNumber` of the SignerInfo (after issuer and serial number). */
+  sidExtra?: Uint8Array[];
+  /** Extra elements appended inside the contentType attribute of the signed attributes (after the SET of values). */
+  attributeExtra?: Uint8Array[];
+  /** Replaces the SubjectPublicKeyInfo (DER) of the signer certificate as it is (the signature of the token then no longer fits). */
+  tsaSpki?: Uint8Array;
   /** Replaces the messageImprint (SEQUENCE) of the TSTInfo as it is. */
   tstImprintRaw?: Uint8Array;
   /** RSA keys (modulus bits) for the signer (`tsa`), the intermediate (`int`) and the root (`ca`) instead of ECDSA P-256. */
@@ -176,6 +186,7 @@ export function build(o: Opts = {}) {
     serial: Uint8Array,
     validityOverride?: Uint8Array,
     v1 = false,
+    spkiOverride?: Uint8Array,
   ) => {
     const alg = algFor(signKey);
     const tbs = seq(
@@ -185,7 +196,7 @@ export function build(o: Opts = {}) {
       typeof issuer === 'string' ? name(issuer) : issuer,
       validityOverride ?? validity,
       name(subject),
-      spki(k),
+      spkiOverride ?? spki(k),
       ...(v1 ? [] : [tlv(ctx(3), seq(...exts))]),
     );
     const sig = u(sign('sha256', tbs, signKey.privateKey));
@@ -318,6 +329,8 @@ export function build(o: Opts = {}) {
     tsaExts,
     tsaSerial,
     tsaValidityDer,
+    false,
+    o.tsaSpki,
   );
   const skiTwinCerts = (o.skiTwins ?? []).map((t, i) =>
     mkCert(
@@ -344,7 +357,7 @@ export function build(o: Opts = {}) {
       ]
     : [];
   const tst = seq(
-    int(1),
+    int(o.tstVersion ?? 1),
     oidT('1.2.3.4'),
     o.tstImprintRaw ?? seq(seq(oidT('2.16.840.1.101.3.4.2.1')), octet(imprint)),
     tlv(2, o.tstSerialRaw ?? Uint8Array.of(9)),
@@ -352,7 +365,11 @@ export function build(o: Opts = {}) {
     ...(o.tstFields ?? [...accuracyField, ...nonceField, ...(o.tstExtra ?? [])]),
   );
   const attrs = [
-    seq(oidT('1.2.840.113549.1.9.3'), set(oidT('1.2.840.113549.1.9.16.1.4'))),
+    seq(
+      oidT('1.2.840.113549.1.9.3'),
+      set(oidT('1.2.840.113549.1.9.16.1.4')),
+      ...(o.attributeExtra ?? []),
+    ),
     seq(oidT('1.2.840.113549.1.9.4'), set(octet(sha256(tst)))),
     essAttribute(o.essCertId, tsaCert),
   ];
@@ -370,6 +387,7 @@ export function build(o: Opts = {}) {
       : seq(
           o.sidIssuerName ? nameWith(o.sidIssuerName.tag, o.sidIssuerName.text) : name(tsaIssuer),
           tlv(2, o.signerSerialRaw ?? tsaSerial),
+          ...(o.sidExtra ?? []),
         ));
   const signerInfo = seq(
     int(o.signerVersion ?? (o.sid === 'ski' ? 3 : 1)),
@@ -382,7 +400,7 @@ export function build(o: Opts = {}) {
   const sd = seq(
     int(3),
     set(seq(oidT('2.16.840.1.101.3.4.2.1'))),
-    seq(oidT('1.2.840.113549.1.9.16.1.4'), tlv(ctx(0), octet(tst))),
+    seq(oidT('1.2.840.113549.1.9.16.1.4'), tlv(ctx(0), octet(tst)), ...(o.encapExtra ?? [])),
     tlv(
       ctx(0),
       ...(o.junkCerts ?? []),

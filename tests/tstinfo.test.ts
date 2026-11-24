@@ -115,6 +115,17 @@ describe('F1: the tsa field names the signer (RFC 3161 § 2.4.2)', () => {
     );
     expect(await reason({ tstExtra: [dir('TSA')], extraTsaExts: junk })).toBe('ok');
   });
+  it('an empty subjectAltName is bad-certificate when the tsa name needs it (and not needed for a subject match)', async () => {
+    const empty = [ext('2.5.29.17', false, seq())];
+    expect(await reason({ tstExtra: [gn(0x82, utf8('a.example.org'))], extraTsaExts: empty })).toBe(
+      'bad-certificate',
+    );
+    expect(await reason({ tstExtra: [dir('Third Name')], extraTsaExts: empty })).toBe(
+      'bad-certificate',
+    );
+    expect(await reason({ tstExtra: [dir('TSA')], extraTsaExts: empty })).toBe('ok');
+    expect(await reason({ extraTsaExts: empty })).toBe('ok'); // no tsa field: the subjectAltName is never read
+  });
   it('a tsa that is not a GeneralName is bad-tst-info', async () => {
     for (const bad of [
       tlv(0xa0), // empty [0]
@@ -274,6 +285,42 @@ describe('F2: the TSTInfo is read as a schema', () => {
     ).toBe('bad-tst-info');
     expect(await reason({ tstImprintRaw: imp(algNull, hash) })).toBe('ok');
     expect(await reason({ tstImprintRaw: imp(alg, hash) })).toBe('ok');
+  });
+  it('the version must be 1', async () => {
+    for (const v of [0, 2, 3, 127]) {
+      expect(await reason({ tstVersion: v }), String(v)).toBe('bad-tst-info');
+      expect(() => readToken(build({ tstVersion: v }).token)).toThrowError(
+        expect.objectContaining({ reason: 'bad-tst-info' }),
+      );
+    }
+    expect(await reason({ tstVersion: 1 })).toBe('ok');
+  });
+  it('an imprint whose length does not fit its hash algorithm is bad-tst-info (also in readTimestampResponse and readToken)', async () => {
+    const sha256Oid = '2.16.840.1.101.3.4.2.1';
+    const sha384Oid = '2.16.840.1.101.3.4.2.2';
+    const raw = (oid: string, n: number) => seq(seq(oidT(oid)), octet(new Uint8Array(n).fill(7)));
+    for (const [oid, n] of [
+      [sha256Oid, 31],
+      [sha256Oid, 33],
+      [sha256Oid, 0],
+      [sha384Oid, 32], // a SHA-256 sized value under the SHA-384 name
+    ] as const) {
+      const t = build({ tstImprintRaw: raw(oid, n) });
+      expect(() => readToken(t.token), `${oid}/${n}`).toThrowError(
+        expect.objectContaining({ reason: 'bad-tst-info' }),
+      );
+      expect(await verifyTimestampToken(t.token, sha256('x'), [t.caPem]), `${oid}/${n}`).toEqual({
+        ok: false,
+        reason: 'bad-tst-info',
+      });
+      expect(readTimestampResponse(seq(seq(int(0)), t.token)), `${oid}/${n}`).toEqual({
+        ok: false,
+        reason: 'bad-tst-info',
+      });
+    }
+    // the right lengths are read (the token is then judged on its other merits)
+    expect(() => readToken(build({ tstImprintRaw: raw(sha256Oid, 32) }).token)).not.toThrow();
+    expect(() => readToken(build({ tstImprintRaw: raw(sha384Oid, 48) }).token)).not.toThrow();
   });
   it('a recorded answer of a real service fills the schema in order (freetsa: ordering, nonce, tsa)', () => {
     const r = readTimestampResponse(fixture('freetsa.tsr'));

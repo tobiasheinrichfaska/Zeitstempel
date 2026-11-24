@@ -5,7 +5,16 @@ Stand: 2026-11-24. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 
 ## Was geprüft wird
 
-1. Das Token ist strikt gelesen: DER mit bestimmter Länge, kürzeste Längenform, begrenzte Größe und Tiefe.
+1. Das Token ist strikt gelesen: DER mit bestimmter Länge, kürzeste Längenform, begrenzte Größe und Tiefe. Eine
+   SEQUENCE mit festem Aufbau hat genau ihre Elemente, ohne Rest (wie bei `openssl`): `EncapsulatedContentInfo`
+   (Inhaltstyp und ein `[0]`), der `issuerAndSerialNumber` des Unterzeichner-Eintrags (Aussteller und Seriennummer),
+   ein Attribut der signierten Attribute (Typ und Werte) und ein `AttributeTypeAndValue` in einem Namen; ein
+   Element zu viel ist `bad-structure` (im Namen: der Name gilt als unlesbar und wird nur bytegleich verglichen).
+   Ein zweites `[0]` kann ein Token also nicht mehr verformen. Nicht geprüft bleiben (wie bei `openssl`, Auswirkung
+   keine, weil signiert oder nicht benutzt): Parameter hinter der OID eines `AlgorithmIdentifier`, weitere
+   `ESSCertID` hinter der ersten und das Feld `policies` im Attribut zum Zeitstempel-Zertifikat, weitere Felder am
+   Ende der `tbsCertificate` (F17), `statusString`/`failInfo` im `PKIStatusInfo`, und die Anzeige des Namens im
+   Ergebnis (`nameToString`, nur zur Ansicht).
 2. Der bestätigte Hash (SHA-256) ist genau der erwartete.
 3. Die Nonce stimmt, wenn eine erwartet wird.
 4. Der Hash des Inhalts stimmt mit dem signierten Attribut überein, der Inhaltstyp ist `TSTInfo`.
@@ -102,6 +111,31 @@ folgt dem RFC):
   angenommen. Das hat keine Auswirkung auf die Entscheidung (`crls` sind nicht signiert und werden nicht benutzt),
   das Token ist dort aber verformbar. (Der TSTInfo wird seit Punkt 11 vollständig als Schema gelesen.)
 
+- **Leeres oder unlesbares `subjectAltName` des Signierers:** wird nur gelesen, wenn das `tsa`-Feld einen Namen
+  braucht, der nicht das `subject` ist (dann `bad-certificate`, Test). Sonst wird es angenommen; `openssl` lehnt das
+  Zertifikat dann mit „invalid certificate“ ab. Bewusst nicht streng gemacht: Das Zertifikat ist von der CA
+  signiert, die Erweiterung ändert die Entscheidung nicht, und eine strengere Regel für jedes Zertifikat der Kette
+  (Anker eingeschlossen, die der Aufrufer wählt) würde nur die Verfügbarkeit gegen echte Dienste riskieren.
+
+**Bewusst strenger, ein Verfügbarkeitsrisiko:** Diese Regeln lehnen etwas ab, was ein echter Dienst schreiben
+könnte (`openssl` nimmt es an). Gemessen sind sie nur an den vier aufgezeichneten Antworten (alle bestehen), nicht
+an jedem Dienst, der später dazukommt. Ein neuer Dienst sollte deshalb zuerst mit einer aufgezeichneten Antwort
+geprüft werden (wie in `tests/services-fixtures.test.ts`), bevor er in `services.json` steht:
+
+- `ordering` FALSE ausdrücklich geschrieben (DER schreibt den DEFAULT nicht);
+- Milli- oder Mikrosekunden `0` (oder über 999) in `accuracy`;
+- eine negative Seriennummer oder Nonce im TSTInfo und eine negative Seriennummer in einem Zertifikat;
+- `critical` FALSE ausdrücklich geschrieben in den Erweiterungen des TSTInfo, leere Erweiterungen `[1]`, ein
+  anderer Parameter als NULL beim Hash-Algorithmus des `messageImprint`;
+- Nullen am Ende des Sekundenbruchteils in `genTime`, Sekundenbruchteil in Zertifikatszeiten;
+- ein `tsa`-Feld, das nicht zum Signierer passt, auch bei anderer Reihenfolge der Namensteile (der Vergleich ist
+  der vereinfachte von RFC 5280 § 7.1, nicht der volle);
+- RSA unter 2048 Bit (`minRsaBits`), eine Zwischen-CA mit fremder erweiterter Schlüsselverwendung;
+- seit dem Audit vom 2026-11-24 ein Element zu viel in den oben genannten festen SEQUENCEs.
+
+Einen Schalter hat nur die RSA-Mindestgröße (`minRsaBits: 0`, oder den Signierer als Anker übergeben); die
+Strukturregeln haben keinen (Entscheidung: lieber ein Dienst weniger als ein verformbares Token).
+
 Gegengeprüft wird mit `openssl ts -verify` an den aufgezeichneten Antworten von vier Diensten und beim
 Schnelltest (`npm run spike`).
 
@@ -154,7 +188,11 @@ nummeriert (F1 bis F20). „Gemessen“ heißt: ein eigener Fall in `tests/opens
 Bibliothek dasselbe Token beurteilen und hält beide Ausgänge fest (ein sichtbarer Skip ohne OpenSSL 3). Angaben ohne
 „gemessen“ zu OpenSSL beruhen auf Kenntnis oder Quelltext und sind **nicht gemessen**. Das Ergebnis:
 **behoben** (früher eine Lücke, jetzt ein Test), **bewusst anders** (Entscheidung, dokumentiert) oder **Lücke**
-(offen, nicht gebaut). Eine falsche Annahme (ungültig als gültig) wurde nicht gefunden.
+(offen, nicht gebaut). Eine falsche Annahme **mit Auswirkung auf die Sicherheit** (ein ungültiger Beweis gilt als
+gültig) wurde nicht gefunden. Es gibt Fälle, in denen diese Bibliothek etwas annimmt, was `openssl` ablehnt
+(„Lockerer als `openssl ts -verify`“ weiter unten und die Zeilen der Tabelle mit „nimmt an“ in der Spalte „wir“);
+keiner davon ändert, wer was bestätigt hat. Das Überzählige in `EncapsulatedContentInfo`, `sid`, Attribut und
+Namen war ein solcher Fall (Token verformbar) und ist seit dem Audit vom 2026-11-24 abgelehnt.
 
 | Nr  | Fall                                                                                                                              | OpenSSL                                                                               | wir                                                                                                                | Einstufung                                                                                                                       |
 | --- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
@@ -268,7 +306,11 @@ Prüfung ausschalten; ein `Date` wird genau einmal mit dem eingebauten `Date.pro
 Eigenschaften; was über `Object.prototype` vererbt wurde (auch durch Prototype Pollution), wird ignoriert.
 
 **Eingaben werden kopiert, nie iteriert:** `buildTimestampRequest` und `verifyTimestampToken` kopieren Hash,
-Nonce und Token genau einmal in einen eigenen `ArrayBuffer`. Die Länge kommt vorher aus dem eingebauten
+Nonce und Token genau einmal in einen eigenen `ArrayBuffer`. Dasselbe gilt für die Leser `readTimestampResponse`,
+`readToken` und `parseCertificate`: Sie kopieren ihre Eingabe zuerst (Länge aus dem eingebauten Getter, vorher gegen
+262 144 Byte geprüft, ein `Uint8Array` eines anderen Realms ist erlaubt), und was sie zurückgeben (`token`, `raw`,
+`imprint`, `nonce`, `tsa`, Zertifikate, Unterzeichner) zeigt nie in den Puffer des Aufrufers. Überschreibt der
+Aufrufer seinen Puffer nach dem Lesen (z. B. einen wiederverwendeten Netzpuffer), ändert sich das Ergebnis nicht. Die Länge kommt vorher aus dem eingebauten
 `length`-Getter der typisierten Arrays (nicht aus einer überschriebenen Eigenschaft) und wird gegen die Grenze
 geprüft, bevor etwas angelegt oder kopiert wird (Token höchstens 262 144 Byte, sonst `too-large`; Nonce 1 bis 16,
 Hash 32 Byte); kopiert wird mit `TypedArray.prototype.set`, nie über `Symbol.iterator` (ein überschriebener,

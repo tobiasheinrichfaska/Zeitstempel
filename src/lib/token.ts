@@ -10,6 +10,7 @@ import {
   integerNumber,
   octets,
   oid,
+  ownBytes,
   parseDer,
   time,
   unsignedBytes,
@@ -171,11 +172,11 @@ function readTstInfo(der: Uint8Array): TstInfo {
   let at = 5;
   let accuracyMs: number | null = null;
   if (f[at]?.tag === TAG.sequence) {
-    accuracyMs = readAccuracy(f[at]!);
+    accuracyMs = inTstInfo(() => readAccuracy(f[at]!));
     at += 1;
   }
   if (f[at]?.tag === TAG.boolean) {
-    if (!boolean(f[at]!)) throw bad(); // ordering FALSE is the DEFAULT: DER does not write it
+    if (!inTstInfo(() => boolean(f[at]!))) throw bad(); // ordering FALSE is the DEFAULT: DER does not write it
     at += 1;
   }
   let nonce: Uint8Array | null = null;
@@ -214,9 +215,10 @@ function readTstInfo(der: Uint8Array): TstInfo {
 function readAttributes(set: Node): Map<string, Node> {
   const map = new Map<string, Node>();
   for (const attr of children(expect(set, TAG.set))) {
-    const [id, values] = children(expect(attr, TAG.sequence));
-    const key = oid(id!);
-    const vs = children(expect(values, TAG.set));
+    const parts = children(expect(attr, TAG.sequence));
+    if (parts.length !== 2) throw new ReaderError('bad-structure'); // attrType and attrValues, nothing else
+    const key = oid(parts[0]!);
+    const vs = children(expect(parts[1], TAG.set));
     if (vs.length !== 1 || map.has(key)) throw new ReaderError('bad-structure');
     map.set(key, vs[0]!);
   }
@@ -234,6 +236,7 @@ function readSignerId(version: number, node: Node | undefined): SignerId {
   if (node?.tag === TAG.sequence) {
     if (version !== 1) throw new ReaderError('unsupported-version');
     const parts = children(node);
+    if (parts.length !== 2) throw new ReaderError('bad-structure'); // issuer and serial number, nothing else
     const issuer = expect(parts[0], TAG.sequence).raw;
     const serial = trimZeros(unsignedBytes(parts[1]!));
     return { kind: 'issuerAndSerialNumber', issuer, serial };
@@ -248,10 +251,13 @@ function readSignerId(version: number, node: Node | undefined): SignerId {
   throw new ReaderError('bad-structure');
 }
 
-/** Reads a token (`ContentInfo` holding `SignedData` over a `TSTInfo`). Throws `ReaderError`. */
+/**
+ * Reads a token (`ContentInfo` holding `SignedData` over a `TSTInfo`). Throws `ReaderError`. The bytes are copied
+ * first (by length, into a buffer of their own): nothing in the result points into the caller's buffer.
+ */
 export function readToken(bytes: Uint8Array): ParsedToken {
   try {
-    return readTokenStrict(bytes);
+    return readTokenStrict(ownBytes(bytes));
   } catch (e) {
     throw e instanceof ReaderError ? e : new ReaderError('malformed');
   }
@@ -267,6 +273,7 @@ function readTokenStrict(bytes: Uint8Array): ParsedToken {
   );
   const encap = children(expect(sd[2], TAG.sequence));
   if (oid(encap[0]!) !== OID.tstInfo) throw new ReaderError('bad-content-type');
+  if (encap.length !== 2) throw new ReaderError('bad-structure'); // contentType and one [0], nothing else
   const content = octets(inner(expect(encap[1], ctx(0))));
   let i = 3;
   const certificates: Certificate[] = [];
@@ -329,7 +336,8 @@ export interface TimestampResponse {
  */
 export function readTimestampResponse(bytes: Uint8Array): Result<TimestampResponse> {
   const read = guard(() => {
-    const top = children(expect(parseDer(bytes), TAG.sequence));
+    // the answer is copied by length first: nothing in the result points into the caller's buffer
+    const top = children(expect(parseDer(ownBytes(bytes)), TAG.sequence));
     const statusInfo = children(expect(top[0], TAG.sequence));
     const status = integerNumber(statusInfo[0]!);
     return { top, status };
@@ -338,7 +346,10 @@ export function readTimestampResponse(bytes: Uint8Array): Result<TimestampRespon
   const { top, status } = read.value;
   if (status > 1) return fail('rejected', String(status));
   if (top.length !== 2) return fail('no-token');
-  const parsed = guard(() => ({ token: top[1]!.raw, parsed: readToken(top[1]!.raw) }));
+  const parsed = guard(() => {
+    const token = new Uint8Array(top[1]!.raw); // a buffer of its own, not a view into the whole answer
+    return { token, parsed: readToken(token) };
+  });
   if (!parsed.ok) return parsed;
   return ok({ status, token: parsed.value.token, info: parsed.value.parsed.info });
 }

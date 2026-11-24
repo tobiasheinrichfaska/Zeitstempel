@@ -10,6 +10,7 @@ import {
   integerNumber,
   octets,
   oid,
+  ownBytes,
   parseDer,
   time,
   unsignedBytes,
@@ -79,8 +80,9 @@ function strict<T>(run: () => T): T {
   }
 }
 
+/** Reads one certificate. The bytes are copied first (by length): nothing in the result points into the caller's buffer. */
 export function parseCertificate(der: Uint8Array): Certificate {
-  return strict(() => parseCertificateStrict(der));
+  return strict(() => parseCertificateStrict(ownBytes(der)));
 }
 
 function parseCertificateStrict(der: Uint8Array): Certificate {
@@ -247,9 +249,9 @@ function canonicalName(name: Uint8Array): string | null {
       children(expect(parseDer(name), TAG.sequence)).map((rdn) =>
         children(expect(rdn, TAG.set))
           .map((atv) => {
-            const [id, value] = children(expect(atv, TAG.sequence));
-            if (!id || !value) throw new ReaderError('bad-structure');
-            return `${oid(id)}=${nameValue(value)}`;
+            const parts = children(expect(atv, TAG.sequence));
+            if (parts.length !== 2) throw new ReaderError('bad-structure'); // type and value, nothing else
+            return `${oid(parts[0]!)}=${nameValue(parts[1]!)}`;
           })
           .sort(),
       ),
