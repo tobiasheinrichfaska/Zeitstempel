@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { toBase64Url } from '../src/index.ts';
 import type { UpstreamCredentials } from '../relay/credentials.ts';
 import type { RelayKey } from '../relay/keys.ts';
-import { buildRelayOptions, readConfig, stopServer } from '../relay/main.ts';
+import { buildRelayOptions, listenErrorMessage, readConfig, stopServer } from '../relay/main.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
 import type { RelayService } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
@@ -344,6 +344,73 @@ describe('relay/main.ts as a process', () => {
     expect(line.event).toBe('config-error');
     expect(line.message).toMatch(/^PORT: ungültig \(ganze Zahl von 1 bis 65535 erwartet/);
   }, 15_000);
+
+  it('a port that is taken ends the start with a German config-error line (no stack trace) and exit code 1', async () => {
+    const taken = createServer();
+    await new Promise<void>((r) => taken.listen(0, '127.0.0.1', r));
+    const { port } = taken.address() as AddressInfo;
+    try {
+      const child = spawn(process.execPath, ['relay/main.ts'], {
+        cwd: ROOT,
+        env: {
+          PATH: process.env.PATH ?? '',
+          PORT: String(port),
+          RELAY_SERVICES: 'freetsa',
+          RELAY_AUTH: 'off',
+        },
+      });
+      running.push(child);
+      let err = '';
+      let out = '';
+      child.stderr!.on('data', (c: Buffer) => (err += c.toString('utf8')));
+      child.stdout!.on('data', (c: Buffer) => (out += c.toString('utf8')));
+      const code = await new Promise((r) => child.on('exit', (c) => r(c)));
+      expect(code).toBe(1);
+      const lines = err.trim().split('\n');
+      const error = lines.find((l) => l.includes('"event":"config-error"'));
+      expect(error).toBeDefined();
+      const line = JSON.parse(error!) as { event: string; message: string };
+      expect(line.message).toContain(`Port ${port}`);
+      expect(line.message).toContain('EADDRINUSE');
+      expect(err).not.toMatch(/\n\s+at |node:events|Emitted 'error'/); // no stack trace
+      expect(out).not.toContain('"event":"start"'); // it never said it was listening
+    } finally {
+      await new Promise<void>((r) => taken.close(() => r()));
+    }
+  }, 15_000);
+
+  it('listenErrorMessage names the cause in German, by code only', () => {
+    expect(listenErrorMessage('EADDRINUSE', 8080, '127.0.0.1')).toMatch(/^Port 8080 .*EADDRINUSE/);
+    expect(listenErrorMessage('EACCES', 80, '127.0.0.1')).toMatch(/Port 80 .*EACCES/);
+    expect(listenErrorMessage('EADDRNOTAVAIL', 8080, '10.9.8.7')).toContain('10.9.8.7');
+    expect(listenErrorMessage('EMFILE', 8080, undefined)).toContain('EMFILE');
+    expect(listenErrorMessage(undefined, 8080, undefined)).toContain('unbekannt');
+  });
+
+  it.skipIf(!posix)(
+    'a key file that turns invalid is reported at once with one line (state only, no path, no content), not again for the same state',
+    async () => {
+      writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
+      const p = await startMain();
+      expect(p.err).toEqual([]);
+      writeFileSync(keysPath, '{ "version": 2, "keys": [ not json SECRET-MARK');
+      const failed = () => p.err.filter((l) => l.includes('Schlüsseldatei'));
+      expect(await until(() => failed().length === 1, 15_000)).toBe(true);
+      await new Promise((r) => setTimeout(r, 5500)); // another look: the same state, no second line
+      expect(failed()).toHaveLength(1);
+      expect(failed()[0]).toContain('"event":"warning"');
+      expect(failed()[0]).not.toContain(keysPath);
+      expect(failed()[0]).not.toContain('SECRET-MARK');
+      expect(await p.probe(KEY_A)).toBe(400); // the old set stays active
+      writeFileSync(keysPath, keyFile([KEY_A, KEY_B])); // fixed again: a later failure is a new state
+      expect(await until(async () => (await p.probe(KEY_B)) === 400, 15_000)).toBe(true);
+      writeFileSync(keysPath, 'broken again');
+      expect(await until(() => failed().length === 2, 15_000)).toBe(true);
+      p.child.kill('SIGTERM');
+      expect((await p.exited).code).toBe(0);
+    },
+    60_000,
+  );
 
   it('SIGTERM closes the relay (a waiting request gets 503 shutting-down) and the process ends with 0', async () => {
     writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });

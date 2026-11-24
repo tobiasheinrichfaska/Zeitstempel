@@ -415,6 +415,36 @@ describe('key types, solo stamps and the key file read again are written down wh
       '`perMinuteTotal` (60) und `perMinutePerKey` (20) bleiben **unverändert**',
     );
   });
+  it('relay.md: key type 1 solo waits the window and is stamped only when alone (rule, 403 after waiting, budget, deadlines)', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('**kein eigener Platz, kein sofortiger Stempel.**');
+    expect(doc).toContain('**wartet die ganze Sammelzeit ab**');
+    expect(doc).toContain('**Allein im Fenster**');
+    expect(doc).toContain('**Ein `403` nach dem Warten hat sie verbraucht**');
+    expect(doc).toContain('**alle** bekommen `403`, und **keine** kommt in den Baum');
+    expect(doc).toContain('**höchstens den einen Platz, den ein Fenster ohnehin belegt**');
+    expect(doc).toContain('Fenster + 17 s');
+    expect(doc).not.toContain('niemand sonst wartet');
+    expect(doc).not.toContain('Solo nur, wenn das Fenster des Dienstes **leer** ist');
+    expect(flat(model)).toContain('nur, wenn sie allein im Fenster ist');
+    // the code does what the text says: the refusal is made when the window is closed, not at the door
+    expect(source).toContain('function splitWindow');
+    expect(source).not.toContain('function laneBusy');
+  });
+  it('relay.md: one relay instance per key file, and the proxy limit per address stays far below the key budget', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('**Genau eine Relay-Instanz je Schlüsseldatei.**');
+    expect(doc).toContain('nicht den Host');
+    expect(doc).toContain(
+      '**Das Limit je Adresse muss deutlich unter dem Budget eines Schlüssels liegen.**',
+    );
+    expect(doc).toContain('rate=5r/m');
+    expect(doc).toContain('events 5');
+    expect(doc).not.toContain('rate=20r/m');
+    expect(doc).not.toContain('events 20');
+    // the limit in the example is below the per-key budget of the code
+    expect(RELAY_LIMITS.perMinutePerKey).toBeGreaterThan(5);
+  });
   it('relay.md: the key file is read again, restartAfter ends the process once, the relay never writes', () => {
     const doc = flat(relayDoc);
     expect(doc).toContain('### Schlüsseldatei laufend lesen');

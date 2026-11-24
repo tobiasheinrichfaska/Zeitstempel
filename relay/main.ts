@@ -285,6 +285,27 @@ export function listenOn(
   else server.listen(port, host, done);
 }
 
+/**
+ * The German line for a server that cannot listen (the error code only: no stack trace, nothing of the environment).
+ * `host` is the configured binding (`undefined`: all interfaces).
+ */
+export function listenErrorMessage(
+  code: string | undefined,
+  port: number,
+  host: string | undefined,
+): string {
+  switch (code) {
+    case 'EADDRINUSE':
+      return `Port ${port} ist schon belegt (EADDRINUSE); ein anderes Programm oder eine zweite Relay-Instanz nutzt ihn`;
+    case 'EACCES':
+      return `Keine Berechtigung für Port ${port} (EACCES); Ports unter 1024 brauchen besondere Rechte`;
+    case 'EADDRNOTAVAIL':
+      return `Die Adresse ${host ?? '(alle)'} ist auf diesem Rechner nicht vorhanden (EADDRNOTAVAIL, RELAY_HOST prüfen)`;
+    default:
+      return `Der Server konnte nicht auf Port ${port} lauschen (${code ?? 'Ursache unbekannt'})`;
+  }
+}
+
 /** What the server needs from the settings: the binding (it decides the keep-alive) and an explicit keep-alive. */
 export function serverLimits(settings: {
   host: string | undefined;
@@ -366,7 +387,24 @@ function main(): void {
     }),
     serverLimits(settings),
   );
+  // A listen error (port taken, no right) is a start error like the others: one German line, exit code 1. An error
+  // of the running server (e.g. no file descriptors left for a new connection) is logged by its code and the relay
+  // keeps running: without a handler Node would end the process with a stack trace and an empty replay cache.
+  let listening = false;
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (!listening) {
+      console.error(
+        JSON.stringify({
+          event: 'config-error',
+          message: listenErrorMessage(error.code, settings.port, settings.host),
+        }),
+      );
+      process.exit(1);
+    }
+    console.error(JSON.stringify({ event: 'server-error', code: error.code ?? 'unknown' }));
+  });
   listenOn(server, settings.port, settings.host, () => {
+    listening = true;
     console.log(JSON.stringify(startEvent(settings.port, services, keys, settings.batchMs)));
   });
   setInterval(
@@ -396,7 +434,17 @@ function main(): void {
             shutdown();
           },
           onReloaded: () => relay.noteKeyReload(true),
-          onFailed: () => relay.noteKeyReload(false),
+          // once per state of the file (the watcher decides): the state only, never the path, a key or a byte of the file
+          onFailed: () => {
+            relay.noteKeyReload(false);
+            console.error(
+              JSON.stringify({
+                event: 'warning',
+                message:
+                  'Schlüsseldatei beim Neulesen ungültig oder nicht lesbar; der bisherige Schlüsselsatz bleibt aktiv',
+              }),
+            );
+          },
           // the permission check of the start, repeated at every look: a warning once per change of state
           writableAtStart: warnings.length > 0,
           onWritable: (message) => {

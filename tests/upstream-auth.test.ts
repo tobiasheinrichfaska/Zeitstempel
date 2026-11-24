@@ -858,16 +858,17 @@ describe('the identities: collecting operation keeps credentials apart', () => {
   it('a solo request of a key of type 1 is judged per identity: another identity waiting does not matter', async () => {
     // service: 1 slot per minute and a long window, so the first identity's request waits in an open window
     h = await start({ batch: { windowMs: 800, max: 100 } });
+    // both solo requests are made while A's window is open: B is alone in its own lane (200), A's solo is not (403)
     const waiting = h.post('paid-client', withUpstream('a', { token: 'A' }));
     await sleep(60);
-    const other = await h.post('paid-client', withUpstream('b', { token: 'B' }, { mode: 'solo' }), {
+    const other = h.post('paid-client', withUpstream('b', { token: 'B' }, { mode: 'solo' }), {
       key: KEY_B,
     });
-    expect(other.status).toBe(200); // not 403 solo-not-allowed: nobody waits in B's lane
-    const same = await h.post('paid-client', withUpstream('c', { token: 'A' }, { mode: 'solo' }), {
+    const same = h.post('paid-client', withUpstream('c', { token: 'A' }, { mode: 'solo' }), {
       key: KEY_B,
     });
-    expect(same.status).toBe(403);
+    expect((await other).status).toBe(200); // not 403 solo-not-allowed: nobody else is in B's lane
+    expect((await same).status).toBe(403);
     expect((await waiting).status).toBe(200);
   });
 });

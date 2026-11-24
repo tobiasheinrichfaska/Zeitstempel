@@ -67,7 +67,7 @@ export interface Opts {
   serialRaw?: Uint8Array; // TSA cert serial INTEGER content
   signerSerialRaw?: Uint8Array;
   /** Signs the attributes with another hash and names it in the SignerInfo's signature OID (digestAlgorithm stays SHA-256). */
-  signatureAlg?: { oid: string; hash: 'sha384' | 'sha512' | 'sha256' };
+  signatureAlg?: { oid: string; hash: 'sha384' | 'sha512' | 'sha256' | 'sha1' };
   sigMangle?: (derSig: Uint8Array) => Uint8Array;
   crl?: Uint8Array; // content for [1]
   hash?: Uint8Array;
@@ -80,6 +80,8 @@ export interface Opts {
     validity?: [string, string]; // not-before, not-after (GeneralizedTime)
     noKeyCertSign?: boolean; // key usage without keyCertSign
     noBasicConstraints?: boolean; // no basicConstraints extension at all
+    /** The root signs the intermediate with ecdsa-with-SHA1 (inner and outer algorithm, SHA-1 signature). */
+    sha1Signed?: boolean;
   };
   /**
    * Look-alikes of the intermediate (same name and key, other serial, signed by the root), sent in the
@@ -155,6 +157,18 @@ export interface Opts {
    * signing certificate attribute does not fit) or with an unrelated key (`wrongKey`).
    */
   skiTwins?: { wrongKey?: boolean }[];
+  /** The value of the contentType attribute of the signed attributes (default id-ct-TSTInfo). */
+  contentTypeOid?: string;
+  /** Extra attributes (DER) in the signed attributes, after the three of the token (e.g. a second one of the same type). */
+  extraSignedAttrs?: Uint8Array[];
+  /** The number of SignerInfos in the SET: 0 (empty) or 2 (the same one twice); default 1. */
+  signerInfoCount?: 0 | 2;
+  /** Elements appended to the SignedData after the SignerInfos. */
+  sdExtra?: Uint8Array[];
+  /** The signature algorithm written INSIDE the TBSCertificate of the signer certificate (default: the same as outside). */
+  tsaInnerSigAlg?: Uint8Array;
+  /** Likewise for the root (trust anchor). */
+  caInnerSigAlg?: Uint8Array;
 }
 const hashOf = (name: 'sha1' | 'sha256', b: Uint8Array) => u(createHash(name).update(b).digest());
 function essAttribute(kind: Opts['essCertId'], cert: Uint8Array): Uint8Array {
@@ -187,19 +201,21 @@ export function build(o: Opts = {}) {
     validityOverride?: Uint8Array,
     v1 = false,
     spkiOverride?: Uint8Array,
+    innerAlg?: Uint8Array,
+    sha1 = false,
   ) => {
-    const alg = algFor(signKey);
+    const alg = sha1 ? seq(oidT('1.2.840.10045.4.1')) : algFor(signKey);
     const tbs = seq(
       ...(v1 ? [] : [tlv(ctx(0), int(2))]),
       tlv(2, serial),
-      alg,
+      innerAlg ?? alg,
       typeof issuer === 'string' ? name(issuer) : issuer,
       validityOverride ?? validity,
       name(subject),
       spkiOverride ?? spki(k),
       ...(v1 ? [] : [tlv(ctx(3), seq(...exts))]),
     );
-    const sig = u(sign('sha256', tbs, signKey.privateKey));
+    const sig = u(sign(sha1 ? 'sha1' : 'sha256', tbs, signKey.privateKey));
     return seq(tbs, alg, tlv(3, Uint8Array.of(0), sig));
   };
   const caCert = mkCert(
@@ -215,6 +231,8 @@ export function build(o: Opts = {}) {
     Uint8Array.of(1),
     o.caValidity ? seq(gt(o.caValidity[0]), gt(o.caValidity[1])) : undefined,
     o.rootV1,
+    undefined,
+    o.caInnerSigAlg,
   );
   const attacker = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const mid = o.rsa?.int ? rsaKey(o.rsa.int) : ec();
@@ -238,6 +256,10 @@ export function build(o: Opts = {}) {
     o.intermediate?.validity
       ? seq(gt(o.intermediate.validity[0]), gt(o.intermediate.validity[1]))
       : undefined,
+    false,
+    undefined,
+    undefined,
+    o.intermediate?.sha1Signed === true,
   );
   const twinCerts = (o.twins ?? []).map((t, i) =>
     mkCert(
@@ -331,6 +353,7 @@ export function build(o: Opts = {}) {
     tsaValidityDer,
     false,
     o.tsaSpki,
+    o.tsaInnerSigAlg,
   );
   const skiTwinCerts = (o.skiTwins ?? []).map((t, i) =>
     mkCert(
@@ -367,11 +390,12 @@ export function build(o: Opts = {}) {
   const attrs = [
     seq(
       oidT('1.2.840.113549.1.9.3'),
-      set(oidT('1.2.840.113549.1.9.16.1.4')),
+      set(oidT(o.contentTypeOid ?? '1.2.840.113549.1.9.16.1.4')),
       ...(o.attributeExtra ?? []),
     ),
     seq(oidT('1.2.840.113549.1.9.4'), set(octet(sha256(tst)))),
     essAttribute(o.essCertId, tsaCert),
+    ...(o.extraSignedAttrs ?? []),
   ];
   const attrsSet = set(...attrs);
   let sig: Uint8Array = u(sign(o.signatureAlg?.hash ?? 'sha256', attrsSet, tsa.privateKey));
@@ -410,7 +434,14 @@ export function build(o: Opts = {}) {
       ...more,
     ),
     ...(o.crl ? [tlv(ctx(1), o.crl)] : []),
-    set(signerInfo),
+    set(
+      ...(o.signerInfoCount === 0
+        ? []
+        : o.signerInfoCount === 2
+          ? [signerInfo, signerInfo]
+          : [signerInfo]),
+    ),
+    ...(o.sdExtra ?? []),
   );
   const token = seq(oidT('1.2.840.113549.1.7.2'), tlv(ctx(0), sd));
   const pem = (c: Uint8Array) =>

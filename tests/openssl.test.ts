@@ -652,6 +652,14 @@ describe.skipIf(!canJudgeAtTime)('agreement with openssl ts -verify', () => {
     row('RSA 512 signer', { rsa: { tsa: 512 } }, true, false, 'weak-key'),
     row('RSA 1024 intermediate', { intermediate: {}, rsa: { int: 1024 } }, true, false, 'weak-key'),
     row('RSA 1024 root as the trust anchor', { rsa: { ca: 1024 } }, true, true),
+    // measured with OpenSSL 3.0.13: its default security level does not look at the signature hash of a CA
+    row(
+      'intermediate signed with ecdsa-with-SHA1 (SHA-1 is no signature hash here)',
+      { intermediate: { sha1Signed: true } },
+      true,
+      false,
+      'untrusted-chain',
+    ),
     // other measured differences (F6, F12, F14 and others of the benchmark)
     row(
       'the signer certificate is a CA itself (basicConstraints cA=TRUE)',

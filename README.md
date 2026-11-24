@@ -5,7 +5,7 @@ der einer Datei) **spätestens zu einem bestimmten Zeitpunkt** existierte. Dazu 
 bei einem Zeitstempel-Dienst und prüft es.
 
 **Stand: 0.1.0, Entwurf, nicht auf npm, nicht von einem Menschen sicherheitsgeprüft.** Die Bibliothek ist unter
-Node 24 getestet; im Browser **einmal in Headless-Chromium geprüft (ohne die Relay-Authentifizierung), sonst nicht getestet**.
+Node 24 getestet; im Browser nur in **Headless-Chromium 157** geprüft, am 2026-11-24 einschließlich Relay-Anmeldung, CORS-Preflight, Sammelbetrieb, Solo-Stempel und den vier Fixtures (47 Prüfungen ohne Unterschied zu Node; das Prüfskript liegt nicht im Repo). **Firefox und Safari nicht geprüft.**
 
 ## Bausteine
 
@@ -105,8 +105,9 @@ auf. Das ist **kein Einzelstempel** auf den Hash, und das Relay sieht alle Hashe
 
 **Schlüsselarten und Solo-Stempel (nur im Sammelbetrieb):** Ein Schlüssel der Art 2 (`"solo": true` in der Schlüsseldatei,
 nur vom Eigentümer vergeben) darf `{"hash": "…", "mode": "solo"}` senden und bekommt einen **direkten** Stempel des Hashes
-ohne Baum (nötig für PDF-Dokumentzeitstempel; die Antwort hat kein `batch`). Art 1 bekommt das nur, wenn für den Dienst
-sonst niemand wartet (sonst `403 solo-not-allowed`). Ist kein Platz beim Dienst frei, wartet die Anfrage höchstens
+ohne Baum (nötig für PDF-Dokumentzeitstempel; die Antwort hat kein `batch`). Art 1 wartet die volle Sammeldauer im
+Fenster und bekommt den direkten Stempel nur, wenn es dort allein ist (sonst `403 solo-not-allowed`, das Budget ist dann
+verbraucht). Ist kein Platz beim Dienst frei, wartet die Anfrage höchstens
 `RELAY_MAX_WAIT_MS` (Vorgabe 30 s), danach `503 busy`. Die Schlüsseldatei wird laufend neu gelesen (Sperren = Eintrag
 entfernen); `restartAfter` beendet das Relay einmal sauber (Prozess-Überwacher nötig). Einzelheiten in
 [`docs/relay.md`](docs/relay.md) („Schlüsselarten und Solo-Stempel“); Solo-Schlüssel im Browserspeicher sind für die

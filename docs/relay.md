@@ -367,7 +367,7 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | 400    | `bad-upstream`                                                                  | `upstream` passt nicht zum Dienst: vorhanden, wo der Dienst keines nimmt (Quelle `relay`, keine `auth`), fehlend, wo die App eines liefern muss, falsche Form, Zeichen oder Länge (nur nach bestandener Anmeldung)                                               |
 | 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich                                                                                                                                        |
 | 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                                                                                                                                                                 |
-| 403    | `solo-not-allowed`                                                              | Schlüsselart 1 verlangte `mode: "solo"`, während für den Dienst andere Anfragen warten (nur im Sammelbetrieb)                                                                                                                                                    |
+| 403    | `solo-not-allowed`                                                              | Schlüsselart 1 verlangte `mode: "solo"`, war am Ende der Sammelzeit aber **nicht allein** im Fenster (nur im Sammelbetrieb; kommt erst **nach** dem Warten, das Budget ist verbraucht)                                                                           |
 | 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                                                                                                                                                                 |
 | 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                                                                                                                                                       |
 | 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit                                                                                                                                              |
@@ -509,7 +509,8 @@ darf später kommen. **Folge für die Fristen:**
 - Wartet eine Anfrage zusätzlich auf einen freien Platz (siehe „Schlüsselarten und Solo-Stempel“), kommt die Wartezeit
   dazu: Frist der App und Lese-Timeout des Proxys mindestens **`RELAY_MAX_WAIT_MS` + Fenster + 17 s** (Vorgabe 30 s
   Wartegrenze: bei 5 s Fenster 52 s; bei einer Wartegrenze von 60 s und einem Fenster von 60 s 137 s). Ohne Fenster
-  (Solo-Stempel) genügt Wartegrenze + 17 s.
+  (Solo-Stempel der Art 2) genügt Wartegrenze + 17 s; ein Solo der Art 1 wartet das Fenster ab, für es gilt Fenster + 17 s
+  wie für jede Anfrage.
 - Sie ist **keine Echtzeit**: wer sofort einen Stempel braucht, nimmt den Einzelbetrieb (eine zweite Relay-Instanz
   ohne `RELAY_BATCH_MS`).
 
@@ -576,8 +577,8 @@ Länge, falscher Typ oder falsche Größe eines Feldes, unbekanntes Feld), ist *
 
 - `perMinuteTotal` (60) und `perMinutePerKey` (20) bremsen die Fenstergröße; für große Fenster müssten sie im Sammelbetrieb
   je Fenster statt je Anfrage zählen oder höher stehen (Entscheidung des Eigentümers, derzeit nicht geändert).
-- Nicht ausgerollt, nicht von einem Menschen geprüft, nicht im Browser getestet; der Test nutzt einen Stub als Dienst,
-  gegen einen echten Dienst lief der Sammelbetrieb nicht (kein Netz).
+- Nicht ausgerollt, nicht von einem Menschen geprüft; im Browser nur mit Chromium geprüft (Prüfskript vom 2026-11-24, nicht im
+  Repo); der Test nutzt einen Stub als Dienst, gegen einen echten Dienst lief der Sammelbetrieb nicht (kein Netz).
 - **Kein Mindestabstand zwischen Stempeln** (Entscheidung des Eigentümers offen): das Relay hält das Mengenbudget je
   gleitender Minute ein, verteilt die Stempel aber nicht gleichmäßig. Zwei bis vier Solo-Stempel können innerhalb weniger
   Sekunden an einen Dienst gehen, der „15 Sekunden Pause zwischen Anfragen“ erbittet (`docs/dienste.md`).
@@ -589,10 +590,10 @@ dann nichts, und die Schlüsselart wird nicht geprüft (Typ-1-Prüfung entfällt
 
 ### Die zwei Schlüsselarten
 
-| Art | Eintrag in der Schlüsseldatei                | Darf                                                                                                     |
-| --- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| 1   | `{"id", "publicKey"}` (oder `"solo": false`) | normal stempeln (Beleg im Sammelfenster); Solo nur, wenn für den Dienst **niemand sonst wartet**         |
-| 2   | `{"id", "publicKey", "solo": true}`          | Solo-Stempel immer verlangen, im Rahmen der Grenzen (`soloPerMinutePerKey`, Warteschlange, Dienstbudget) |
+| Art | Eintrag in der Schlüsseldatei                | Darf                                                                                                                  |
+| --- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 1   | `{"id", "publicKey"}` (oder `"solo": false`) | normal stempeln (Beleg im Sammelfenster); Solo nur, wenn die Anfrage am Ende der Sammelzeit **allein im Fenster** ist |
+| 2   | `{"id", "publicKey", "solo": true}`          | Solo-Stempel immer verlangen, im Rahmen der Grenzen (`soloPerMinutePerKey`, Warteschlange, Dienstbudget)              |
 
 `solo` muss ein **boolescher** Wert sein (`true`/`false`); alles andere ist ein Fehler der Schlüsseldatei
 (`config-error` beim Start, beim Neulesen `keyReloadFailed`; die Meldung nennt den Eintragsindex `keys[i]`, nie den
@@ -625,21 +626,45 @@ ein PDF-Dokumentzeitstempel, `docs/recherche.md` §5). Die App prüft sie mit `v
 
 ### Zulassung
 
-1. Art 2: Solo immer, im Rahmen der Grenzen.
-2. Art 1: Solo nur, wenn das Fenster des Dienstes **leer** ist (kein offenes Fenster mit wartenden Anfragen und keine
-   Anfrage in der Warteschlange des Dienstes), sonst `403 solo-not-allowed` (Zähler `soloDenied`); die Prüfung
-   geschieht vor dem Budget und kostet nichts. **Nebenwirkung:** die Antwortart verrät einem Schlüssel der Art 1 grob,
-   ob für den Dienst gerade jemand anderes wartete.
-3. Zusätzlich gilt für jedes Solo die **eigene niedrige Grenze je Schlüssel** `soloPerMinutePerKey` (4 je Minute, nur im
-   Arbeitsspeicher): die fünfte Anfrage in der Minute ist `429` mit `Retry-After`. Diese Zahl steht **nicht im Log**
-   (keine Zahlen je Schlüssel im Betreiberlog); die Zähler unten sind Summen.
+1. Art 2: Solo **sofort**, mit einem Platz des Dienstes für sich allein, im Rahmen der Grenzen.
+2. Art 1: **kein eigener Platz, kein sofortiger Stempel.** Die Anfrage geht wie eine normale in das Fenster des Dienstes
+   (öffnet es oder kommt in das offene) und **wartet die ganze Sammelzeit ab**, ob ein anderer Hash mitfahren will.
+   Beim Schließen des Fensters gilt:
+   - **Allein im Fenster** (kein anderer Eintrag, auch kein anderes Solo der Art 1): **ein direkter Stempel** über den
+     unveränderten Hash, Antwort wie bei Art 2 ohne `batch` (Zähler `solo`). Der Dienst sieht einen Stempel, wie bei
+     einem Fenster mit einem Blatt, aber ohne Baum.
+   - **Nicht allein:** `403 solo-not-allowed` (Zähler `soloDenied`). Die anderen bekommen ihren gewöhnlichen
+     Sammelbeleg; der Dienst sieht nur **einen** Stempel für das Fenster.
+   - **Mehrere Solo-Anfragen der Art 1 im selben Fenster** gelten füreinander als „nicht allein“: **alle** bekommen
+     `403`, und **keine** kommt in den Baum (ein Beleg soll nur für Antworten entstehen, die jemand abholt; wer `403`
+     bekam, hat keinen). Folge: besteht ein Fenster nur aus solchen Anfragen (mindestens zwei), macht das Relay **gar
+     keinen Stempel** und bucht **keinen** Platz. Ein Solo, das sich nur wegen eines anderen Solo-Wunsches nicht allein
+     fühlt, bekommt also ebenfalls `403`; die App wiederholt es später (wie jede `403`) oder nimmt einen Schlüssel der
+     Art 2.
+   - Ein Solo der Art 1 belegt damit **höchstens den einen Platz, den ein Fenster ohnehin belegt**: es kann die Plätze
+     eines Dienstes nicht mehr ausschöpfen, indem es mehrere Plätze für sich nimmt. Es bleibt dabei, dass ein Schlüssel,
+     der der Reihe nach Anfragen schickt (jede allein in ihrem Fenster), je einen Platz belegt, ob mit oder ohne `mode`;
+     das ist die Grenze jeder normalen Anfrage und wird durch `perMinutePerKey` und `soloPerMinutePerKey` begrenzt.
+   - **Ohne Sammelbetrieb** ändert `mode: "solo"` nichts (alles ist direkt).
+3. **Budget und Zähler** wie bisher **einmal je angenommener Anfrage**: `perMinuteTotal`, `perMinutePerKey` und das
+   Solo-Limit je Schlüssel (`soloPerMinutePerKey`) werden bei der Annahme verbraucht, auch bei Art 1. **Ein `403` nach
+   dem Warten hat sie verbraucht** (nichts wird zurückgegeben). Das Dienstbudget braucht nur die Anfrage, die ein Fenster
+   öffnet (wie jede normale).
+4. **Latenz und Fristen:** ein Solo der Art 1 antwortet erst nach der Sammelzeit (nie sofort, auch nicht bei leerem
+   Fenster). Frist der App und Lese-Timeout des Proxys wie im Sammelbetrieb: mindestens **Fenster + 17 s** (mit Warten auf
+   einen Platz zusätzlich `RELAY_MAX_WAIT_MS`). Nur Art 2 kommt mit Wartegrenze + 17 s aus.
+5. **Nebenwirkung:** die Antwortart (`200` oder `403`) verrät einem Schlüssel der Art 1 grob, ob in diesem Fenster ein
+   anderer Hash wartete.
+6. Zusätzlich gilt für jedes Solo (Art 1 und 2) die **eigene niedrige Grenze je Schlüssel** `soloPerMinutePerKey` (4 je
+   Minute, nur im Arbeitsspeicher): die fünfte Anfrage in der Minute ist `429` mit `Retry-After`. Diese Zahl steht **nicht
+   im Log** (keine Zahlen je Schlüssel im Betreiberlog); die Zähler unten sind Summen.
 
 ### Der Planer je Dienst
 
 Fenster gelten **immer je externem Dienst**. Ein **Platz** ist ein Stempel des Dienstes im Rahmen seines Budgets
 (`60000 / minIntervalMs` je Minute); ein Sammelfenster belegt einen Platz, ein Solo-Stempel ebenfalls (er belegt den
 Platz ganz, nicht nur einen Teil des Fensters). Ein Fenster ist **voll** durch `RELAY_BATCH_MAX` oder durch einen
-Solo-Stempel; **der Rest wartet**.
+Solo-Stempel der Art 2; **der Rest wartet**. (Ein Solo der Art 1 fährt im Fenster mit und belegt keinen eigenen Platz.)
 
 - **Der Platz wird zur Zeit des Stempels gebucht.** Ein Solo-Stempel bucht seinen Platz, wenn er an den Dienst geht. Ein
   Fenster hält seinen Platz **ab dem Öffnen** und bucht ihn für den Zeitpunkt, an dem es gestempelt wird (Öffnung plus
@@ -660,7 +685,7 @@ Solo-Stempel; **der Rest wartet**.
   `config-error`): wer so lange keinen Platz bekommt, bekommt `503 busy` mit `Retry-After`. Ist schon beim Eingang klar,
   dass der nächste Platz **später** als die Wartegrenze frei wird (Dienstbudget für längere Zeit aufgebraucht), bleibt es
   beim bisherigen `429 rate-limited`; gewartet wird nur bei einem kurzen Engpass.
-- **Die Solo-Warteschlange je Dienst ist begrenzt** (`soloQueueMax`, 6): eine weitere Solo-Anfrage bekommt sofort
+- **Die Solo-Warteschlange je Dienst ist begrenzt** (`soloQueueMax`, 6; nur Art 2): eine weitere Solo-Anfrage der Art 2 bekommt sofort
   `503 busy`. Die normalen Wartenden sind durch `perMinuteTotal` und die Wartegrenze begrenzt.
 - Die 60 s der Anmeldung (Zeitfenster der Signatur) und die ±60 s der Frischeprüfung des Tokens werden von der
   Wartezeit nicht berührt: sie werden beim Eingang beziehungsweise beim Senden an den Dienst gemessen.
@@ -669,9 +694,10 @@ Solo-Stempel; **der Rest wartet**.
   zurückgegeben). Mit den mitgelieferten Diensten (zusammen 24 Plätze je Minute) kann ein Schlüssel, der mehrere Dienste
   nutzt, `perMinutePerKey` (20) erreichen; `perMinuteTotal` (60) wird nicht erreicht. Das Solo-Limit je Schlüssel (4)
   liegt unter `perMinutePerKey` (20), die Grenzen kollidieren also nicht.
-- **Kapazität:** ein Solo-Stempel kostet einen ganzen Platz. Mit FreeTSA (12 Plätze je Minute) und abwechselnder Vergabe
+- **Kapazität:** ein Solo-Stempel der Art 2 kostet einen ganzen Platz. Mit FreeTSA (12 Plätze je Minute) und abwechselnder Vergabe
   höchstens 6 Solo-Stempel je Minute für **alle** Schlüssel der Art 2 zusammen (sonst bleibt der Sammelbetrieb stehen);
-  bei den Diensten mit 15 s sind es 4 Plätze, also höchstens 2.
+  bei den Diensten mit 15 s sind es 4 Plätze, also höchstens 2. Schlüssel der Art 1 gehören nicht dazu: ihr Solo teilt sich
+  den Platz des Fensters.
 - **Beim Beenden** (`SIGTERM`, `restartAfter`) bekommen auch die auf einen Platz Wartenden `503 shutting-down`; Verbindungen,
   die ihre Antwort bekommen haben, werden danach geschlossen, damit der Prozess nicht auf das Ende ihres Keep-alive wartet.
   **Fristen beim Beenden:** Nach `server.close()` prüft Node die Fristen für Kopfzeilen und Anfrage nicht mehr; eine
@@ -689,7 +715,7 @@ Zeile `counts` erst, wenn sie zum ersten Mal gezählt wurden:
 | Zähler            | Bedeutung                                                                                                             |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `solo`            | Solo-Stempel, die der Dienst gegeben hat (zählt auch in `stamped`)                                                    |
-| `soloDenied`      | Solo-Anfragen der Art 1, die `403 solo-not-allowed` bekamen (auch unter `refused`)                                    |
+| `soloDenied`      | Solo-Anfragen der Art 1, die nach der Sammelzeit `403 solo-not-allowed` bekamen (auch unter `refused`)                |
 | `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                        |
 | `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal |
 | `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)         |
@@ -814,8 +840,8 @@ Die **Identität** der Zugangsdaten ist ein SHA-256-Digest über Art und Felder 
 nie ins Protokoll, in keinen Zähler und in keinen Fehlertext**); die Zugangsdaten des Relays und ein Dienst ohne `auth`
 haben die Identität „der Dienst selbst“, wie bisher. **Fenster, Plätze, Warteschlangen und das Dienstbudget (`minIntervalMs`)
 gelten je (Dienst, Identität).** Hashes mit verschiedenen Zugangsdaten landen **nie** im selben Fenster und nie im selben
-Baum (der Dienst sähe sonst Hashes unter fremden Zugangsdaten gebündelt); ob einem Schlüssel der Art 1 ein Solo-Stempel erlaubt
-ist (wartet sonst jemand?), wird **je Spur der Identität** entschieden.
+Baum (der Dienst sähe sonst Hashes unter fremden Zugangsdaten gebündelt); ob ein Solo-Stempel der Art 1 allein im Fenster
+ist, wird **je Fenster und damit je Spur der Identität** entschieden.
 
 - **Obergrenze:** höchstens `upstreamIdentitiesMax` (64) Identitäten je Dienst gleichzeitig. Eine Identität wird verworfen,
   wenn sie ein ganzes Fenster (60 s) ruhig war und nichts mehr für sie wartet (Fenster, Warteschlange, laufender Aufruf);
@@ -857,7 +883,7 @@ nach dem Lesen aus `process.env`). Eigene Werte des Relays nie in das Repository
   (z. B. Disig, D-Trust), passen nicht zu diesem Verfahren; **Privatschlüssel von Zertifikaten werden nicht übertragen**.
   Es gibt nur `basic`, `bearer` und einen Namenskopf.
 - Nicht ausgerollt, gegen keinen echten bezahlten Dienst getestet (kein Netz; Stubs im Test, ein TLS-Stub für den
-  Weg nach draußen), nicht von einem Menschen geprüft, nicht im Browser getestet. Mitgelieferte Dienste haben kein `auth`:
+  Weg nach draußen), nicht von einem Menschen geprüft, im Browser nur mit Chromium geprüft und dort nur ohne `upstream`. Mitgelieferte Dienste haben kein `auth`:
   es gibt noch **keinen** Eintrag in `services.json`, der es nutzt.
 
 ## Lokal testen
@@ -1026,13 +1052,31 @@ Was jede Einrichtung leisten muss:
   kommt das Fenster dazu: mindestens `RELAY_BATCH_MS` + 17 s („Sammelbetrieb“, „Latenz und Fristen“).
 - **Ratenlimit und Verbindungslimit je Adresse.** Das Relay selbst kennt keine Adressen. Der Rahmen ist klein: die vier
   mitgelieferten Dienste erlauben zusammen 24 Anfragen je Minute (FreeTSA mit 5 s: 12, die drei anderen mit 15 s: je 4).
+- **Das Limit je Adresse muss deutlich unter dem Budget eines Schlüssels liegen.** Ein App-Schlüssel gehört allen
+  Besuchern dieser App; `perMinutePerKey` ist 20 je Minute und Schlüsselkennung. Erlaubt der Proxy je Adresse ebenfalls
+  20 je Minute, kann **ein einzelner Besucher** (mit dem ausgelesenen Schlüssel oder nur mit dem normalen Aufruf der App)
+  das ganze Budget der App aufbrauchen und alle anderen Besucher aussperren. Die Beispiele erlauben deshalb je Adresse
+  **5 je Minute** (Burst 3): ein Besucher stempelt selten mehr als einmal, die Dienste mit 15 s erlauben ohnehin nur 4 je
+  Minute für alle, und es braucht mindestens vier Adressen, um 20 je Minute zu erreichen. Das ist eine Empfehlung, kein
+  Beweis: wer Besucher hinter einer gemeinsamen Adresse hat (Firmennetz, mobiles Netz mit gemeinsamer Adresse), wählt die Zahl
+  nach seiner Last, oder setzt **eine eigene Schicht in der App** davor (Anmeldung des Besuchers, Zähler je Konto), und lässt
+  den App-Schlüssel nur dieser Schicht gehören. Ein Limit je Adresse ersetzt keinen Schutz vor einem ausgelesenen
+  Schlüssel: Sperren heißt, den Schlüssel aus der Datei zu entfernen („Schlüsseldatei laufend lesen“); dann sind auch alle
+  ehrlichen Besucher der App ausgesperrt, bis die App einen neuen Schlüssel hat.
+- **Genau eine Relay-Instanz je Schlüsseldatei.** Die Signatur bindet Methode, Pfad, Zeit und Körper, **nicht den Host**:
+  derselbe Kopf wird von einer zweiten Instanz mit derselben Schlüsseldatei ebenfalls angenommen (nachgestellt: `200`, dann
+  `401` an der ersten, `200` an der zweiten). Jede Instanz hat eigene Budgets (`perMinuteTotal`, `perMinutePerKey`, Dienstbudget)
+  und einen eigenen Wiederholungsspeicher; zwei Instanzen verdoppeln also die Budgets und lassen einen abgefangenen Kopf
+  zweimal gelten. Wer mehr Last oder Ausfallsicherheit braucht, nimmt **getrennte Schlüsseldateien** (andere Schlüsselkennungen
+  je Instanz) oder einen Proxy, der alle Anfragen eines Schlüssels an dieselbe Instanz leitet. Test- und Produktivschlüssel
+  gehören nicht in dieselbe Datei. Ein Neustart (auch `restartAfter`) leert den Wiederholungsspeicher.
 - Körper höchstens 512 Byte (das Relay lehnt mehr ab); der Proxy darf früher abweisen.
 - `GET /health` ist für Überwachung gedacht; es prüft keinen Dienst.
 
 **nginx** (Beispiel, nicht getestet):
 
 ```nginx
-limit_req_zone  $binary_remote_addr zone=zs_rate:10m rate=20r/m;
+limit_req_zone  $binary_remote_addr zone=zs_rate:10m rate=5r/m;
 limit_conn_zone $binary_remote_addr zone=zs_conn:10m;
 
 server {
@@ -1045,7 +1089,7 @@ server {
     client_body_timeout    6s;
 
     location / {
-        limit_req  zone=zs_rate burst=5 nodelay;
+        limit_req  zone=zs_rate burst=3 nodelay;   # je Adresse 5 je Minute (siehe unten), nie das ganze Schlüsselbudget
         limit_conn zs_conn 10;
         limit_req_status  429;
         limit_conn_status 429;
@@ -1069,7 +1113,7 @@ ab und stehen deshalb hier nur als Gerüst:
 
 ```caddyfile
 relay.example {
-    # rate_limit { zone je_adresse { key {remote_host}  events 20  window 1m } }   # Zusatzmodul nötig
+    # rate_limit { zone je_adresse { key {remote_host}  events 5  window 1m } }   # Zusatzmodul nötig
     reverse_proxy 127.0.0.1:8080 {
         transport http {
             dial_timeout            5s

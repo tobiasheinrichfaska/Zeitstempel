@@ -537,15 +537,15 @@ export function createRelay(options: RelayOptions): Relay {
     // and the key type is not looked at.
     const wantsSolo = batch !== undefined && parsed.solo;
     if (batch && closed) return send(res, 503, { error: 'shutting-down' }, origin);
-    if (wantsSolo && !(auth !== null && soloKids.has(auth.kid)) && laneBusy(lk)) {
-      // key type 1: a solo stamp only for a service nobody else waits for (a solo stamp takes a whole slot)
-      stats.soloDenied = (stats.soloDenied ?? 0) + 1;
-      return send(res, 403, { error: 'solo-not-allowed' }, origin);
-    }
+    // Key type 2: a direct stamp at once, with a slot of its own. Key type 1 takes no slot of its own: it waits in a
+    // window like everybody else, for the whole collecting time, and is stamped directly only if it is alone in the
+    // window at its close (else `403 solo-not-allowed`: the others wait for their receipt, the service sees one stamp).
+    const direct = wantsSolo && auth !== null && soloKids.has(auth.kid);
+    const alone = wantsSolo && !direct;
     // Collecting operation: a window that is open already takes this request without touching the service's
     // budget (one stamp per window); the budget of a key and the total still count every request.
     const open = batch ? openWindows.get(lk) : undefined;
-    const joinsOpen = open !== undefined && !wantsSolo;
+    const joinsOpen = open !== undefined && !direct;
     // A new identity needs a place in the table of this service (dropped identities make room; else `503 busy`).
     if (tracked && !known.has(lk)) {
       const full = identitiesFullWait(service.id);
@@ -574,7 +574,7 @@ export function createRelay(options: RelayOptions): Relay {
         'Retry-After': String(Math.max(...waits)),
       });
     }
-    if (wantsSolo && (lanes.get(lk)?.solo.length ?? 0) >= RELAY_LIMITS.soloQueueMax) {
+    if (direct && (lanes.get(lk)?.solo.length ?? 0) >= RELAY_LIMITS.soloQueueMax) {
       return send(res, 503, { error: 'busy' }, origin, {
         'Retry-After': String(Math.max(1, Math.ceil(budgetNow.slotMs / 1000))),
       });
@@ -589,8 +589,8 @@ export function createRelay(options: RelayOptions): Relay {
         // The answer comes when the window is closed and the service has answered (the 5 s request deadline
         // is over by now: it only governs the reading of the request).
         const reply = joinsOpen
-          ? await joinOpen(open, hash)
-          : await enqueue(service, lk, creds, hash, wantsSolo);
+          ? await joinOpen(open, hash, alone)
+          : await enqueue(service, lk, creds, hash, direct, alone);
         if (res.destroyed) return countAborted(req, res);
         return send(res, reply.status, reply.body, origin, reply.headers);
       }
@@ -760,6 +760,8 @@ export function createRelay(options: RelayOptions): Relay {
   interface Waiting {
     hash: Uint8Array;
     resolve: (reply: Reply) => void;
+    /** Key type 1 asked for `mode: "solo"`: a direct stamp only if it is the only entry of its window at the close. */
+    alone?: boolean;
   }
   interface Window {
     service: RelayService;
@@ -805,15 +807,6 @@ export function createRelay(options: RelayOptions): Relay {
     return lane;
   };
 
-  /** Does anybody wait for this service: in an open window or in the queue? */
-  function laneBusy(key: string): boolean {
-    const lane = lanes.get(key);
-    return (
-      (lane !== undefined && lane.solo.length + lane.normal.length > 0) ||
-      (openWindows.get(key)?.waiting.length ?? 0) > 0
-    );
-  }
-
   /**
    * The time the open window of a lane will be stamped, as a list of zero or one entry (after every time of
    * a stamp that is made: it is in the future, at most one window length ahead even if the clock was set back).
@@ -849,9 +842,9 @@ export function createRelay(options: RelayOptions): Relay {
   }
 
   /** A request joins a window that is open (it takes no slot: the window has one). */
-  function joinOpen(w: Window, hash: Uint8Array): Promise<Reply> {
+  function joinOpen(w: Window, hash: Uint8Array, alone: boolean): Promise<Reply> {
     return new Promise((resolve) => {
-      w.waiting.push({ hash, resolve });
+      w.waiting.push({ hash, resolve, alone });
       if (w.waiting.length >= batch!.max) closeWindow(w); // full: the next request waits for a slot
     });
   }
@@ -881,10 +874,11 @@ export function createRelay(options: RelayOptions): Relay {
     creds: UpstreamCredentials | undefined,
     hash: Uint8Array,
     solo: boolean,
+    alone: boolean,
   ): Promise<Reply> {
     return new Promise((resolve) => {
       const lane = laneOf(key, service, creds);
-      const item: Queued = { hash, resolve, timer: null };
+      const item: Queued = { hash, resolve, alone, timer: null };
       item.timer = setTimeout(() => {
         const list = solo ? lane.solo : lane.normal;
         const at = list.indexOf(item);
@@ -933,15 +927,34 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** A direct stamp of one hash (no tree, no `batch` in the answer). */
   function runSolo(lane: Lane, item: Waiting): void {
-    const service = lane.service;
+    stampDirect(lane.service, lane.creds, item);
+  }
+
+  function stampDirect(
+    service: RelayService,
+    creds: UpstreamCredentials | undefined,
+    item: Waiting,
+  ): void {
     const done = async (): Promise<void> => {
-      const got = await obtain(service, item.hash, lane.creds);
+      const got = await obtain(service, item.hash, creds);
       if (!got.ok) return item.resolve({ status: got.status, body: got.body });
       stats.stamped += 1;
       stats.solo = (stats.solo ?? 0) + 1;
       item.resolve({ status: 200, body: stampBody(service, got) });
     };
     done().catch(() => item.resolve({ status: 500, body: { error: 'internal' } }));
+  }
+
+  /**
+   * What a closed window does with the entries that asked for a solo stamp as key type 1: alone in the window, the
+   * request is stamped directly (the hash itself, no tree); with any other entry, also another such request, every one
+   * of them is refused with `403 solo-not-allowed` and stays OUT of the tree (a receipt exists only for answers that
+   * somebody collects). Returns the entries for the tree, or `null` when the window is one direct stamp.
+   */
+  function splitWindow(waiting: readonly Waiting[]): { tree: Waiting[]; direct: Waiting | null } {
+    const wishes = waiting.filter((x) => x.alone === true);
+    if (wishes.length === 1 && waiting.length === 1) return { tree: [], direct: wishes[0]! };
+    return { tree: waiting.filter((x) => x.alone !== true), direct: null };
   }
 
   const answerAll = (waiting: readonly Waiting[], reply: Reply): void => {
@@ -953,8 +966,10 @@ export function createRelay(options: RelayOptions): Relay {
     openWindows.delete(w.key);
     if (w.timer !== null) clearTimeout(w.timer);
     // The stamp is made now: the slot is booked at this time (a window that is full closes before `stampAt`). There
-    // is always room: the open window held its slot, and every stamp since counted it.
-    takeSlot(w.key);
+    // is always room: the open window held its slot, and every stamp since counted it. A window that holds nothing
+    // but refused solo requests makes no stamp and books no slot.
+    const split = splitWindow(w.waiting);
+    if (split.direct !== null || split.tree.length > 0) takeSlot(w.key);
     // a lane that waits for a slot looks again: a window that closed early frees its slot earlier than booked
     const waiting = lanes.get(w.key);
     if (waiting !== undefined && waiting.timer !== null) dispatch(waiting);
@@ -985,7 +1000,18 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** One window: salts, tree, one stamp for the imprint, and a receipt for each waiting request. */
   async function flush(w: Window): Promise<void> {
-    const waiting = w.waiting;
+    const split = splitWindow(w.waiting);
+    if (split.direct !== null) {
+      stampDirect(w.service, w.creds, split.direct);
+      return;
+    }
+    for (const x of w.waiting) {
+      if (x.alone !== true) continue;
+      stats.soloDenied = (stats.soloDenied ?? 0) + 1;
+      x.resolve({ status: 403, body: { error: 'solo-not-allowed' } });
+    }
+    const waiting = split.tree;
+    if (waiting.length === 0) return;
     const entries = waiting.map((x) => {
       const salt = options.random(32);
       if (salt.length !== 32) throw new Error('random source gave the wrong length');

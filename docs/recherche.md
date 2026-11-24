@@ -17,27 +17,9 @@ Dieses Dokument hält fest, was bei der Weiterentwicklung geklärt wurde, womit 
   zusammen (die Annahme 15 s ist vorsichtig, belegt ist bei FreeTSA 1 pro Sekunde). Ein Schlüssel kann mit 4 Anfragen
   pro Minute einen Dienst für alle sperren.
 
-## 2. Datenverkehr und Kosten bei Bunny
+## 2. Betrieb und Kosten
 
-- **Preise (Quelle, abgerufen 2026-11-24):** Datenverkehr (Egress) Europa und Nordamerika 0,01 $/GB, Asien und Ozeanien
-  0,03 $, Südamerika 0,045 $, Naher Osten und Afrika 0,06 $; bei Magic Containers und beim CDN-Standard-Tarif gleich
-  (<https://bunny.net/docs/magic-containers/pricing>, <https://bunny.net/docs/cdn/pricing>). Magic Containers: CPU 0,02 $
-  je CPU-Stunde verbrauchter CPU-Zeit, RAM 0,005 $ je GB-Stunde in 64-MB-Blöcken plus variablem Systemaufschlag,
-  Anycast-IPv4 2 $ im Monat. Zu Ingress, Freikontingenten und Monatsminimum steht auf diesen Seiten nichts.
-- **Annahmen:** Volllast heißt 60 angenommene Anfragen pro Minute rund um die Uhr (`perMinuteTotal`), also 86 400 pro
-  Tag und 2,59 Mio. in 30 Tagen. Antwort je Anfrage: Token base64url 6,2 KB (FreeTSA) bis 8,8 KB (Sectigo) laut
-  Fixtures, dazu etwa 0,25 KB JSON und 0,45 KB Header, im Sammelbetrieb etwa 0,4 KB für den Beleg, dazu Preflight
-  (OPTIONS) mit etwa 0,45 KB, wenn er nicht zwischengespeichert wird.
-- **Ergebnis (Schätzung):** nur FreeTSA, Einzelstempel: etwa 17,9 GB im Monat, 0,18 $. Nur FreeTSA, Sammelbetrieb mit
-  Preflight: etwa 20,1 GB, 0,20 $. Schlechtester Fall (Sectigo-große Token): etwa 26,8 GB, 0,27 $. Bei 600 pro Minute etwa
-  2 $, bei 6 000 pro Minute etwa 20 $. Alles bei Verkehr aus Europa und Nordamerika; aus der teuersten Region das
-  Sechsfache.
-- **Eingehender Verkehr:** etwa 1 KB je Anfrage, rund 2,6 GB im Monat; ob Bunny ihn berechnet, steht auf den Seiten nicht.
-- **Angriffsverkehr ist die eigentliche Kostenfrage:** abgelehnte Antworten (401, 429) sind etwa 0,45 KB. Ein Flood mit
-  1 000 Anfragen pro Sekunde wären etwa 1,2 TB und etwa 12 $ im Monat. Ratenbegrenzung pro Adresse vor dem Relay ist
-  Pflicht.
-- **Container (Schätzung, nicht gemessen):** etwa 10 ms CPU je Anfrage, also etwa 7 CPU-Stunden und etwa 0,15 $ im
-  Monat; 256 MB RAM etwa 0,93 $; mit Anycast-IP gut 3 $. Der echte Verbrauch ist nicht gemessen.
+Betrieb, Kosten und Datenverkehr: Begleitrepo (nicht öffentlich). Die technischen Grenzen der Dienste stehen in Abschnitt 1.
 
 ## 3. Sammelverfahren (Entscheidung: Merkle-Baum)
 
@@ -80,7 +62,7 @@ Dieses Dokument hält fest, was bei der Weiterentwicklung geklärt wurde, womit 
 - **Aufwand:** PDF-Handling gehört in ein eigenes Modul oder in die App (die Bibliothek hat bewusst keine Abhängigkeiten).
   Prüfbar mit `pdfsig` (poppler) und `pyHanko`, nicht mit Adobe selbst.
 
-## 6. Entwurf: zwei Schlüsselarten und zwei Betriebsarten (umgesetzt am 2026-11-24, siehe §6a und `docs/relay.md`)
+## 6. Entwurf: zwei Schlüsselarten und zwei Betriebsarten (umgesetzt am 2026-11-24, siehe `docs/relay.md`; Entscheidungen dazu: Begleitrepo)
 
 Vorgabe des Eigentümers: Schlüsselart 1 normal, Schlüsselart 2 berechtigt zur alleinigen Signatur. Zeitfenster gelten je
 externem Dienst. Ist ein Fenster voll (Höchstzahl oder Anfrage der Art 2), wartet der Rest.
@@ -161,48 +143,16 @@ Datenschutzerklärung und Impressum liefern 404, keine genannte Ratengrenze; die
 sich an anderer Stelle „Not eIDAS-qualified". Empfehlung: höchstens als zusätzlicher, als unqualifiziert gekennzeichneter
 Dienst, nicht aufgenommen.
 
-## 7b. Bezahlte und qualifizierte Dienste (Recherche, Seiten nur über Zusammenfassungen gelesen)
+## 7b. Bezahlte und qualifizierte Dienste
 
-Vollständiger Bericht mit Quellen: nicht im Repo (Arbeitsstand). Eckdaten, vor einer Übernahme am Original zu prüfen:
+Preise, Anmeldearten und Bedingungen stehen im Begleitrepo (`docs/recherche/bezahlte-dienste.md`, nicht öffentlich). Die technischen Anforderungen an bezahlte Dienste (Zugangsdaten, nur https, Quelle `relay`, `client` oder `either`) stehen in `docs/relay.md`, Abschnitt „Zugangsdaten zu bezahlten Diensten“; nur gegen Stubs getestet.
 
-- **SK ID Solutions (EE):** qualifiziert laut AGB, SHA-256 in der Anfrage, ECDSA P-256 oder RSA-4096, Zugang per
-  Vertrag und IP-Freigabe (feste Austritts-IP nötig), Test kostenlos, protokolliert alle Token unbefristet.
-- **GLOBALTRUST (AT):** 1000 Stempel 185 EUR/Jahr, 10 000 für 1700 EUR/Jahr; Endpunkt und Anmeldeart nicht öffentlich.
-- **Lleida.net (ES):** ab 0,03 EUR je Stempel, Benutzername und Passwort, wirbt mit Adobe-Kompatibilität.
-- **Disig (SK):** 1000 Stempel 62,50 EUR netto, Zugang per Zertifikat. **Sectigo `/qualified`:** gut dokumentiert, nur
-  http, Preis und Anmeldeart unklar. Weitere (D-Trust, GlobalSign, Utimaco, Certum): Preise nicht öffentlich.
-- **Nötig im Code:** je Dienst eine Anmeldeart in `services.json` (Basic, Bearer/API-Key, mTLS, IP-Freigabe),
-  Geheimnisse nur aus der Umgebung, Basic nur über https. Ungeprüft: SHA-512-Signatur mit P-256 gegen unsere Regel
-  „Signatur-OID passt zum `digestAlgorithm`", QC-Erweiterungen und EKU qualifizierter Zertifikate (echte Testtokens
-  nötig). Adobe vertraut sehr wahrscheinlich Anbietern der EU-Vertrauensliste (Verzug bis rund 30 Tage), freien Diensten
-  mit eigener Wurzel nicht.
-- **Nicht belegt:** Weiterverkauf oder Bündelung über ein Relay, Ratengrenzen, SLA, AVV-Angebot, aktueller EU-Listeneintrag.
+## 7c. Datenschutz-Einordnung des Hashes
 
-## 7c. Datenschutz-Einordnung des Hashes (keine Rechtsberatung)
-
-Ein SHA-256-Hash ist nicht umkehrbar, aber bei erratbaren Inhalten (kurze Texte, bekannte Dokumente, kleine Auswahl)
-durch Raten und Vergleichen bestätigbar; Personenbezug entsteht durch Verknüpfung (IP, Schlüssel, Zeit). Das Relay
-loggt nichts aus Anfragen, hält nur Zähler und den Wiederholungsschutz im Arbeitsspeicher und speichert kein Token. Der
-Zeitstempeldienst sieht die IP des Relays, nicht die des Nutzers; im Sammelbetrieb nur die Wurzel eines Baums mit
-verblindeten Blättern. Bunny: IP-Logs werden komplett gekürzt (Entscheidung); die technische Durchleitung der IP bleibt,
-ob dafür ein AVV nötig ist, ist eine Rechtsfrage. Apps mit erratbaren Inhalten sollten vor dem Hashen einen eigenen
-Salt anhängen und aufbewahren.
-
-## 6a. Entscheidungen zu den Schlüsselarten (2026-11-24)
-
-1. Typ-2-Schlüssel (`"solo": true`) vergibt nur Tobias. 2. Ein Schlüssel gilt **pro Nutzergruppe**. 3. Typ 2 darf jeden
-   Dienst nutzen. 4. Schlüssel werden ausgegeben und in der App im Browserspeicher abgelegt (für Nutzer dieses Browsers
-   auslesbar): niedriges Solo-Limit je Schlüssel, schnelles Sperren. 5. Typ 1 mit Solo-Wunsch wird bedient, wenn das
-   Fenster leer ist, sonst `403 solo-not-allowed`. 6. Gewartet wird nur im Mangelfall (`RELAY_MAX_WAIT_MS`, Vorgabe 30 s,
-   höchstens 60 s). 7./8. wie vorgeschlagen. 9. Schlüsseldatei wird **laufend neu gelesen** (strenger Leser, bei ungültiger
-   Datei bleibt die alte); zusätzlich `restartAfter` in der Datei: Das Relay beendet sich einmal, wenn
-   `Startzeit < restartAfter <= jetzt` (ein Prozess-Überwacher startet es neu; das Relay schreibt nie in die Datei).
-2. **Variante A:** keine Zahlen je Schlüssel im Betreiberlog; die Mengengrenze je Schlüssel im Arbeitsspeicher bleibt.
+Die Einordnung mit Betreiberangaben, Hostern und Auftragsverarbeitung steht im Begleitrepo (nicht öffentlich). Was das Relay sieht und speichert: `docs/relay.md`, Abschnitt „Was das Relay sieht“.
 
 ## 8. Offene Punkte
 
-- Qualifizierter Dienst (Vertrag, Zugangsdaten), rechtliche Klärung der Nutzungsbedingungen, Datenschutzbewertung der
-  Weitergabe von Hashes.
-- Menschliche Sicherheitsprüfung, signierter Aufruf und CORS mit Authentifizierung in echten Browsern, menschlicher
-  Abgleich der Anker.
-- Image, Betrieb, Überwachung, Alarm und Notfallablauf; Schlüsselrotation.
+- Menschliche Sicherheitsprüfung; Prüfung der Relay-Anmeldung in weiteren Browsern (Firefox, Safari); das Prüfskript der Anmeldung liegt nicht im Repo; menschlicher Abgleich der Anker.
+- Schlüsselrotation (nicht gebaut).
+- Qualifizierter Dienst, Betrieb, Verträge und rechtliche Fragen: Begleitrepo (nicht öffentlich).

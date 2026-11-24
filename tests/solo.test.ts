@@ -193,7 +193,7 @@ describe('key type 2: who may ask for a solo stamp (collecting operation)', () =
     expect(h.stats()).toEqual({ stamped: 1, refused: {}, batched: 0, solo: 1 });
   });
 
-  it('type 1 gets a solo stamp when nobody else waits for the service', async () => {
+  it('type 1 gets a direct stamp after the collecting time when it is alone in the window', async () => {
     h = await start();
     const x = sha256('solo-a');
     const res = await h.stamp(x, { key: KEY_A, body: solo(x) });
@@ -202,7 +202,7 @@ describe('key type 2: who may ask for a solo stamp (collecting operation)', () =
     expect(same(h.calls[0]!.imprint, x)).toBe(true);
   });
 
-  it('type 1 is refused with 403 solo-not-allowed while a window with waiting requests is open', async () => {
+  it('type 1 is refused with 403 solo-not-allowed (after the window) when another request is in its window', async () => {
     h = await start({ batch: { windowMs: 400, max: 100 } });
     const waiting = h.stamp(sha256('normal')); // opens the window
     await sleep(100);
@@ -215,7 +215,7 @@ describe('key type 2: who may ask for a solo stamp (collecting operation)', () =
     expect(h.stats()).toMatchObject({ soloDenied: 1, refused: { 'solo-not-allowed': 1 } });
   });
 
-  it('type 1 is also refused while requests wait in the queue of the service', async () => {
+  it('type 1 is also refused when it meets the request that waited in the queue of the service in one window', async () => {
     // one slot per second: the first stamp takes it, the next normal request waits for the next one
     h = await start({ minIntervalMs: 1000, budgetWindowMs: 1000, maxWaitMs: 4000 });
     const first = await h.stamp(sha256('first'), { key: KEY_B, body: solo(sha256('first')) });
