@@ -134,6 +134,21 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   future timestamps at `now` (a clock set back does not lock the budget). `refused` has `request-timeout` and
   `client-aborted`; the 408/431/400 answers of the server are closed hard after 1 s even if the client never reads;
   `nowMs` must be milliseconds >= 1e11; key file errors name the entry index (`keys[i]`, no content).
+- **Relay settings and behaviour since the final audit:** `RELAY_SERVICES` is mandatory (no default of "all services"; a
+  plain-http service without `RELAY_ALLOW_PLAIN_HTTP=1` ends the start). The relay binds `127.0.0.1` unless `RELAY_HOST`
+  is set (a container needs `RELAY_HOST=0.0.0.0`). Keep-alive depends on the binding: loopback 65 s (a proxy on the
+  same host), any other binding 5 s; `RELAY_KEEPALIVE_MS` (1000 to 120000) overrides both; with a non-loopback binding
+  the proxy owns the per-address connection limits, and a proxy on another host with an idle timeout above 5 s needs a
+  larger `RELAY_KEEPALIVE_MS`. CORS exposes `Retry-After` and `Date` (clock offset recipe in `docs/relay.md`: on a 401
+  read `Date`, correct once). The relay checks `genTime` within ±60 s around the request (`genTimeSlackMs`, replaces
+  `maxSkewMs`).
+- **Freshness and long-term value (library):** freshness is checked only with `minGenTime` (`time-too-old`); without it a
+  back-dated token from an expired service key passes. `at` is checked in addition to `genTime`. The result has
+  `signerNotBefore`/`signerNotAfter`: the evidence weakens when the signer certificate expires or its key is
+  compromised (re-stamp in time, use several services). ESSCertIDv2 refuses SHA-1 and unknown hash OIDs. A leap second
+  in `genTime` stays `bad-time`. `signRelayRequest` also takes a `CryptoKey`.
+- **The shipped anchors are roots:** any time stamping certificate in the hierarchy passes, also one of another
+  operator; narrower trust is the caller's choice (an intermediate or the signer as anchor).
 - **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
   2026-11-23 ran without it, with `keys: 'off'` in the script). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key
