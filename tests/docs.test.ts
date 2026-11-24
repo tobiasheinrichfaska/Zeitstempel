@@ -340,6 +340,61 @@ describe('collecting operation (Sammelbetrieb) is written down where a reader lo
   });
 });
 
+describe('key types, solo stamps and the key file read again are written down where a reader looks', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  it('relay.md: settings, error codes and counters', () => {
+    expect(relayDoc).toMatch(/\|\s*`RELAY_MAX_WAIT_MS`\s*\|/);
+    expect(relayDoc).toContain('## Schlüsselarten und Solo-Stempel');
+    for (const code of ['bad-mode', 'solo-not-allowed', 'busy']) {
+      expect(relayDoc, code).toMatch(new RegExp(String.raw`\|\s*\d{3}\s*\|\s*\`${code}\``));
+      expect(source, code).toContain(`error: '${code}'`);
+    }
+    for (const counter of ['solo', 'soloDenied', 'keyReloads', 'keyReloadFailed']) {
+      expect(relayDoc, counter).toMatch(new RegExp(String.raw`\|\s*\`${counter}\`\s*\|`));
+    }
+  });
+  it('relay.md: the rules of the planner, the wait limit, the proxy timeouts and the warning', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('Warten nur im Mangelfall');
+    expect(doc).toContain('**Abwechselnd.**');
+    expect(doc).toContain('mindestens **`RELAY_MAX_WAIT_MS` + Fenster + 17 s**');
+    expect(doc).toContain('Wartegrenze + 17 s');
+    expect(doc).toContain('**für die Nutzer dieses Browsers auslesbar**');
+    expect(doc).toContain('**nur an vertraute Nutzergruppen**');
+    expect(doc).toContain('**durch Entfernen aus der Datei**');
+    expect(doc).toContain('keine Zahlen je Schlüssel im Betreiberlog');
+    expect(doc).toContain(
+      '`perMinuteTotal` (60) und `perMinutePerKey` (20) bleiben **unverändert**',
+    );
+  });
+  it('relay.md: the key file is read again, restartAfter ends the process once, the relay never writes', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('### Schlüsseldatei laufend lesen');
+    expect(doc).toContain('**Entfernter Schlüssel:** ist **sofort** ungültig');
+    expect(doc).toContain('der **alte Satz bleibt aktiv**');
+    expect(doc).toContain('### `restartAfter`: einmaliger sauberer Neustart');
+    expect(doc).toContain('**Prozess-Überwacher**');
+    expect(doc).toContain('**Das Relay schreibt nie in die Schlüsseldatei.**');
+    expect(doc).toContain('**das laufende Neulesen ist deshalb der Normalweg**');
+    // the relay code writes no file
+    const watch = readFileSync(new URL('../relay/keywatch.ts', import.meta.url), 'utf8');
+    expect(watch).not.toMatch(/writeFile|appendFile|createWriteStream|rename|unlink/);
+  });
+  it('README, data-model.html, grenzen.md and FEATURES_REQUIRED.md agree', () => {
+    expect(flat(readme)).toContain('**Schlüsselarten und Solo-Stempel');
+    expect(readme).toContain('`403 solo-not-allowed`');
+    expect(readme).toContain('RELAY_MAX_WAIT_MS');
+    expect(flat(model)).toContain('<td>Anfrage: <code>mode</code></td>');
+    expect(model).toContain('<code>solo-not-allowed</code> (403)');
+    expect(flat(read('grenzen.md'))).toContain('## Solo-Stempel (Schlüsselart 2)');
+    expect(readFileSync(new URL('../FEATURES_REQUIRED.md', import.meta.url), 'utf8')).toContain(
+      'Schlüsselarten und Solo-Stempel',
+    );
+  });
+});
+
 describe('key files stay out of the repository', () => {
   const PATTERNS = ['relay-keys*.json', '*.keys.json', '*keys*.json'];
   const NAMES = [

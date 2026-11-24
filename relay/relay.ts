@@ -51,6 +51,13 @@ export interface RelayOptions {
    * stamps the one value that covers the tree. Absent: every request gets a stamp of its own (the default).
    */
   batch?: { windowMs: number; max: number };
+  /**
+   * Collecting operation only: the longest a request waits for a free slot of its service before it gets `503
+   * busy` (default `RELAY_LIMITS.maxWaitDefaultMs`). A slot that is not free within this time is a `429` at once.
+   */
+  maxWaitMs?: number;
+  /** Window of the budget counters in ms (default `RELAY_LIMITS.windowMs`); a parameter so a test need not wait a minute. */
+  budgetWindowMs?: number;
 }
 
 /** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
@@ -67,6 +74,13 @@ export interface RelayStats {
   refused: Record<string, number>;
   /** Only in collecting operation: requests answered with a receipt (a sum, nothing about who or what). */
   batched?: number;
+  /** Solo stamps obtained (collecting operation); present once the first one was counted. */
+  solo?: number;
+  /** Solo requests of a key of type 1 refused with `403 solo-not-allowed`; present once counted. */
+  soloDenied?: number;
+  /** Key file reloads applied / refused (invalid file, old set kept); present once counted. */
+  keyReloads?: number;
+  keyReloadFailed?: number;
 }
 
 const JSON_TYPE = 'application/json';
@@ -90,6 +104,14 @@ export interface Relay {
    * service is already running finishes normally (bounded by `upstreamTimeoutMs`). Does nothing for single stamps.
    */
   close: () => void;
+  /**
+   * Replaces the accepted keys at once (the key file was reloaded): keys that are gone are invalid from now on,
+   * counters and the replay cache stay. Throws, and changes nothing, when a key is invalid or an id is
+   * used twice, or when the relay runs without authentication.
+   */
+  setKeys: (keys: readonly RelayKey[]) => void;
+  /** Counts a reload of the key file: applied (`true`) or refused (`false`). */
+  noteKeyReload: (applied: boolean) => void;
 }
 
 export function createRelay(options: RelayOptions): Relay {
@@ -115,15 +137,21 @@ export function createRelay(options: RelayOptions): Relay {
   const windows = new Map<string, number[]>(); // service id → request times in the window
   const keyWindows = new Map<string, number[]>(); // key id → request times in the window (memory only)
   let total: number[] = [];
-  const keyById = new Map<string, KeyObject>();
-  if (options.keys !== 'off') {
-    for (const k of options.keys) {
+  const buildKeys = (keys: readonly RelayKey[]) => {
+    const byId = new Map<string, KeyObject>();
+    const solo = new Set<string>();
+    for (const k of keys) {
       const key = publicKeyObject(k.publicKey);
-      if (key === null) throw new Error('relay key is not a valid P-256 public key'); // at start, no content
-      if (keyById.has(k.id)) throw new Error('relay key ids must be unique'); // at start, no content
-      keyById.set(k.id, key);
+      if (key === null) throw new Error('relay key is not a valid P-256 public key'); // no content
+      if (byId.has(k.id)) throw new Error('relay key ids must be unique'); // no content
+      byId.set(k.id, key);
+      if (k.solo === true) solo.add(k.id);
     }
-  }
+    return { byId, solo };
+  };
+  const initial = options.keys === 'off' ? buildKeys([]) : buildKeys(options.keys);
+  let keyById = initial.byId; // replaced as a whole when the key file is reloaded
+  let soloKids = initial.solo; // key type 2: may ask for a solo stamp
   const authRequired = options.keys !== 'off';
   const doVerify = options.verifySignature ?? verifySignatureNode;
   // Heads signed before this process started are refused (the replay cache is empty after a restart,
@@ -146,6 +174,9 @@ export function createRelay(options: RelayOptions): Relay {
   const replayMax = options.authReplayEntries ?? RELAY_LIMITS.authReplayEntries;
   const replayMaxPerKey = Math.max(1, Math.ceil(replayMax * RELAY_LIMITS.authReplayKeyShare));
   const windowMs = RELAY_LIMITS.authWindowSeconds * 1000;
+  const bw = options.budgetWindowMs ?? RELAY_LIMITS.windowMs;
+  const maxWaitMs = options.maxWaitMs ?? RELAY_LIMITS.maxWaitDefaultMs;
+  const soloWindows = new Map<string, number[]>(); // key id -> solo request times (memory only, never logged)
   // A replay can arrive with its head at the edge of the window and its body up to the request
   // timeout later: an entry must outlive `ts + window` by that much.
   const keepMs = windowMs + RELAY_LIMITS.requestTimeoutMs;
@@ -195,38 +226,62 @@ export function createRelay(options: RelayOptions): Relay {
     serviceId: string,
     minIntervalMs: number,
     kid: string | null,
-    /** false: the request joins a window that is open already, the service's own budget is not touched */
-    forService = true,
-  ): { wait: number | null; spend: () => void } {
+    /**
+     * true: the service's own budget counts and is spent with the rest; false: the request joins a window that
+     * is open already, the service's budget is not touched; 'defer': only the total and the key count here, the
+     * slot of the service is taken later by the planner (`slotMs` says how long until one is free).
+     */
+    forService: boolean | 'defer' = true,
+  ): { wait: number | null; slotMs: number; spend: () => void } {
     const now = options.now();
     // Times in the future (the clock was set back) count as `now`: a jump back must not lock the budget
     // for the length of the jump, and the wait stays within one window.
     const fresh = (times: number[]): number[] =>
-      times.filter((t) => now - t < RELAY_LIMITS.windowMs).map((t) => Math.min(t, now));
+      times.filter((t) => now - t < bw).map((t) => Math.min(t, now));
     total = fresh(total);
     const own = fresh(windows.get(serviceId) ?? []);
     const mine = kid === null ? [] : fresh(keyWindows.get(kid) ?? []);
     windows.set(serviceId, own);
     if (kid !== null) keyWindows.set(kid, mine);
-    const ownLimit = Math.max(1, Math.floor(RELAY_LIMITS.windowMs / minIntervalMs));
+    const ownLimit = Math.max(1, Math.floor(bw / minIntervalMs));
     // the slot that frees first is the (length - limit + 1)-th oldest entry
     const until = (times: number[], limit: number): number =>
-      Math.max(1, Math.ceil((RELAY_LIMITS.windowMs - (now - times[times.length - limit]!)) / 1000));
+      Math.max(1, Math.ceil((bw - (now - times[times.length - limit]!)) / 1000));
     const waits: number[] = [];
     if (total.length >= RELAY_LIMITS.perMinuteTotal) {
       waits.push(until(total, RELAY_LIMITS.perMinuteTotal));
     }
-    if (forService && own.length >= ownLimit) waits.push(until(own, ownLimit));
+    const slotMs =
+      own.length >= ownLimit ? Math.max(1, bw - (now - own[own.length - ownLimit]!)) : 0;
+    if (forService === true && own.length >= ownLimit) waits.push(until(own, ownLimit));
     if (kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey) {
       waits.push(until(mine, RELAY_LIMITS.perMinutePerKey));
     }
     return {
       wait: waits.length === 0 ? null : Math.max(...waits),
+      slotMs,
       spend: () => {
         total.push(now);
-        if (forService) own.push(now);
+        if (forService === true) own.push(now);
         if (kid !== null) mine.push(now);
       },
+    };
+  }
+
+  /** The solo requests of one key in the last window: the seconds to wait when the limit is reached, and `spend`. Memory only. */
+  function soloBudget(kid: string): { wait: number | null; spend: () => void } {
+    const now = options.now();
+    const times = (soloWindows.get(kid) ?? [])
+      .filter((t) => now - t < bw)
+      .map((t) => Math.min(t, now));
+    soloWindows.set(kid, times);
+    const limit = RELAY_LIMITS.soloPerMinutePerKey;
+    return {
+      wait:
+        times.length >= limit
+          ? Math.max(1, Math.ceil((bw - (now - times[times.length - limit]!)) / 1000))
+          : null,
+      spend: () => void times.push(now),
     };
   }
 
@@ -340,18 +395,30 @@ export function createRelay(options: RelayOptions): Relay {
     return new Uint8Array(Buffer.concat(chunks));
   }
 
-  /** The hash from the body: 32 raw bytes, or JSON `{"hash": "<base64url>"}`. */
-  function hashFrom(type: string, body: Uint8Array): Uint8Array | 'unsupported' | 'bad' {
-    if (type === 'application/octet-stream') return body.length === 32 ? body : 'bad';
+  /**
+   * The hash from the body: 32 raw bytes, or JSON `{"hash": "<base64url>"}` with the optional field `"mode"`
+   * (only `"solo"` is known; anything else is `bad-mode`). The mode is part of the body, so the signature binds it.
+   */
+  function hashFrom(
+    type: string,
+    body: Uint8Array,
+  ): { hash: Uint8Array; solo: boolean } | 'unsupported' | 'bad' | 'bad-mode' {
+    if (type === 'application/octet-stream') {
+      return body.length === 32 ? { hash: body, solo: false } : 'bad';
+    }
     if (type !== JSON_TYPE) return 'unsupported';
     try {
       const data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body)) as unknown;
       if (typeof data !== 'object' || data === null || Array.isArray(data)) return 'bad';
-      const keys = Object.keys(data);
+      const keys = Object.keys(data).sort().join();
       const hash = (data as { hash?: unknown }).hash;
-      if (keys.length !== 1 || typeof hash !== 'string') return 'bad';
+      if ((keys !== 'hash' && keys !== 'hash,mode') || typeof hash !== 'string') return 'bad';
       const bytes = fromBase64Url(hash);
-      return bytes && bytes.length === 32 ? bytes : 'bad';
+      if (!bytes || bytes.length !== 32) return 'bad';
+      if (keys === 'hash') return { hash: bytes, solo: false };
+      return (data as { mode?: unknown }).mode === 'solo'
+        ? { hash: bytes, solo: true }
+        : 'bad-mode';
     } catch {
       return 'bad';
     }
@@ -384,38 +451,65 @@ export function createRelay(options: RelayOptions): Relay {
     }
     // The Content-Type is deliberately not part of the signature (the body is): it only selects how the
     // already authenticated bytes are read.
-    const hash = hashFrom(type, body);
-    if (hash === 'unsupported') return send(res, 415, { error: 'unsupported-media-type' }, origin);
-    if (hash === 'bad') return send(res, 400, { error: 'bad-hash' }, origin);
+    const parsed = hashFrom(type, body);
+    if (parsed === 'unsupported')
+      return send(res, 415, { error: 'unsupported-media-type' }, origin);
+    if (parsed === 'bad') return send(res, 400, { error: 'bad-hash' }, origin);
+    if (parsed === 'bad-mode') return send(res, 400, { error: 'bad-mode' }, origin);
+    const hash = parsed.hash;
 
+    // Without collecting operation every request is a direct stamp already: `mode: "solo"` changes nothing
+    // and the key type is not looked at.
+    const wantsSolo = batch !== undefined && parsed.solo;
+    if (batch && closed) return send(res, 503, { error: 'shutting-down' }, origin);
+    if (wantsSolo && !(auth !== null && soloKids.has(auth.kid)) && laneBusy(service.id)) {
+      // key type 1: a solo stamp only for a service nobody else waits for (a solo stamp takes a whole slot)
+      stats.soloDenied = (stats.soloDenied ?? 0) + 1;
+      return send(res, 403, { error: 'solo-not-allowed' }, origin);
+    }
     // Collecting operation: a window that is open already takes this request without touching the service's
     // budget (one stamp per window); the budget of a key and the total still count every request.
-    if (batch && closed) return send(res, 503, { error: 'shutting-down' }, origin);
     const open = batch ? openWindows.get(service.id) : undefined;
+    const joinsOpen = open !== undefined && !wantsSolo;
     // Look at the budget and at the replay cache first, spend and write only if both let the request
     // pass: a 429 never costs budget and never leaves an entry. (No await between look and write.)
     const budgetNow = budget(
       service.id,
       service.minIntervalMs,
       auth?.kid ?? null,
-      open === undefined,
+      batch ? (joinsOpen ? false : 'defer') : true,
     );
     const cache = auth ? cacheWait(auth.kid) : null;
-    const waits = [budgetNow.wait, cache].filter((w): w is number => w !== null);
+    const soloNow = wantsSolo && auth ? soloBudget(auth.kid) : null;
+    const waits = [budgetNow.wait, cache, soloNow?.wait ?? null].filter(
+      (w): w is number => w !== null,
+    );
+    // The slot of the service is not free within the longest wait: the old 429 (waiting is for a short squeeze only)
+    if (batch && !joinsOpen && budgetNow.slotMs > maxWaitMs) {
+      waits.push(Math.max(1, Math.ceil(budgetNow.slotMs / 1000)));
+    }
     if (waits.length > 0) {
       return send(res, 429, { error: 'rate-limited' }, origin, {
         'Retry-After': String(Math.max(...waits)),
       });
     }
+    if (wantsSolo && laneOf(service.id).solo.length >= RELAY_LIMITS.soloQueueMax) {
+      return send(res, 503, { error: 'busy' }, origin, {
+        'Retry-After': String(Math.max(1, Math.ceil(budgetNow.slotMs / 1000))),
+      });
+    }
     budgetNow.spend();
+    soloNow?.spend();
     if (auth && signedId !== null) remember(signedId, auth);
 
     if (batch) {
       // The answer comes when the window is closed and the service has answered (the 5 s request deadline
       // is over by now: it only governs the reading of the request).
-      const reply = await join(service, hash, open);
+      const reply = joinsOpen
+        ? await joinOpen(open, hash)
+        : await enqueue(service, hash, wantsSolo);
       if (res.destroyed) return countAborted(req, res);
-      return send(res, reply.status, reply.body, origin);
+      return send(res, reply.status, reply.body, origin, reply.headers);
     }
     const got = await obtain(service, hash);
     if (!got.ok) return send(res, got.status, got.body, origin);
@@ -496,6 +590,7 @@ export function createRelay(options: RelayOptions): Relay {
   interface Reply {
     status: number;
     body: unknown;
+    headers?: Record<string, string>;
   }
   interface Waiting {
     hash: Uint8Array;
@@ -509,23 +604,133 @@ export function createRelay(options: RelayOptions): Relay {
   const openWindows = new Map<string, Window>(); // service id -> the window that takes requests
   let closed = false;
 
-  /** Puts a request into the open window of its service, or opens one (the timer starts with the first). */
-  function join(
-    service: RelayService,
-    hash: Uint8Array,
-    existing: Window | undefined,
-  ): Promise<Reply> {
+  /** A request that waits for a slot of its service (not yet in a window, not yet stamped). */
+  interface Queued extends Waiting {
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+  /**
+   * The planner of one service: requests that wait for a slot. A slot is one stamp of the service (the budget
+   * `60000 / minIntervalMs` per minute): a window takes one, a solo stamp takes one. They alternate when both wait.
+   */
+  interface Lane {
+    solo: Queued[];
+    normal: Queued[];
+    lastWasSolo: boolean;
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+  const lanes = new Map<string, Lane>();
+  const laneOf = (id: string): Lane => {
+    let lane = lanes.get(id);
+    if (lane === undefined) {
+      lane = { solo: [], normal: [], lastWasSolo: false, timer: null };
+      lanes.set(id, lane);
+    }
+    return lane;
+  };
+
+  /** Does anybody wait for this service: in an open window or in the queue? */
+  function laneBusy(id: string): boolean {
+    const lane = laneOf(id);
+    return (
+      lane.solo.length + lane.normal.length > 0 || (openWindows.get(id)?.waiting.length ?? 0) > 0
+    );
+  }
+
+  /** Milliseconds until the service has a free slot (0: now). */
+  function slotWaitMs(service: RelayService): number {
+    const now = options.now();
+    const own = (windows.get(service.id) ?? []).filter((t) => now - t < bw);
+    windows.set(service.id, own);
+    const limit = Math.max(1, Math.floor(bw / service.minIntervalMs));
+    return own.length >= limit
+      ? Math.max(1, bw - (now - Math.min(own[own.length - limit]!, now)))
+      : 0;
+  }
+
+  /** Takes a slot of the service now. */
+  function takeSlot(service: RelayService): void {
+    const own = windows.get(service.id) ?? [];
+    own.push(options.now());
+    windows.set(service.id, own);
+  }
+
+  /** A request joins a window that is open (it takes no slot: the window has one). */
+  function joinOpen(w: Window, hash: Uint8Array): Promise<Reply> {
     return new Promise((resolve) => {
-      let w = existing;
-      if (w === undefined) {
-        const created: Window = { service, waiting: [], timer: null };
-        created.timer = setTimeout(() => closeWindow(created), batch!.windowMs);
-        openWindows.set(service.id, created);
-        w = created;
-      }
       w.waiting.push({ hash, resolve });
-      if (w.waiting.length >= batch!.max) closeWindow(w); // full: the next request opens a new window
+      if (w.waiting.length >= batch!.max) closeWindow(w); // full: the next request waits for a slot
     });
+  }
+
+  /** Opens the window of a service with the requests that wait for it (the timer starts now). */
+  function openWindowWith(service: RelayService, items: Waiting[]): void {
+    const created: Window = { service, waiting: items, timer: null };
+    created.timer = setTimeout(() => closeWindow(created), batch!.windowMs);
+    openWindows.set(service.id, created);
+    if (items.length >= batch!.max) closeWindow(created);
+  }
+
+  /**
+   * A request that needs a slot: it waits in the queue of its service (for the longest `maxWaitMs`, then
+   * `503 busy`); `dispatch` serves it at once when a slot is free.
+   */
+  function enqueue(service: RelayService, hash: Uint8Array, solo: boolean): Promise<Reply> {
+    return new Promise((resolve) => {
+      const lane = laneOf(service.id);
+      const item: Queued = { hash, resolve, timer: null };
+      item.timer = setTimeout(() => {
+        const list = solo ? lane.solo : lane.normal;
+        const at = list.indexOf(item);
+        if (at < 0) return;
+        list.splice(at, 1);
+        resolve({
+          status: 503,
+          body: { error: 'busy' },
+          headers: { 'Retry-After': String(Math.max(1, Math.ceil(slotWaitMs(service) / 1000))) },
+        });
+      }, maxWaitMs);
+      (solo ? lane.solo : lane.normal).push(item);
+      dispatch(service);
+    });
+  }
+
+  /** Gives free slots to the waiting requests: a solo request and a window alternate, so nothing starves. */
+  function dispatch(service: RelayService): void {
+    const lane = laneOf(service.id);
+    if (lane.timer !== null) clearTimeout(lane.timer);
+    lane.timer = null;
+    while (!closed && lane.solo.length + lane.normal.length > 0) {
+      const wait = slotWaitMs(service);
+      if (wait > 0) {
+        lane.timer = setTimeout(() => dispatch(service), wait);
+        return;
+      }
+      const solo = lane.solo.length > 0 && (lane.normal.length === 0 || !lane.lastWasSolo);
+      takeSlot(service);
+      lane.lastWasSolo = solo;
+      if (solo) {
+        const item = lane.solo.shift()!;
+        if (item.timer !== null) clearTimeout(item.timer);
+        runSolo(service, item);
+      } else {
+        // the window takes the requests that wait, up to its size; the others wait for the next slot
+        const items = lane.normal.splice(0, batch!.max);
+        for (const i of items) if (i.timer !== null) clearTimeout(i.timer);
+        openWindowWith(service, items);
+      }
+    }
+  }
+
+  /** A direct stamp of one hash (no tree, no `batch` in the answer). */
+  function runSolo(service: RelayService, item: Waiting): void {
+    const done = async (): Promise<void> => {
+      const got = await obtain(service, item.hash);
+      if (!got.ok) return item.resolve({ status: got.status, body: got.body });
+      stats.stamped += 1;
+      stats.solo = (stats.solo ?? 0) + 1;
+      item.resolve({ status: 200, body: stampBody(service, got) });
+    };
+    done().catch(() => item.resolve({ status: 500, body: { error: 'internal' } }));
   }
 
   const answerAll = (waiting: readonly Waiting[], reply: Reply): void => {
@@ -600,6 +805,27 @@ export function createRelay(options: RelayOptions): Relay {
       if (w.timer !== null) clearTimeout(w.timer);
       answerAll(w.waiting, { status: 503, body: { error: 'shutting-down' } });
     }
+    for (const lane of lanes.values()) {
+      if (lane.timer !== null) clearTimeout(lane.timer);
+      lane.timer = null;
+      const queued = [...lane.solo.splice(0), ...lane.normal.splice(0)];
+      for (const q of queued) {
+        if (q.timer !== null) clearTimeout(q.timer);
+        q.resolve({ status: 503, body: { error: 'shutting-down' } });
+      }
+    }
+  }
+
+  function setKeys(keys: readonly RelayKey[]): void {
+    if (!authRequired) throw new Error('relay runs without authentication'); // no content
+    const next = buildKeys(keys); // throws before anything changes
+    keyById = next.byId;
+    soloKids = next.solo;
+  }
+
+  function noteKeyReload(applied: boolean): void {
+    if (applied) stats.keyReloads = (stats.keyReloads ?? 0) + 1;
+    else stats.keyReloadFailed = (stats.keyReloadFailed ?? 0) + 1;
   }
 
   /** One answer for every authentication failure: nothing says whether id, time or signature was wrong. */
@@ -725,7 +951,13 @@ export function createRelay(options: RelayOptions): Relay {
       stamped: stats.stamped,
       refused: { ...stats.refused },
       ...(batch ? { batched: stats.batched ?? 0 } : {}),
+      ...(stats.solo === undefined ? {} : { solo: stats.solo }),
+      ...(stats.soloDenied === undefined ? {} : { soloDenied: stats.soloDenied }),
+      ...(stats.keyReloads === undefined ? {} : { keyReloads: stats.keyReloads }),
+      ...(stats.keyReloadFailed === undefined ? {} : { keyReloadFailed: stats.keyReloadFailed }),
     }),
     close,
+    setKeys,
+    noteKeyReload,
   };
 }

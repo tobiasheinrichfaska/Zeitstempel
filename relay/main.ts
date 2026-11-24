@@ -15,12 +15,15 @@
 //   RELAY_BATCH_MS           collecting operation: window in ms, 1000 to 60000 (not set, empty or 0: off, every
 //                            request gets a stamp of its own; docs/relay.md, "Sammelbetrieb")
 //   RELAY_BATCH_MAX          most requests in one window, 2 to 1024 (default 128)
+//   RELAY_MAX_WAIT_MS        collecting operation: the longest a request waits for a free slot of its service,
+//                            1000 to 60000 (default 30000); then 503 busy
 // Nothing about a request is logged. Once every five minutes one line of counters is printed.
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { loadServices } from './load.ts';
 import { loadKeys, type RelayKey } from './keys.ts';
+import { createKeyWatcher } from './keywatch.ts';
 import type { RelayService } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
 import { networkUpstream } from './upstream.ts';
@@ -103,6 +106,17 @@ export function readSettings(env: NodeJS.ProcessEnv) {
       );
     }
   }
+  // The longest wait for a free slot (collecting operation): strictly read, an invalid value ends the start.
+  const maxWaitRaw = env.RELAY_MAX_WAIT_MS ?? '';
+  let maxWaitMs: number | undefined; // not set: the relay's default (maxWaitDefaultMs)
+  if (maxWaitRaw !== '') {
+    maxWaitMs = /^[0-9]{1,9}$/.test(maxWaitRaw) ? Number(maxWaitRaw) : NaN;
+    if (!(maxWaitMs >= RELAY_LIMITS.maxWaitMinMs && maxWaitMs <= RELAY_LIMITS.maxWaitMaxMs)) {
+      throw new Error(
+        `RELAY_MAX_WAIT_MS: ungültig (ganze Zahl von ${RELAY_LIMITS.maxWaitMinMs} bis ${RELAY_LIMITS.maxWaitMaxMs} erwartet)`,
+      );
+    }
+  }
   return {
     origins,
     port,
@@ -110,6 +124,7 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     keepAliveMs,
     batchMs,
     batchMax,
+    maxWaitMs,
     allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
     only,
     authOff,
@@ -249,6 +264,7 @@ function main(): void {
     process.exitCode = 1; // no server was started: the process ends by itself
     return;
   }
+  const startMs = Date.now();
   const { settings, services, keys, warnings } = config;
   for (const message of warnings) console.error(JSON.stringify({ event: 'warning', message }));
   const { server, relay } = createRelayServer(
@@ -263,6 +279,7 @@ function main(): void {
       ...(settings.batchMs === undefined
         ? {}
         : { batch: { windowMs: settings.batchMs, max: settings.batchMax } }),
+      ...(settings.maxWaitMs === undefined ? {} : { maxWaitMs: settings.maxWaitMs }),
     },
     serverLimits(settings),
   );
@@ -273,10 +290,34 @@ function main(): void {
     () => console.log(JSON.stringify({ event: 'counts', ...relay.stats() })),
     300_000,
   ).unref();
-  process.on('SIGTERM', () => {
-    relay.close(); // requests that wait in a window are answered (503), nothing hangs
+  let ending = false;
+  const shutdown = (): void => {
+    if (ending) return;
+    ending = true;
+    watcher?.stop();
+    relay.close(); // requests that wait in a window or for a slot are answered (503), nothing hangs
     server.close(() => process.exit(0));
-  });
+  };
+  // The key file is read again while the relay runs (new keys count, removed ones stop at once); a
+  // `restartAfter` in it ends the process once cleanly, a supervisor starts it again. The relay only reads the file.
+  const watcher =
+    keys === 'off'
+      ? null
+      : createKeyWatcher({
+          path: settings.keysFile,
+          apply: (list) => relay.setKeys(list),
+          now: () => Date.now(),
+          startMs,
+          onRestart: () => {
+            console.log(JSON.stringify({ event: 'restart-after' }));
+            shutdown();
+          },
+          onReloaded: () => relay.noteKeyReload(true),
+          onFailed: () => relay.noteKeyReload(false),
+        });
+  watcher?.check();
+  watcher?.start(RELAY_LIMITS.keyFileCheckMs);
+  process.on('SIGTERM', shutdown);
 }
 
 if (import.meta.main) main();

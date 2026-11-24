@@ -238,6 +238,14 @@ folgt ehrlich:
 - Ein frisch ausgestelltes Token prüft man mit `minGenTime` (s. „Frische“ oben), solange man weiß, wann man es
   angefordert hat; später nicht mehr.
 
+## Solo-Stempel (Schlüsselart 2)
+
+Ein Stempel mit `mode: "solo"` ist ein **gewöhnlicher Einzelstempel auf den Hash** (ohne Baum, ohne `batch`): er wird mit
+`verifyTimestampToken` geprüft und hat alle Grenzen dieses Dokuments, aber **nicht** die des Belegs im Sammelbetrieb. Ob
+ein Schlüssel ihn verlangen darf, entscheidet allein die Schlüsseldatei des Relays; die Bibliothek kennt keine
+Schlüsselarten (`docs/relay.md`, „Schlüsselarten und Solo-Stempel“). Ein Solo-Schlüssel in einer Web-App ist für die
+Nutzer dieses Browsers auslesbar.
+
 ## Beleg im Sammelbetrieb: was er aussagt und was nicht
 
 `verifyBatchedTimestamp` prüft einen Stempel, den das Relay im Sammelbetrieb für viele Hashes zugleich beim Dienst

@@ -21,6 +21,10 @@
 - [x] **Wiederholung wird abgelehnt** — Replay-Cache auf den Digest der signierten Nachricht (`tests/relay.test.ts`)
 - [x] **Schlüsseldatei streng gelesen** — nur öffentliche Schlüssel, jede Abweichung ein Fehler (`tests/relay-keys.test.ts`)
 - [x] **Sammelbetrieb** — ein Stempel je Fenster, Beleg je Anfrage, Fehler und Schließen beantworten alle (`tests/batch-relay.test.ts`; nur gegen einen Stub, nie gegen einen echten Dienst)
+- [x] **Schlüsselarten und Solo-Stempel** — Art 2 immer, Art 1 nur bei leerem Fenster (`403 solo-not-allowed`), `mode` durch die Signatur gebunden, Planer je Dienst (Solo belegt den Platz, abwechselnd, `503 busy` nach `RELAY_MAX_WAIT_MS`, Warteschlange und Solo-Limit je Schlüssel begrenzt) (`tests/solo.test.ts`; nur gegen einen Stub)
+- [x] **Schlüsseldatei laufend neu gelesen** — neuer Schlüssel gilt, entfernter sofort nicht mehr, ungültige Datei behält den alten Satz, `restartAfter` beendet einmal und die Datei wird nie geschrieben (`tests/solo.test.ts`)
+- [x] **Schlüsselarten und Solo-Stempel** — Art 2 immer, Art 1 nur bei leerem Fenster (`403 solo-not-allowed`), `mode` durch die Signatur gebunden, Planer je Dienst (Solo belegt den Platz, abwechselnd, `503 busy` nach `RELAY_MAX_WAIT_MS`, Warteschlange und Solo-Limit je Schlüssel begrenzt) (`tests/solo.test.ts`; nur gegen einen Stub)
+- [x] **Schlüsseldatei laufend neu gelesen** — neuer Schlüssel gilt, entfernter sofort nicht mehr, ungültige Datei behält den alten Satz, `restartAfter` beendet einmal und die Datei wird nie geschrieben (`tests/solo.test.ts`)
 - [x] **Grenzen** — Körpergröße, Zähler, Fristen, Größe der Antwort
 - [x] **Echte Dienste** — `npm run probe -- --service freetsa` und `npm run spike` (von Hand, Netz nötig)
 - [ ] **Betrieb** — nicht ausgerollt, kein Image

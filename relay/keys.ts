@@ -10,7 +10,22 @@ import { fail, fromBase64Url, ok, toHex, type Result } from '../src/index.ts';
 export interface RelayKey {
   id: string;
   publicKey: Uint8Array;
+  /**
+   * Key type 2 (`"solo": true` in the file): may ask for a direct stamp of its own (`mode: "solo"`) in
+   * collecting operation. Absent or false: type 1 (normal).
+   */
+  solo?: boolean;
 }
+
+/** What a key file holds: the keys and the optional restart time (Unix seconds, `restartAfter`). */
+export interface KeyFile {
+  keys: RelayKey[];
+  restartAfter?: number;
+}
+
+/** `restartAfter`: smallest and largest accepted Unix time in seconds (2001-09-09 to 5138-11-16). */
+export const RESTART_AFTER_MIN = 1_000_000_000;
+export const RESTART_AFTER_MAX = 99_999_999_999;
 
 const KEY_ID = /^[a-z][a-z0-9-]{0,31}$/;
 export const MAX_KEYS = 64;
@@ -33,19 +48,34 @@ export function publicKeyObject(point: Uint8Array): KeyObject | null {
 }
 
 /**
- * Strict reader of the key file: `{"version": 2, "keys": [{"id", "publicKey"}]}` with 1 to 64 keys,
- * ids of the form `[a-z][a-z0-9-]{0,31}`, public keys as unpadded base64url of an uncompressed point
- * (65 bytes) that lies on the curve P-256, no duplicate id, no duplicate key, no other fields. The
- * failure carries a rule name and, for an entry, its index in `keys`, never content.
+ * Strict reader of the key file: `{"version": 2, "keys": [{"id", "publicKey", "solo"?}], "restartAfter"?}` with 1
+ * to 64 keys, ids of the form `[a-z][a-z0-9-]{0,31}`, public keys as unpadded base64url of an uncompressed
+ * point (65 bytes) that lies on the curve P-256, no duplicate id, no duplicate key, no other fields. `solo` is
+ * a boolean (nothing else), `restartAfter` an integer of Unix seconds. The failure carries a rule name and,
+ * for an entry, its index in `keys`, never content.
  */
-export function readKeyFile(data: unknown): Result<RelayKey[]> {
+export function readKeyFileFull(data: unknown): Result<KeyFile> {
   // `index`: the position of the entry in `keys` (never its content)
   const bad = (rule: string, index?: number) =>
     fail('bad-key-file', index === undefined ? rule : `${rule} in keys[${index}]`);
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return bad('not-an-object');
   const top = data as Record<string, unknown>;
-  if (Object.keys(top).sort().join() !== 'keys,version') return bad('fields');
+  const names = Object.keys(top).sort().join();
+  if (names !== 'keys,version' && names !== 'keys,restartAfter,version') return bad('fields');
   if (top.version !== 2) return bad('version');
+  let restartAfter: number | undefined;
+  if ('restartAfter' in top) {
+    const r = top.restartAfter;
+    if (
+      typeof r !== 'number' ||
+      !Number.isInteger(r) ||
+      r < RESTART_AFTER_MIN ||
+      r > RESTART_AFTER_MAX
+    ) {
+      return bad('restart-after');
+    }
+    restartAfter = r;
+  }
   if (!Array.isArray(top.keys) || top.keys.length < 1 || top.keys.length > MAX_KEYS) {
     return bad('key-count');
   }
@@ -56,9 +86,12 @@ export function readKeyFile(data: unknown): Result<RelayKey[]> {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
       return bad('entry', index);
     const e = entry as Record<string, unknown>;
-    if (Object.keys(e).sort().join() !== 'id,publicKey') return bad('entry-fields', index);
+    const fields = Object.keys(e).sort().join();
+    if (fields !== 'id,publicKey' && fields !== 'id,publicKey,solo')
+      return bad('entry-fields', index);
     if (typeof e.id !== 'string' || !KEY_ID.test(e.id)) return bad('id', index);
     if (typeof e.publicKey !== 'string') return bad('public-key', index);
+    if ('solo' in e && typeof e.solo !== 'boolean') return bad('solo', index);
     const point = fromBase64Url(e.publicKey);
     if (!point || point.length !== 65) return bad('public-key', index);
     if (publicKeyObject(point) === null) return bad('public-key-point', index);
@@ -67,27 +100,41 @@ export function readKeyFile(data: unknown): Result<RelayKey[]> {
     if (points.has(hex)) return bad('duplicate-key', index);
     ids.add(e.id);
     points.add(hex);
-    keys.push({ id: e.id, publicKey: point });
+    keys.push({ id: e.id, publicKey: point, ...(e.solo === true ? { solo: true } : {}) });
   }
-  return ok(keys);
+  return ok({ keys, ...(restartAfter === undefined ? {} : { restartAfter }) });
+}
+
+/** The keys of a key file (see `readKeyFileFull`; `restartAfter` is checked but not returned). */
+export function readKeyFile(data: unknown): Result<RelayKey[]> {
+  const full = readKeyFileFull(data);
+  return full.ok ? ok(full.value.keys) : full;
 }
 
 /**
- * Reads and checks the key file. Throws with a message a person can read: the path and a rule name,
- * never a piece of the file.
+ * Reads and checks the key file (keys and `restartAfter`). Throws with a message a person can read: the
+ * path and a rule name, never a piece of the file.
  */
-export function loadKeys(
+export function loadKeyFile(
   path: string,
   read: (path: string) => string = (p) => readFileSync(p, 'utf8'),
-): RelayKey[] {
+): KeyFile {
   let data: unknown;
   try {
     data = JSON.parse(read(path));
   } catch {
     throw new Error(`${path}: Schlüsseldatei nicht lesbar oder kein JSON`);
   }
-  const keys = readKeyFile(data);
-  if (!keys.ok)
-    throw new Error(`${path}: ungültige Schlüsseldatei (${keys.reason}: ${keys.detail})`);
-  return keys.value;
+  const file = readKeyFileFull(data);
+  if (!file.ok)
+    throw new Error(`${path}: ungültige Schlüsseldatei (${file.reason}: ${file.detail})`);
+  return file.value;
+}
+
+/** Reads and checks the key file; the keys only (see `loadKeyFile`). */
+export function loadKeys(
+  path: string,
+  read: (path: string) => string = (p) => readFileSync(p, 'utf8'),
+): RelayKey[] {
+  return loadKeyFile(path, read).keys;
 }

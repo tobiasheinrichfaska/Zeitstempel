@@ -75,4 +75,19 @@ export const RELAY_LIMITS = {
   batchMaxMin: 2,
   /** RELAY_BATCH_MAX: largest accepted value (the library accepts trees of this size). */
   batchMaxMax: 1_024,
+  /**
+   * Direct (solo) stamps one key may ask for per minute, on top of `perMinutePerKey` (memory only, never
+   * logged). Low on purpose: a solo stamp takes a whole slot of a service.
+   */
+  soloPerMinutePerKey: 4,
+  /** Solo requests that may wait for a slot, per service; a further one gets `503 busy`. */
+  soloQueueMax: 6,
+  /** RELAY_MAX_WAIT_MS: value when not set (how long a request may wait for a free slot, then `503 busy`). */
+  maxWaitDefaultMs: 30_000,
+  /** RELAY_MAX_WAIT_MS: smallest accepted value. */
+  maxWaitMinMs: 1_000,
+  /** RELAY_MAX_WAIT_MS: largest accepted value (the proxy and client time-outs must exceed it by 17 s). */
+  maxWaitMaxMs: 60_000,
+  /** How often the relay looks at the modification time of the key file (ms). */
+  keyFileCheckMs: 5_000,
 } as const;

@@ -215,6 +215,17 @@
     </table>
     <p class="note">Die Optionsregeln und die Suchgrenzen im Einzelnen: <code>docs/grenzen.md</code>.</p>
 
+    <h2>5a Relay: Schlüsseldatei, Anfrage und Planer (Teil des Relays, nicht der Bibliothek)</h2>
+    <table>
+      <tr><th>Feld</th><th>Form</th><th>Bedeutung</th></tr>
+      <tr><td>Schlüsseldatei: <code>keys[i].solo</code></td><td>boolesch, optional (<code>true</code> = Schlüsselart 2)</td><td>Schlüsselart 2 darf im Sammelbetrieb einen Solo-Stempel verlangen; fehlt das Feld oder ist es <code>false</code>, ist es Art 1. Jeder andere Typ: <code>bad-key-file</code> (<code>solo in keys[i]</code>)</td></tr>
+      <tr><td>Schlüsseldatei: <code>restartAfter</code></td><td>ganze Zahl, Unix-Sekunden (1000000000 bis 99999999999), optional, oberste Ebene</td><td>Gilt <code>Startzeit &lt; restartAfter &lt;= jetzt</code>, beendet sich das Relay einmal sauber (Exit-Code 0); ein Prozess-Überwacher startet es neu. Das Relay schreibt nie in die Datei. Sonst <code>bad-key-file</code> (<code>restart-after</code>)</td></tr>
+      <tr><td>Anfrage: <code>mode</code></td><td>Text <code>"solo"</code>, optional im JSON-Körper neben <code>hash</code></td><td>Direkter Stempel des Hashes ohne Merkle-Baum, Antwort ohne <code>batch</code>. Steht im signierten Körper, ist also an die Signatur gebunden. Anderer Wert: <code>400 bad-mode</code>. Ohne Sammelbetrieb wirkungslos</td></tr>
+      <tr><td>Fehlercodes</td><td><code>bad-mode</code> (400), <code>solo-not-allowed</code> (403), <code>busy</code> (503)</td><td>Einzelheiten und Zähler (<code>solo</code>, <code>soloDenied</code>, <code>keyReloads</code>, <code>keyReloadFailed</code>) in <code>docs/relay.md</code>, „Schlüsselarten und Solo-Stempel“</td></tr>
+      <tr><td>Einstellung <code>RELAY_MAX_WAIT_MS</code></td><td>ganze Zahl 1000 bis 60000, Vorgabe 30000</td><td>Längste Wartezeit auf einen freien Platz beim Dienst, danach <code>503 busy</code></td></tr>
+    </table>
+    <p class="note">Grenzen im Code (<code>relay/limits.ts</code>): <code>soloPerMinutePerKey</code> 4, <code>soloQueueMax</code> 6, <code>maxWaitDefaultMs</code> 30000, <code>keyFileCheckMs</code> 5000; alle mit Wert in <code>docs/relay.md</code>.</p>
+
     <h2>6 Werkseinstellungen (mitgelieferte Daten)</h2>
     <p>
       Die Dienstliste <code>services.json</code> (vier freie Dienste: freetsa, sectigo, digicert, certum) und die

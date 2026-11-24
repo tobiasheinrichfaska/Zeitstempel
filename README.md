@@ -95,6 +95,15 @@ kommt nach dem Fenster). Die Antwort trägt dann zusätzlich `batch` (`salt`, `i
 auf. Das ist **kein Einzelstempel** auf den Hash, und das Relay sieht alle Hashes; Einzelheiten in
 [`docs/relay.md`](docs/relay.md) („Sammelbetrieb“) und [`docs/grenzen.md`](docs/grenzen.md).
 
+**Schlüsselarten und Solo-Stempel (nur im Sammelbetrieb):** Ein Schlüssel der Art 2 (`"solo": true` in der Schlüsseldatei,
+nur vom Eigentümer vergeben) darf `{"hash": "…", "mode": "solo"}` senden und bekommt einen **direkten** Stempel des Hashes
+ohne Baum (nötig für PDF-Dokumentzeitstempel; die Antwort hat kein `batch`). Art 1 bekommt das nur, wenn für den Dienst
+sonst niemand wartet (sonst `403 solo-not-allowed`). Ist kein Platz beim Dienst frei, wartet die Anfrage höchstens
+`RELAY_MAX_WAIT_MS` (Vorgabe 30 s), danach `503 busy`. Die Schlüsseldatei wird laufend neu gelesen (Sperren = Eintrag
+entfernen); `restartAfter` beendet das Relay einmal sauber (Prozess-Überwacher nötig). Einzelheiten in
+[`docs/relay.md`](docs/relay.md) („Schlüsselarten und Solo-Stempel“); Solo-Schlüssel im Browserspeicher sind für die
+Nutzer dieses Browsers auslesbar.
+
 Betriebshinweise (Einzelheiten im Abschnitt „Betrieb hinter einem Reverse-Proxy“ von `docs/relay.md`): Das Relay und der Dienst
 sehen den **Hash**; bei ratbarem Inhalt einen gesalzenen Hash oder eine Merkle-Wurzel stempeln (oder den Sammelbetrieb nutzen). Jeder Dienst erlaubt nur
 wenige Stempel je Minute für alle zusammen (mitgeliefert: 4 je Dienst, FreeTSA 12), auch ein Fehlschlag kostet davon; `/health` prüft

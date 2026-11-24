@@ -80,7 +80,7 @@ Dieses Dokument hält fest, was bei der Weiterentwicklung geklärt wurde, womit 
 - **Aufwand:** PDF-Handling gehört in ein eigenes Modul oder in die App (die Bibliothek hat bewusst keine Abhängigkeiten).
   Prüfbar mit `pdfsig` (poppler) und `pyHanko`, nicht mit Adobe selbst.
 
-## 6. Entwurf: zwei Schlüsselarten und zwei Betriebsarten (nicht umgesetzt)
+## 6. Entwurf: zwei Schlüsselarten und zwei Betriebsarten (umgesetzt am 2026-11-24, siehe §6a und `docs/relay.md`)
 
 Vorgabe des Eigentümers: Schlüsselart 1 normal, Schlüsselart 2 berechtigt zur alleinigen Signatur. Zeitfenster gelten je
 externem Dienst. Ist ein Fenster voll (Höchstzahl oder Anfrage der Art 2), wartet der Rest.
