@@ -20,6 +20,19 @@ export function nameWith(tag: number, text: string): Uint8Array {
 }
 const gt = (s: string) => tlv(0x18, new TextEncoder().encode(s));
 const ecdsa256 = seq(oidT('1.2.840.10045.4.3.2'));
+const rsa256 = seq(oidT('1.2.840.113549.1.1.11'), tlv(5, new Uint8Array()));
+/** The signature algorithm that fits a signing key (ECDSA P-256 or RSA PKCS#1 v1.5, both with SHA-256). */
+const algFor = (k: any) => (k.privateKey.asymmetricKeyType === 'rsa' ? rsa256 : ecdsa256);
+const rsaPairs = new Map<number, ReturnType<typeof generateKeyPairSync>>();
+/** An RSA key pair of the given size, generated once per size (key generation is slow). */
+export function rsaKey(bits: number): ReturnType<typeof generateKeyPairSync> {
+  let k = rsaPairs.get(bits);
+  if (!k) {
+    k = generateKeyPairSync('rsa', { modulusLength: bits });
+    rsaPairs.set(bits, k);
+  }
+  return k;
+}
 const sha256 = (b: Uint8Array) => u(createHash('sha256').update(b).digest());
 const ext = (id: string, crit: boolean, val: Uint8Array) =>
   crit ? seq(oidT(id), tlv(1, Uint8Array.of(0xff)), octet(val)) : seq(oidT(id), octet(val));
@@ -33,6 +46,12 @@ export interface Opts {
   /** TSTInfo.accuracy: SEQUENCE of INTEGER seconds, [0] millis, [1] micros (each part optional). */
   accuracy?: { sec?: number; millis?: number; micros?: number };
   tstExtra?: Uint8Array[]; // extra TSTInfo fields after genTime
+  /** Replaces everything after genTime in the TSTInfo (accuracy, nonce, `tstExtra` are then ignored): the fields in this order. */
+  tstFields?: Uint8Array[];
+  /** Replaces the messageImprint (SEQUENCE) of the TSTInfo as it is. */
+  tstImprintRaw?: Uint8Array;
+  /** RSA keys (modulus bits) for the signer (`tsa`), the intermediate (`int`) and the root (`ca`) instead of ECDSA P-256. */
+  rsa?: { tsa?: number; int?: number; ca?: number };
   nonceBytes?: Uint8Array; // raw INTEGER content
   nonceRaw?: boolean;
   serialRaw?: Uint8Array; // TSA cert serial INTEGER content
@@ -117,12 +136,12 @@ function essAttribute(kind: Opts['essCertId'], cert: Uint8Array): Uint8Array {
   );
 }
 export function build(o: Opts = {}) {
+  const ec = () => generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const ca =
-    (o.keys?.ca as ReturnType<typeof generateKeyPairSync>) ??
-    generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    (o.keys?.ca as ReturnType<typeof generateKeyPairSync>) ?? (o.rsa?.ca ? rsaKey(o.rsa.ca) : ec());
   const tsa =
     (o.keys?.tsa as ReturnType<typeof generateKeyPairSync>) ??
-    generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    (o.rsa?.tsa ? rsaKey(o.rsa.tsa) : ec());
   const spki = (k: any) => u(k.publicKey.export({ type: 'spki', format: 'der' }));
   const validity = seq(gt('20200101000000Z'), gt('20400101000000Z'));
   const mkCert = (
@@ -135,10 +154,11 @@ export function build(o: Opts = {}) {
     validityOverride?: Uint8Array,
     v1 = false,
   ) => {
+    const alg = algFor(signKey);
     const tbs = seq(
       ...(v1 ? [] : [tlv(ctx(0), int(2))]),
       tlv(2, serial),
-      ecdsa256,
+      alg,
       typeof issuer === 'string' ? name(issuer) : issuer,
       validityOverride ?? validity,
       name(subject),
@@ -146,7 +166,7 @@ export function build(o: Opts = {}) {
       ...(v1 ? [] : [tlv(ctx(3), seq(...exts))]),
     );
     const sig = u(sign('sha256', tbs, signKey.privateKey));
-    return seq(tbs, ecdsa256, tlv(3, Uint8Array.of(0), sig));
+    return seq(tbs, alg, tlv(3, Uint8Array.of(0), sig));
   };
   const caCert = mkCert(
     'CA',
@@ -163,7 +183,7 @@ export function build(o: Opts = {}) {
     o.rootV1,
   );
   const attacker = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-  const mid = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const mid = o.rsa?.int ? rsaKey(o.rsa.int) : ec();
   const caExts = (extra: Uint8Array[], isCa = true, keyCertSign = true, noBc = false) => [
     ...(noBc ? [] : [ext('2.5.29.19', true, isCa ? seq(tlv(1, Uint8Array.of(0xff))) : seq())]),
     ext('2.5.29.15', true, tlv(3, keyCertSign ? Uint8Array.of(1, 0x04) : Uint8Array.of(7, 0x80))),
@@ -276,12 +296,10 @@ export function build(o: Opts = {}) {
   const tst = seq(
     int(1),
     oidT('1.2.3.4'),
-    seq(seq(oidT('2.16.840.1.101.3.4.2.1')), octet(imprint)),
+    o.tstImprintRaw ?? seq(seq(oidT('2.16.840.1.101.3.4.2.1')), octet(imprint)),
     tlv(2, o.tstSerialRaw ?? Uint8Array.of(9)),
     gt(o.genTime ?? '20260101000000Z'),
-    ...accuracyField,
-    ...nonceField,
-    ...(o.tstExtra ?? []),
+    ...(o.tstFields ?? [...accuracyField, ...nonceField, ...(o.tstExtra ?? [])]),
   );
   const attrs = [
     seq(oidT('1.2.840.113549.1.9.3'), set(oidT('1.2.840.113549.1.9.16.1.4'))),
@@ -303,7 +321,7 @@ export function build(o: Opts = {}) {
     ),
     seq(oidT('2.16.840.1.101.3.4.2.1')),
     attrCtx,
-    o.signatureAlg ? seq(oidT(o.signatureAlg.oid)) : ecdsa256,
+    o.signatureAlg ? seq(oidT(o.signatureAlg.oid)) : algFor(tsa),
     octet(sig),
   );
   const sd = seq(

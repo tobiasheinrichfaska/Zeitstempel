@@ -55,8 +55,10 @@ const REASONS: Record<lib.Reason, true> = {
   'signing-certificate-missing': true,
   'signing-certificate-mismatch': true,
   'signature-invalid': true,
+  'tsa-mismatch': true,
   'bad-pem': true,
   'bad-certificate': true,
+  'weak-key': true,
   'signer-certificate-missing': true,
   'certificate-not-valid-at-time': true,
   'bad-eku': true,
@@ -158,6 +160,44 @@ describe('docs against the code', () => {
       services: { id: string; url: string }[];
     };
     for (const s of file.services) expect(doc, s.id).toContain(s.url);
+  });
+});
+
+describe('tsa name, TSTInfo schema, minRsaBits and the OpenSSL table are written down', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  it('data-model.html and grenzen.md name the new codes, the option and the TstInfo field', () => {
+    expect(model).toContain('<td>tsa-mismatch</td>');
+    expect(model).toContain('<td>weak-key</td>');
+    expect(model).toContain('<td>minRsaBits</td>');
+    expect(model).toContain('<td>tsa</td>');
+    expect(model).toContain('<td>tsa-mismatch</td>');
+    const doc = flat(limitsDoc);
+    for (const word of [
+      '`tsa-mismatch`',
+      '`weak-key`',
+      '`minRsaBits`',
+      '## Abgleich mit OpenSSL',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+  });
+  it('grenzen.md has a row for every finding F1 to F20 of the comparison, and lists what is not built', () => {
+    for (let n = 1; n <= 20; n += 1)
+      expect(limitsDoc, `F${n}`).toMatch(new RegExp(`\\|\\s*F${n}\\s*\\|`));
+    const doc = flat(limitsDoc);
+    for (const word of ['subjectKeyIdentifier', 'pathLenConstraint', 'Brainpool', 'Ed25519']) {
+      expect(doc, word).toContain(word);
+    }
+  });
+  it('relay.md says the batch receipt is no ERS (RFC 4998 / 6283)', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('**kein Evidence Record (ERS, RFC 4998 und RFC 6283)**');
+    expect(doc).toContain('**nicht möglich**');
+  });
+  it('the README names minRsaBits and the OpenSSL table', () => {
+    const readme = flat(readFileSync(new URL('../README.md', import.meta.url), 'utf8'));
+    expect(readme).toContain('`minRsaBits`');
+    expect(readme).toContain('Abgleich mit OpenSSL');
   });
 });
 

@@ -126,9 +126,9 @@ const nodeHash = (left: Uint8Array, right: Uint8Array): Promise<Uint8Array> =>
 /**
  * The root from a leaf and its audit path, by the verification procedure of RFC 9162 section 2.1.3.2 for the
  * tree shape of RFC 6962 (split at the largest power of two below n, no duplicated last leaf). The path must
- * have exactly the length that `size` and `index` call for, else `bad-batch`.
+ * have exactly the length that `size` and `index` call for, else `bad-batch`. Exported for the tests (published vectors); not part of the package entry.
  */
-async function rootFromPath(
+export async function rootFromPath(
   leaf: Uint8Array,
   index: number,
   size: number,

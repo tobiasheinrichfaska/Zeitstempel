@@ -4,6 +4,7 @@ import {
   boolean,
   children,
   ctx,
+  ctxPrimitive,
   expect,
   inner,
   integerNumber,
@@ -18,7 +19,7 @@ import { HASHES, OID, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
 import { parseCertificate, type Certificate } from './x509.ts';
 
-/** The content of a time stamp token (`TSTInfo`, RFC 3161 § 2.4.2). */
+/** The content of a time stamp token (`TSTInfo`, RFC 3161 § 2.4.2), read as the schema (fixed order, each field once). */
 export interface TstInfo {
   policy: string;
   hashOid: string;
@@ -30,6 +31,8 @@ export interface TstInfo {
   /** Total accuracy in milliseconds when given. */
   accuracyMs: number | null;
   nonce: Uint8Array | null;
+  /** The `tsa` field: the DER of the `GeneralName` it holds (verified against the signer by `verifyTimestampToken`), or null. */
+  tsa: Uint8Array | null;
 }
 
 export interface SignerParts {
@@ -59,37 +62,135 @@ export interface ParsedToken {
 /** Most certificates a token may carry. */
 export const MAX_CERTIFICATES = 16;
 
+const bad = () => new ReaderError('bad-tst-info');
+
+/** Any reader error inside the optional fields of the TSTInfo is `bad-tst-info`. */
+function inTstInfo<T>(run: () => T): T {
+  try {
+    return run();
+  } catch {
+    throw bad();
+  }
+}
+
+/** `Accuracy` (RFC 3161 § 2.4.2): seconds, `[0]` millis (1..999), `[1]` micros (1..999), each at most once, in this order. */
+function readAccuracy(node: Node): number {
+  const parts = children(node);
+  let at = 0;
+  let ms = 0;
+  if (parts[at]?.tag === TAG.integer) {
+    ms += integerNumber(parts[at]!) * 1000;
+    at += 1;
+  }
+  for (const [tag, scale] of [
+    [ctxPrimitive(0), 1],
+    [ctxPrimitive(1), 1000],
+  ] as const) {
+    const part = parts[at];
+    if (part?.tag !== tag) continue;
+    const v = integerNumber({ ...part, tag: TAG.integer });
+    if (v < 1 || v > 999) throw bad();
+    ms += v / scale;
+    at += 1;
+  }
+  if (at !== parts.length) throw bad();
+  return ms;
+}
+
+/** Checks that a `GeneralName` (RFC 5280 § 4.2.1.6) is one of the nine forms and shaped as that form. */
+function checkGeneralName(gn: Node): void {
+  switch (gn.tag) {
+    case ctx(0): {
+      // otherName: type-id OID, value [0] EXPLICIT
+      const parts = children(gn);
+      if (parts.length !== 2) throw bad();
+      oid(parts[0]!);
+      expect(parts[1], ctx(0));
+      return;
+    }
+    case ctxPrimitive(1): // rfc822Name
+    case ctxPrimitive(2): // dNSName
+    case ctxPrimitive(6): // uniformResourceIdentifier
+      if (gn.value.length === 0 || gn.value.some((b) => b > 0x7f)) throw bad(); // IA5String
+      return;
+    case ctx(3): // x400Address, ctx(5) ediPartyName: only checked to be well-formed
+    case ctx(5):
+      children(gn);
+      return;
+    case ctx(4): // directoryName: an EXPLICIT Name
+      expect(inner(gn), TAG.sequence);
+      return;
+    case ctxPrimitive(7): // iPAddress
+      if (gn.value.length !== 4 && gn.value.length !== 16) throw bad();
+      return;
+    case ctxPrimitive(8): // registeredID
+      oid({ ...gn, tag: TAG.oid });
+      return;
+    default:
+      throw bad();
+  }
+}
+
+/** `Extensions` of the TSTInfo: at least one `Extension` (OID, critical only when TRUE, value). Contents are not judged. */
+function checkExtensions(node: Node): void {
+  const list = children(node);
+  if (list.length === 0) throw bad();
+  for (const e of list) {
+    const parts = children(expect(e, TAG.sequence));
+    if (parts.length < 2 || parts.length > 3) throw bad();
+    oid(parts[0]!);
+    if (parts.length === 3 && !boolean(parts[1]!)) throw bad(); // DER: DEFAULT FALSE is not written
+    octets(parts[parts.length - 1]!);
+  }
+}
+
+/**
+ * Reads the `TSTInfo` as the schema of RFC 3161 § 2.4.2: version, policy, messageImprint, serialNumber, genTime,
+ * then accuracy?, ordering?, nonce?, tsa [0]?, extensions [1]? each at most once, in this order, nothing else.
+ */
 function readTstInfo(der: Uint8Array): TstInfo {
   const f = children(expect(parseDer(der), TAG.sequence));
-  if (f.length < 5 || integerNumber(f[0]!) !== 1) throw new ReaderError('bad-tst-info');
+  if (f.length < 5 || integerNumber(f[0]!) !== 1) throw bad();
   const policy = oid(f[1]!);
   const imprintParts = children(expect(f[2], TAG.sequence));
-  const hashOid = oid(children(expect(imprintParts[0], TAG.sequence))[0]!);
+  if (imprintParts.length !== 2) throw bad();
+  const algParts = children(expect(imprintParts[0], TAG.sequence));
+  if (algParts.length < 1 || algParts.length > 2) throw bad();
+  if (algParts[1] && (algParts[1].tag !== TAG.null || algParts[1].value.length !== 0)) throw bad();
+  const hashOid = oid(algParts[0]!);
   const imprint = octets(imprintParts[1]!);
   const serial = toHex(trimZeros(unsignedBytes(f[3]!)));
   const genTime = time(expect(f[4], TAG.generalizedTime));
+  let at = 5;
   let accuracyMs: number | null = null;
-  let nonce: Uint8Array | null = null;
-  for (const n of f.slice(5)) {
-    if (n.tag === TAG.sequence && accuracyMs === null) {
-      let ms = 0;
-      for (const part of children(n)) {
-        if (part.tag === TAG.integer) ms += integerNumber(part) * 1000;
-        else if (part.tag === 0x80) ms += integerNumber({ ...part, tag: TAG.integer });
-        else if (part.tag === 0x81) ms += integerNumber({ ...part, tag: TAG.integer }) / 1000;
-        else throw new ReaderError('bad-tst-info');
-      }
-      accuracyMs = ms;
-    } else if (n.tag === TAG.integer && nonce === null) {
-      nonce = trimZeros(unsignedBytes(n));
-    } else if (n.tag === TAG.boolean || n.tag === ctx(0) || n.tag === ctx(1)) {
-      if (n.tag === TAG.boolean) boolean(n);
-    } else {
-      throw new ReaderError('bad-tst-info');
-    }
+  if (f[at]?.tag === TAG.sequence) {
+    accuracyMs = readAccuracy(f[at]!);
+    at += 1;
   }
+  if (f[at]?.tag === TAG.boolean) {
+    if (!boolean(f[at]!)) throw bad(); // ordering FALSE is the DEFAULT: DER does not write it
+    at += 1;
+  }
+  let nonce: Uint8Array | null = null;
+  if (f[at]?.tag === TAG.integer) {
+    nonce = trimZeros(unsignedBytes(f[at]!));
+    at += 1;
+  }
+  let tsa: Uint8Array | null = null;
+  if (f[at]?.tag === ctx(0)) {
+    const names = children(f[at]!);
+    if (names.length !== 1) throw bad();
+    inTstInfo(() => checkGeneralName(names[0]!));
+    tsa = names[0]!.raw;
+    at += 1;
+  }
+  if (f[at]?.tag === ctx(1)) {
+    inTstInfo(() => checkExtensions(f[at]!));
+    at += 1;
+  }
+  if (at !== f.length) throw bad();
   const hash = HASHES[hashOid];
-  if (hash && imprint.length !== hash.bytes) throw new ReaderError('bad-tst-info');
+  if (hash && imprint.length !== hash.bytes) throw bad();
   return {
     policy,
     hashOid,
@@ -99,6 +200,7 @@ function readTstInfo(der: Uint8Array): TstInfo {
     genTime,
     accuracyMs,
     nonce,
+    tsa,
   };
 }
 

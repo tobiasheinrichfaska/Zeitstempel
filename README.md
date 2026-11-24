@@ -48,6 +48,11 @@ Aufrufer (`docs/grenzen.md`). **Die mitgelieferten Anker sind Wurzeln:** die Pr�
 Zeitstempel-Zertifikat, das unter dem übergebenen Anker steht, auch das einer anderen Zeitstempel-Stelle derselben
 Hierarchie. „Dienst X hat bestätigt“ ist also stärker als das Geprüfte. Wer enger vertrauen will, übergibt selbst eine
 Zwischen-CA oder das Zertifikat des Signierers als Anker (für einen Anker gilt die Ausnahme in `docs/grenzen.md`).
+Die Prüfung ist streng: Das Feld `tsa` des Tokens muss zum Zeitstempel-Zertifikat passen (`tsa-mismatch`), der Inhalt des
+Tokens wird als Schema gelesen (`bad-tst-info`), und ein RSA-Schlüssel unter 2048 Bit im Zeitstempel-Zertifikat oder in
+der Kette (`weak-key`; Anker ausgenommen) wird abgelehnt. Die Option `minRsaBits` (Zahl, Vorgabe 2048, 0 schaltet aus)
+ändert die Grenze. Wo das strenger oder lockerer ist als `openssl ts -verify`: `docs/grenzen.md`, Tabelle „Abgleich
+mit OpenSSL“.
 Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime` ist
 im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `response.value.info` dagegen eine Zahl
 (Millisekunden seit 1970).

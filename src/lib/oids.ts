@@ -12,6 +12,7 @@ export const OID = {
   extBasicConstraints: '2.5.29.19',
   extKeyUsage: '2.5.29.15',
   extEku: '2.5.29.37',
+  extSubjectAltName: '2.5.29.17',
   ecPublicKey: '1.2.840.10045.2.1',
   rsaEncryption: '1.2.840.113549.1.1.1',
 } as const;

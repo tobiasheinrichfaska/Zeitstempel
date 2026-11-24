@@ -1,9 +1,27 @@
 import { byteLength, copyBytes, copyKnown, equalBytes, trimZeros } from './bytes.ts';
-import { DER_LIMITS, TAG, children, expect, integerBytes, octets, oid, parseDer } from './der.ts';
+import {
+  DER_LIMITS,
+  TAG,
+  children,
+  ctx,
+  ctxPrimitive,
+  expect,
+  inner,
+  integerBytes,
+  octets,
+  oid,
+  parseDer,
+} from './der.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
 import { MAX_CERTIFICATES, readToken, type ParsedToken, type TstInfo } from './token.ts';
-import { parsePemCertificates, sameName, type Certificate } from './x509.ts';
+import {
+  parsePemCertificates,
+  rsaModulusBits,
+  sameName,
+  subjectAltNames,
+  type Certificate,
+} from './x509.ts';
 
 /** Trusted root (or intermediate) certificates, as PEM text. The caller decides whom to trust. */
 export type TrustAnchors = readonly string[];
@@ -30,6 +48,12 @@ export interface VerifyOptions {
   maxSkewMs?: number;
   /** RFC 3161 wants the extended key usage to be critical. Default true. */
   requireCriticalEku?: boolean;
+  /**
+   * The smallest RSA modulus (in bits) the signer certificate and every certificate of the chain may have (a
+   * weaker one is `weak-key`). Default 2048; 0 switches the rule off. Trust anchors are exempt (the caller chose
+   * them). A finite number >= 0, else `bad-options`.
+   */
+  minRsaBits?: number;
 }
 
 export interface VerifiedTimestamp {
@@ -69,6 +93,7 @@ export const VERIFY_LIMITS = {
 } as const;
 
 const DEFAULT_SKEW_MS = 5 * 60 * 1000;
+const DEFAULT_MIN_RSA_BITS = 2048;
 
 const subtle = (): SubtleCrypto => {
   const s = globalThis.crypto?.subtle;
@@ -200,6 +225,7 @@ interface OptionSnapshot {
   readonly maxSkewMs: number;
   readonly expectedNonce: Uint8Array | undefined;
   readonly requireCriticalEku: boolean;
+  readonly minRsaBits: number;
 }
 
 /**
@@ -218,6 +244,7 @@ function checkOptions(options: unknown): OptionSnapshot {
     const skew = read('maxSkewMs');
     const nonce = read('expectedNonce');
     const critical = read('requireCriticalEku');
+    const rsaBits = read('minRsaBits');
     const nowMs = now === undefined ? undefined : dateMs(now);
     const atMs = at === undefined ? undefined : dateMs(at);
     const minGenMs = minGen === undefined ? undefined : dateMs(minGen);
@@ -230,6 +257,12 @@ function checkOptions(options: unknown): OptionSnapshot {
       nonce === undefined ? undefined : copyBytes(nonce, NONCE_BYTES.min, NONCE_BYTES.max);
     if (nonceCopy === null) throw bad();
     if (critical !== undefined && typeof critical !== 'boolean') throw bad();
+    if (
+      rsaBits !== undefined &&
+      (typeof rsaBits !== 'number' || !Number.isFinite(rsaBits) || rsaBits < 0)
+    ) {
+      throw bad();
+    }
     return Object.freeze({
       now: nowMs,
       at: atMs,
@@ -237,6 +270,7 @@ function checkOptions(options: unknown): OptionSnapshot {
       maxSkewMs: skew ?? DEFAULT_SKEW_MS,
       expectedNonce: nonceCopy,
       requireCriticalEku: critical ?? true,
+      minRsaBits: rsaBits ?? DEFAULT_MIN_RSA_BITS,
     });
   };
   if (options === undefined) return snapshot(() => undefined);
@@ -275,9 +309,50 @@ async function checkSigningCertificate(token: ParsedToken, signer: Certificate):
   }
 }
 
+const lowerAscii = (bytes: Uint8Array): Uint8Array =>
+  bytes.map((b) => (b >= 0x41 && b <= 0x5a ? b + 32 : b));
+
+/**
+ * RFC 3161 § 2.4.2: a `tsa` name in the TSTInfo must correspond to one of the subject names of the signer
+ * certificate: its subject (a `directoryName`, by the simplified name rule) or an entry of its subjectAltName of
+ * the same kind. directoryName: simplified name rule; dNSName: ASCII case ignored; every other kind (rfc822Name,
+ * URI, iPAddress, registeredID, otherName ...): the same bytes (docs/grenzen.md). Nothing else is derived from the
+ * certificate (no name in the subject's emailAddress counts as an rfc822Name).
+ */
+function checkTsaName(tsa: Uint8Array | null, signer: Certificate): void {
+  if (!tsa) return;
+  const name = parseDer(tsa);
+  const isDirectory = name.tag === ctx(4);
+  const wanted = isDirectory ? inner(name).raw : name.raw;
+  if (isDirectory && sameName(wanted, signer.subject)) return;
+  const entries = subjectAltNames(signer); // unreadable: bad-certificate
+  for (const entry of entries) {
+    if (entry.tag !== name.tag) continue;
+    let match: boolean;
+    try {
+      match = isDirectory
+        ? sameName(inner(entry).raw, wanted)
+        : name.tag === ctxPrimitive(2)
+          ? same(lowerAscii(entry.value), lowerAscii(name.value))
+          : same(entry.raw, name.raw);
+    } catch {
+      throw new ReaderError('bad-certificate');
+    }
+    if (match) return;
+  }
+  throw new ReaderError('tsa-mismatch');
+}
+
 /** Valid at every one of the given moments (`genTime`, and `at` when the caller gave one). */
 function validAt(cert: Certificate, times: readonly number[]): boolean {
   return times.every((t) => cert.notBefore <= t && t <= cert.notAfter);
+}
+
+/** An RSA key below the smallest allowed size (never for another kind of key; `minRsaBits` 0: never). */
+function isWeakRsa(cert: Certificate, minRsaBits: number): boolean {
+  if (minRsaBits === 0) return false;
+  const bits = rsaModulusBits(cert);
+  return bits !== null && bits < minRsaBits;
 }
 
 /** Why a candidate issuer is unusable at time `at`, or null when it is fine. */
@@ -285,6 +360,7 @@ function issuerFlaw(
   issuer: Certificate,
   anchors: readonly Certificate[],
   times: readonly number[],
+  minRsaBits: number,
 ) {
   const isAnchor = anchors.some((a) => same(a.raw, issuer.raw));
   // no basicConstraints at all (an X.509 v1 root): a CA only when the caller handed it over as an anchor
@@ -305,6 +381,7 @@ function issuerFlaw(
   ) {
     return 'bad-eku' as const;
   }
+  if (!isAnchor && isWeakRsa(issuer, minRsaBits)) return 'weak-key' as const;
   return null;
 }
 
@@ -322,6 +399,7 @@ async function buildChain(
   anchors: readonly Certificate[],
   pool: readonly Certificate[],
   times: readonly number[],
+  minRsaBits: number,
 ): Promise<number> {
   type Flawed = { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> };
   type Failure = ReaderError | { current: Certificate; flawed: Flawed[] };
@@ -362,7 +440,7 @@ async function buildChain(
     const usable: Certificate[] = [];
     const flawed: Flawed[] = [];
     for (const candidate of named) {
-      const flaw = issuerFlaw(candidate, anchors, times);
+      const flaw = issuerFlaw(candidate, anchors, times, minRsaBits);
       if (flaw) flawed.push({ candidate, flaw });
       else usable.push(candidate);
     }
@@ -488,6 +566,11 @@ async function verifyChecked(
     );
     if (!signer) throw new ReaderError('signer-certificate-missing');
     await checkSigningCertificate(token, signer);
+    // an RSA key below the smallest size is refused before it is used (a platform may or may not import it); a
+    // signer the caller trusts as an anchor is exempt
+    if (!anchors.some((a) => same(a.raw, signer.raw)) && isWeakRsa(signer, opts.minRsaBits)) {
+      throw new ReaderError('weak-key');
+    }
     // A signature OID that names its hash (ecdsa-with-SHA384 ...) must agree with the digestAlgorithm of the
     // SignerInfo (RFC 5652 § 5.3, openssl: "signature failure"); a bare OID takes the digestAlgorithm's hash.
     // SHA-1 stays `unsupported-signature` (refused in verifyWithKey).
@@ -506,6 +589,7 @@ async function verifyChecked(
     ) {
       throw new ReaderError('signature-invalid');
     }
+    checkTsaName(info.tsa, signer); // RFC 3161 § 2.4.2: the tsa name must be one of the signer's names
     const eku = signer.eku;
     if (
       !eku ||
@@ -524,7 +608,7 @@ async function verifyChecked(
 
     // chain to a trust anchor
     const pool = dedupe([...anchors, ...token.certificates]); // anchors first: a cross-signed twin of an anchor must not win
-    const length = await buildChain(signer, anchors, pool, times);
+    const length = await buildChain(signer, anchors, pool, times, opts.minRsaBits);
     return ok({
       genTime: new Date(info.genTime).toISOString(),
       accuracyMs: info.accuracyMs,

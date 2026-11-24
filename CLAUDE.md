@@ -110,9 +110,9 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   certificate invalid (`bad-certificate`); a trust anchor is exempt (that is the caller's decision). Options are
   checked: `trust` must be an array and `options` omitted or a plain object (prototype `Object.prototype` or
   `null`; not a class instance, `Map`, array), `expectedNonce` a `Uint8Array` of 1 to 16 bytes,
-  `requireCriticalEku` a boolean, `now`/`at` a real valid `Date`, `maxSkewMs` a number >= 0, otherwise `bad-options` (never a silently skipped check; only `undefined`
+  `requireCriticalEku` a boolean, `now`/`at` a real valid `Date`, `maxSkewMs` a number >= 0, `minRsaBits` a finite number >= 0, otherwise `bad-options` (never a silently skipped check; only `undefined`
   means "not given"). A `Uint8Array` of another realm (iframe, worker, `vm`) is refused (`bad-hash` / `bad-options`; a token: `malformed`; the nonce of `buildTimestampRequest`: `bad-nonce`): pass `new Uint8Array(x)`; `readTimestampResponse` and `readToken` check no `instanceof` and accept such bytes. The chain search tries every signature-valid issuer candidate (bounded), so a look-alike
-  certificate cannot block a valid token. A negative serial number makes a trust anchor or the signer's `sid` unreadable (`malformed`); an unreadable extra certificate inside the token is skipped (`skippedCertificates`, it can never be a candidate). A named signature OID of the signer (e.g. ecdsa-with-SHA384) must agree with the `digestAlgorithm` of the SignerInfo, else `signature-invalid` (a bare OID takes that hash). Looser than `openssl ts -verify`: extra keyUsage bits of the signer, validity inclusive (time == notAfter still valid), `crls` and TSTInfo `[0]`/`[1]` checked by tag only (`docs/grenzen.md`). A trust anchor without basicConstraints (X.509 v1) counts as a CA (the caller chose it); names are matched by a simplified RFC 5280 §7.1 rule to select issuer candidates only, the signature decides.
+  certificate cannot block a valid token. A negative serial number makes a trust anchor or the signer's `sid` unreadable (`malformed`); an unreadable extra certificate inside the token is skipped (`skippedCertificates`, it can never be a candidate). A named signature OID of the signer (e.g. ecdsa-with-SHA384) must agree with the `digestAlgorithm` of the SignerInfo, else `signature-invalid` (a bare OID takes that hash). Looser than `openssl ts -verify`: extra keyUsage bits of the signer, validity inclusive (time == notAfter still valid), `crls` checked by tag only (`docs/grenzen.md`). A trust anchor without basicConstraints (X.509 v1) counts as a CA (the caller chose it); names are matched by a simplified RFC 5280 §7.1 rule to select issuer candidates only, the signature decides.
 - **No revocation check, no name or path-length constraints, no policy check** (`docs/grenzen.md`). RSA-PSS and
   BER are refused; SHA-1 is accepted only as the certificate hash in the `signingCertificate` (v1) attribute, anywhere
   else it is refused.
@@ -177,6 +177,15 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   `perMinutePerKey` count every request as before. Code: `relay/credentials.ts`. Only against stubs (`tests/upstream-auth.test.ts`,
   `tests/upstream-network.test.ts`, a TLS stub); credentials in browser storage are readable by that browser's users; no
   IP-allow-list or certificate services (`docs/relay.md`).
+- **Token content rules (`tests/tstinfo.test.ts`, `tests/rsa-bits.test.ts`, `tests/batch-vectors.test.ts`):** the `tsa` field of
+  the TSTInfo must name the signer (subject or an entry of the same kind in the subjectAltName, else `tsa-mismatch`;
+  `dNSName` ignores ASCII case, every other kind compares bytes; the four recorded answers pass). The TSTInfo is read
+  as the schema (fixed order, each field once, accuracy parts in order, millis/micros 1 to 999, no explicit `ordering`
+  FALSE, non-empty extensions, else `bad-tst-info`). `minRsaBits` (default 2048, 0 = off) refuses a smaller RSA key in
+  the signer and the chain, trust anchors exempt (`weak-key`). Stricter than OpenSSL there (it accepts RSA-512 and the
+  odd TSTInfo shapes), looser only for `dNSName` case. Every measured difference is a row of `tests/openssl.test.ts`
+  and of the table in `docs/grenzen.md`. Not built, listed there: SubjectKeyIdentifier signers, pathLen and name
+  constraints, Brainpool/Ed25519. `rootFromPath` is exported for the published RFC 6962 vectors only.
 - **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
   2026-11-23 ran without it, with `keys: 'off'` in the script). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key

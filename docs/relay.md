@@ -556,6 +556,15 @@ Länge, falscher Typ oder falsche Größe eines Feldes, unbekanntes Feld), ist *
   gibt **keinen Einzelstempel auf den Hash**. Wie jeder Stempel der mitgelieferten Dienste ist er **nicht qualifiziert**
   und hat keine Sperrprüfung (`docs/grenzen.md`). Das Relay könnte weitere Blätter in den Baum legen; es kann aber keinen
   Hash nachträglich aus einem gestempelten Baum nehmen oder zurückdatieren.
+- **Kein ERS:** Das Format des Belegs ist **kein Evidence Record (ERS, RFC 4998 und RFC 6283)**. Es ist ein eigenes
+  JSON-Format; der Baum hat zwar die Form von RFC 6962/9162 (innere Knoten mit `0x01`, Blätter mit `0x00`, geteilt
+  bei der größten Zweierpotenz, kein verdoppeltes Blatt) und der Wert, den der Dienst stempelt, trägt die Zahl der
+  Blätter, aber ERS rechnet mit sortierten Hash-Gruppen ohne diese Präfixe und mit einem eigenen ASN.1-Aufbau samt
+  Erneuerung (neue Zeitstempel auf alte). Eine Umrechnung in einen ERS ist **nicht möglich**, und die Werkzeuge der
+  Beweiswerterhaltung (z. B. nach BSI TR-ESOR) lesen diesen Beleg nicht. Wer **juristische Verwertbarkeit** oder eine
+  Erneuerung der Beweiskraft über Jahre braucht, braucht einen ERS-Export oder einen Einzelstempel (`mode: "solo"`);
+  ob ein ERS-Export gebaut wird, entscheidet der Eigentümer. Die Prüfpfade und Wurzeln stimmen mit den
+  veröffentlichten RFC-6962-Werten überein (`tests/batch-vectors.test.ts`).
 - **Aufbewahren:** Hash, Token und der ganze Beleg gehören zusammen. Geht das Salz oder der Pfad verloren, ist der
   Stempel für diesen Hash nicht mehr nachzuweisen (er lässt sich nicht aus dem Token wiederherstellen).
 

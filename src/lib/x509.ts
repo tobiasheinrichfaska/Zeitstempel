@@ -1,4 +1,4 @@
-import { equalBytes, fromBase64 } from './bytes.ts';
+import { equalBytes, fromBase64, trimZeros } from './bytes.ts';
 import {
   TAG,
   bitStringBytes,
@@ -42,6 +42,8 @@ export interface Certificate {
   /** First byte of the keyUsage bit string (0x80 digitalSignature, 0x40 nonRepudiation, 0x04 keyCertSign). */
   keyUsage: number | null;
   eku: { oids: string[]; critical: boolean } | null;
+  /** The value (DER) of the subjectAltName extension, or null; read only when a `tsa` name needs it (`subjectAltNames`). */
+  subjectAltName: Uint8Array | null;
   /** True when a critical extension is present that this reader does not know (RFC 5280 § 4.2). */
   unknownCritical: boolean;
 }
@@ -108,6 +110,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
   let isCa: boolean | null = null;
   let keyUsage: number | null = null;
   let eku: Certificate['eku'] = null;
+  let subjectAltName: Uint8Array | null = null;
   let unknownCritical = false;
   const extNode = fields.find((f) => f.tag === ctx(3));
   if (extNode) {
@@ -124,6 +127,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
       expect(bits, TAG.bitString);
       keyUsage = bits.value[1] ?? 0;
     }
+    subjectAltName = exts.get(OID.extSubjectAltName)?.value ?? null;
     const ex = exts.get(OID.extEku);
     if (ex) {
       eku = {
@@ -148,8 +152,40 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
     isCa,
     keyUsage,
     eku,
+    subjectAltName,
     unknownCritical,
   };
+}
+
+/** The entries of the subjectAltName (each a `GeneralName` node); `[]` without the extension, `ReaderError` when it is unreadable. */
+export function subjectAltNames(cert: Certificate): Node[] {
+  if (!cert.subjectAltName) return [];
+  try {
+    const names = children(expect(parseDer(cert.subjectAltName), TAG.sequence));
+    if (names.length === 0) throw new ReaderError('bad-certificate');
+    return names;
+  } catch {
+    throw new ReaderError('bad-certificate');
+  }
+}
+
+/**
+ * The size of an RSA public key's modulus in bits (leading zero bits not counted), or null for another kind of
+ * key. A key that claims to be RSA but cannot be read gives 0, so that a size rule refuses it.
+ */
+export function rsaModulusBits(cert: Certificate): number | null {
+  if (cert.keyOid !== OID.rsaEncryption) return null;
+  try {
+    const spki = children(parseDer(cert.spki));
+    const key = children(expect(parseDer(bitStringBytes(spki[1]!)), TAG.sequence));
+    if (key.length !== 2) return 0;
+    const modulus = trimZeros(unsignedBytes(key[0]!));
+    unsignedBytes(key[1]!);
+    if (modulus.length === 0) return 0;
+    return (modulus.length - 1) * 8 + (32 - Math.clz32(modulus[0]!));
+  } catch {
+    return 0;
+  }
 }
 
 function equalNode(a: Node, b: Node): boolean {

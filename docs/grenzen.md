@@ -35,6 +35,30 @@ Stand: 2026-11-24. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 9. Eine Zwischen-CA der Kette, die eine erweiterte Schlüsselverwendung trägt, muss `id-kp-timeStamping` oder
    `anyExtendedKeyUsage` enthalten (sonst `bad-eku`); ohne diese Erweiterung gilt keine Einschränkung. Der
    Anker ist ausgenommen (Entscheidung des Aufrufers).
+10. **Das Feld `tsa` des TSTInfo** (RFC 3161 § 2.4.2: es muss einem der Namen des Zeitstempel-Zertifikats
+    entsprechen; sonst `tsa-mismatch`). Fehlt das Feld (z. B. bei DigiCert), wird nichts verglichen. Ein
+    `directoryName` gilt, wenn er das `subject` des Signierers ist (vereinfachter Namensvergleich wie oben) oder
+    einem `directoryName` im `subjectAltName` entspricht. Jede andere Art (`dNSName`, `rfc822Name`, `URI`,
+    `iPAddress`, `registeredID`, `otherName`, `x400Address`, `ediPartyName`) gilt nur, wenn das `subjectAltName`
+    einen Eintrag **derselben Art** hat: bei `dNSName` mit gleichem Text (ASCII-Groß-/Kleinschreibung ohne
+    Bedeutung, RFC 5280 § 7.2), bei allen anderen mit **denselben Bytes**. Aus dem `subject` wird sonst nichts
+    abgeleitet (eine `emailAddress` im Namen zählt nicht als `rfc822Name`). Ein `tsa`, das kein `GeneralName` ist,
+    ist `bad-tst-info`; ein nicht lesbares `subjectAltName`, das für den Vergleich gebraucht wird,
+    `bad-certificate`. Die vier aufgezeichneten Antworten bestehen die Regel (FreeTSA, Sectigo und Certum setzen
+    `tsa` als `directoryName` des Signierer-Subjects, DigiCert setzt es nicht; ein Test hält das fest).
+11. **Der TSTInfo wird als Schema gelesen** (RFC 3161 § 2.4.2): Version, Richtlinie, `messageImprint`,
+    Seriennummer, `genTime`, dann `accuracy`, `ordering`, `nonce`, `tsa` `[0]`, Erweiterungen `[1]`, jedes
+    höchstens einmal, in dieser Reihenfolge, nichts Überzähliges (sonst `bad-tst-info`). `accuracy`: Sekunden,
+    `[0]` Millisekunden, `[1]` Mikrosekunden, je höchstens einmal in dieser Reihenfolge, Milli- und Mikrosekunden
+    1 bis 999. `ordering` FALSE ausdrücklich geschrieben ist `bad-tst-info` (DER schreibt den DEFAULT nicht). Die
+    Erweiterungen `[1]` sind eine nicht leere Folge von `Extension` (Kennung, `critical` nur wenn TRUE, Wert); ihr
+    Inhalt wird nicht beurteilt, auch eine kritische, unbekannte Erweiterung nicht (wie `openssl ts -verify`). Im
+    `messageImprint` hat der Hash-Algorithmus höchstens einen Parameter, und der ist NULL.
+12. **Mindestgröße von RSA-Schlüsseln (`minRsaBits`, Vorgabe 2048):** Das Zeitstempel-Zertifikat und jedes
+    Zertifikat der Kette, das **kein übergebener Anker** ist, darf keinen RSA-Schlüssel mit weniger Bit im Modul
+    haben (`weak-key`). Die Regel gilt vor der Signaturprüfung des Signierers (so hängt die Antwort nicht davon ab,
+    ob die Plattform einen kleinen Schlüssel überhaupt importiert). `minRsaBits: 0` schaltet sie aus. Schlüssel
+    anderer Art (ECDSA) sind nicht betroffen. Der Exponent wird nicht beurteilt.
 
 Punkt 9 ist **strenger als `openssl ts -verify`**, der eine solche Zwischen-CA annimmt; die Regel folgt der
 Praxis der Browser (Verschachtelung der erweiterten Schlüsselverwendung entlang der Kette). Eine Zwischen-CA nur
@@ -43,6 +67,10 @@ für Codesignatur oder nur für Server-Authentifizierung kann also keinen Zeitst
 **Strenger als `openssl ts -verify`** (jeweils eine falsche Ablehnung möglich, nie eine falsche Annahme):
 
 - Punkt 9 (erweiterte Schlüsselverwendung einer Zwischen-CA, s. o.).
+- **Punkt 12** (`weak-key`): openssl nimmt auch RSA-512 an (gemessen, 3.0.13).
+- **TSTInfo (Punkt 11):** `ordering` FALSE ausdrücklich geschrieben, Milli-/Mikrosekunden 0 oder über 999, leere
+  Erweiterungen `[1]`, `critical` FALSE ausdrücklich geschrieben und ein anderer Parameter als NULL beim
+  Hash-Algorithmus des `messageImprint` lehnen wir ab, openssl nimmt sie an (gemessen).
 - **Bruchteil in Zertifikatszeiten:** `notBefore` und `notAfter` mit Sekundenbruchteil gelten als ungültig gelesen
   (`bad-time`, s. „Zeiten“). Ob openssl sie liest, hängt von der Version ab; hier (OpenSSL 3.0.13) lehnen beide ab.
 - **Nullen am Ende des Sekundenbruchteils in `genTime`** (z. B. `20260101000000.50Z`, `…00.000Z`): RFC 3161 § 2.4.2
@@ -66,10 +94,12 @@ folgt dem RFC):
 - **Gültigkeit inklusive:** Die Gültigkeit eines Zertifikats schließt `notBefore` und `notAfter` ein (RFC 5280
   § 4.1.2.5). Ist die Stempelzeit genau `notAfter`, gilt das Zertifikat noch; `openssl` 3.0.13 lehnt in diesem
   Fall ab.
-- **Nicht gelesene Felder:** `crls` im SignedData und der Inhalt der TSTInfo-Felder `[0]` (`tsa`) und `[1]`
-  (Erweiterungen) werden nur auf das Tag geprüft, nicht gelesen; Müll darin wird angenommen. Das hat keine
-  Auswirkung auf die Entscheidung (`crls` sind nicht signiert und werden nicht benutzt, die Felder werden nicht
-  ausgewertet), das Token ist dort aber verformbar.
+- **`dNSName` im `tsa`-Feld:** Groß-/Kleinschreibung zählt nicht (RFC 5280 § 7.2); openssl vergleicht die Bytes und
+  lehnt `TSA.Example.ORG` gegen `tsa.example.org` ab (gemessen). Eine Entscheidung nach dem RFC, ohne Folge für
+  die Sicherheit (der Name steht im signierten Inhalt).
+- **Nicht gelesene Felder:** `crls` im SignedData wird nur auf das Tag geprüft, nicht gelesen; Müll darin wird
+  angenommen. Das hat keine Auswirkung auf die Entscheidung (`crls` sind nicht signiert und werden nicht benutzt),
+  das Token ist dort aber verformbar. (Der TSTInfo wird seit Punkt 11 vollständig als Schema gelesen.)
 
 Gegengeprüft wird mit `openssl ts -verify` an den aufgezeichneten Antworten von vier Diensten und beim
 Schnelltest (`npm run spike`).
@@ -101,9 +131,8 @@ Schnelltest (`npm run spike`).
   Hashverfahren als SHA-256 für den Abdruck, Token ohne `certReq` (das Zeitstempel-Zertifikat muss im Token
   liegen). Das sind abgelehnte Fälle, keine stillen Annahmen.
 - **Inhalt des TSTInfo und der Algorithmus-Kennungen:** Eine kritische, unbekannte Erweiterung in `TSTInfo`
-  wird nicht abgelehnt; das Feld `tsa` wird nicht gegen den Namen des Signierers geprüft; der Wertebereich von
-  `accuracy` (Sekunden, Milli-, Mikrosekunden) wird nicht auf die Grenzen aus RFC 3161 geprüft; die Parameter der
-  `AlgorithmIdentifier` werden nicht ausgewertet (die OID legt das Verfahren fest). Das RSA-Padding prüft nicht
+  wird nicht abgelehnt (der Aufbau der Erweiterungen wird aber gelesen); die Parameter der
+  `AlgorithmIdentifier` der Signatur werden nicht ausgewertet (die OID legt das Verfahren fest). Das RSA-Padding prüft nicht
   diese Bibliothek, sondern WebCrypto der Plattform (unter Node getestet, im Browser nicht).
 - **Zeiten:** `genTime` wird auf Millisekunden **abgeschnitten** (nicht gerundet; gelesen werden bis zu 9
   Nachkommastellen). Ein `genTime` bis knapp unter 1 ms nach `notAfter` gilt deshalb noch als gültig, und das
@@ -116,6 +145,48 @@ Schnelltest (`npm run spike`).
   einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke (`docs/dienste.md`) wurden am
   2026-11-23 mit öffentlichen Betreiberseiten und dem System-Trust-Store abgeglichen (Netzabgleich, keine
   Rückfrage bei den Betreibern, keine menschliche Prüfung).
+
+## Abgleich mit OpenSSL (Marktvergleich vom 2026-11-24, `openssl 3.0.13`)
+
+Jede Zeile ist ein Unterschied oder eine Gemeinsamkeit mit `openssl ts -verify`, wie der Vergleichsbericht sie
+nummeriert (F1 bis F20). „Gemessen“ heißt: ein eigener Fall in `tests/openssl.test.ts` lässt OpenSSL und diese
+Bibliothek dasselbe Token beurteilen und hält beide Ausgänge fest (ein sichtbarer Skip ohne OpenSSL 3). Angaben ohne
+„gemessen“ zu OpenSSL beruhen auf Kenntnis oder Quelltext und sind **nicht gemessen**. Das Ergebnis:
+**behoben** (früher eine Lücke, jetzt ein Test), **bewusst anders** (Entscheidung, dokumentiert) oder **Lücke**
+(offen, nicht gebaut). Eine falsche Annahme (ungültig als gültig) wurde nicht gefunden.
+
+| Nr  | Fall                                                                                                                              | OpenSSL                              | wir                                                                                                                | Einstufung                                                                                                                                      |
+| --- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1  | `tsa` nennt einen fremden Namen                                                                                                   | lehnt ab (gemessen)                  | `tsa-mismatch`                                                                                                     | **behoben**; alle `GeneralName`-Arten gemessen, `dNSName` mit anderer Schreibweise nehmen wir an, OpenSSL nicht (bewusst anders)                |
+| F2  | TSTInfo: Felder doppelt, vertauscht, Überzähliges, Accuracy-Teile doppelt oder vertauscht                                         | lehnt ab (gemessen)                  | `bad-tst-info`                                                                                                     | **behoben**                                                                                                                                     |
+| F2  | `ordering` FALSE ausdrücklich, Erweiterungen `[1]` leer, `critical` FALSE ausdrücklich, Parameter des Hash-Algorithmus nicht NULL | nimmt an (gemessen)                  | `bad-tst-info`                                                                                                     | bewusst strenger (DER, Schema)                                                                                                                  |
+| F15 | Accuracy Milli-/Mikrosekunden 0 oder 1000                                                                                         | nimmt an (gemessen)                  | `bad-tst-info`                                                                                                     | **behoben**, bewusst strenger                                                                                                                   |
+| F3  | RSA-512 und RSA-1024 als Signierer oder Zwischen-CA                                                                               | nimmt an (gemessen)                  | `weak-key` (Vorgabe `minRsaBits` 2048; Anker ausgenommen)                                                          | **behoben**, bewusst strenger; der Exponent (z. B. e = 3) wird nicht beurteilt (Lücke)                                                          |
+| F4  | Signierer mit `subjectKeyIdentifier` statt Aussteller und Seriennummer (SignerInfo Version 3)                                     | nimmt an (Kenntnis, nicht gemessen)  | `unsupported-version`                                                                                              | **Lücke, nicht gebaut** (Verfügbarkeit; die vier freien Dienste nutzen die andere Form). Vor dem Anschluss eines qualifizierten Dienstes klären |
+| F5  | `cmsAlgorithmProtection` (RFC 8933)                                                                                               | nicht gemessen                       | Attribut wird nie gelesen; nur die Teilregel „benannte Signatur-OID gegen `digestAlgorithm`“ (`signature-invalid`) | Lücke (klein)                                                                                                                                   |
+| F6  | Signierer ist selbst eine CA (`cA` TRUE)                                                                                          | nimmt an (gemessen)                  | nimmt an (gemessen)                                                                                                | Lücke, gleich                                                                                                                                   |
+| F7  | `pathLenConstraint`, Namensbeschränkungen                                                                                         | prüft                                | nicht ausgewertet (Kette höchstens 5 Zwischenzertifikate, kritische Namensbeschränkung ist `bad-certificate`)      | **Lücke, nicht gebaut** (s. „Was NICHT geprüft wird“)                                                                                           |
+| F8  | Zertifikat mit gleichem Aussteller und gleicher Seriennummer vor dem echten                                                       | lehnt ab (gemessen)                  | `signing-certificate-mismatch` (nur Verfügbarkeit: das erste Treffer-Zertifikat wird genommen)                     | gleich; Verbesserung offen                                                                                                                      |
+| F9  | Token ohne eingebettete Zertifikate                                                                                               | unterstützt                          | nicht unterstützt (`signer-certificate-missing`)                                                                   | bewusst anders                                                                                                                                  |
+| F10 | erwartete Policy / `reqPolicy`                                                                                                    | prüft                                | nur gemeldet                                                                                                       | Lücke                                                                                                                                           |
+| F11 | `signingTime` widerspricht `genTime`                                                                                              | –                                    | `signingTime` wird nie gelesen                                                                                     | bewusst anders (kein Risiko, solange es nie ausgewertet wird)                                                                                   |
+| F12 | SignedData-Version 1, ein Byte Anhang, BER mit unbestimmter Länge                                                                 | nimmt an (gemessen)                  | `unsupported-version`, `trailing-bytes`, `indefinite-length`                                                       | **bewusst strenger** (nur DER); Verfügbarkeitsrisiko bei einem Dienst, der so stempelt (von Hand nur vier Dienste gesammelt)                    |
+| F13 | `issuerSerial` im ESSCertID                                                                                                       | nicht gemessen                       | nur der Hash wird verglichen                                                                                       | Lücke ohne Wirkung (der Hash bindet das Zertifikat)                                                                                             |
+| F14 | Seriennummer 0 oder 21 Oktette (Zertifikat), Seriennummer 0 (TSTInfo), Nonce 0                                                    | nimmt an (gemessen)                  | nimmt an (gemessen)                                                                                                | gleich (Lücke gegen RFC 5280)                                                                                                                   |
+| F16 | Zertifikatszeit als GeneralizedTime vor 2050                                                                                      | nimmt an                             | nimmt an                                                                                                           | bewusst locker                                                                                                                                  |
+| F17 | Zertifikatsform locker (v1 mit Erweiterungen, `[3]` an beliebiger Stelle u. ä.)                                                   | nicht gemessen                       | nimmt an (nur Anker und mitgelieferte Zertifikate, vom CA signiert)                                                | bewusst locker                                                                                                                                  |
+| F18 | Brainpool, Ed25519, RSA-PSS, ML-DSA                                                                                               | Brainpool, Ed25519, RSA-PSS ja       | `unsupported-signature`                                                                                            | **bewusst anders, nicht gebaut** (WebCrypto kennt Brainpool nicht); Beobachtungsliste                                                           |
+| F19 | `qcStatements` (qualifizierter Stempel)                                                                                           | –                                    | nicht gelesen                                                                                                      | Lücke; erst mit einem qualifizierten Dienst, dann nur als Hinweis                                                                               |
+| F20 | Hash im Abdruck: nur SHA-256                                                                                                      | alle                                 | nur SHA-256 (`unsupported-hash`)                                                                                   | bewusst anders                                                                                                                                  |
+| –   | `keyUsage` des Signierers mit zusätzlichen Bits                                                                                   | lehnt ab                             | nimmt an                                                                                                           | bewusst locker (s. Punkt 7)                                                                                                                     |
+| –   | Gültigkeit inklusive `notAfter`                                                                                                   | lehnt ab (3.0.13)                    | nimmt an                                                                                                           | bewusst locker                                                                                                                                  |
+| –   | Zwischen-CA mit fremder erweiterter Schlüsselverwendung                                                                           | nimmt an                             | `bad-eku`                                                                                                          | bewusst strenger (Punkt 9)                                                                                                                      |
+| –   | Nullen am Ende des Sekundenbruchteils in `genTime`                                                                                | nimmt an                             | `bad-time`                                                                                                         | bewusst strenger (RFC 3161)                                                                                                                     |
+| –   | `signedAttrs` nicht in DER-Reihenfolge, so signiert                                                                               | vermutlich lehnt ab (nicht gemessen) | prüft die empfangenen Bytes                                                                                        | bewusst anders, nicht gemessen                                                                                                                  |
+
+Bekannte Lücken, die **nicht** gebaut wurden (Entscheidung des Besitzers, solange kein Dienst sie braucht): F4
+(Signierer über `subjectKeyIdentifier`), die Auswertung von `pathLenConstraint` und Namensbeschränkungen, Brainpool-
+Kurven und Ed25519 als Signatur.
 
 ## Verhalten bei Fehlern (fail-closed)
 

@@ -37,9 +37,11 @@ export type Reason =
   | 'signing-certificate-missing'
   | 'signing-certificate-mismatch'
   | 'signature-invalid'
+  | 'tsa-mismatch'
   // certificates
   | 'bad-pem'
   | 'bad-certificate'
+  | 'weak-key'
   | 'signer-certificate-missing'
   | 'certificate-not-valid-at-time'
   | 'bad-eku'
