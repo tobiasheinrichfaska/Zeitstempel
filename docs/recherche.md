@@ -150,10 +150,57 @@ nicht lesbar; nur als zusätzlicher, deutlich gekennzeichneter Dienst). Nicht ge
 Algorithmen (RSA-PSS und andere Hashes als SHA-256 lehnt die Bibliothek ab), Listenstatus bei Adobe und EU, und ob ein Relay,
 das den Verkehr aller Nutzer bündelt, noch unter „general use“ fällt.
 
+## 7a. Open TSA geprüft (2026-11-24)
+
+Eine Testanfrage (Hash eines kurzen Testtexts) an `https://tsr.open-tsa.eu`: Granted, 2513 Bytes, 0,95 s; SHA-256,
+SHA-384, SHA-512; Genauigkeit 1 s; Policy 1.3.6.1.4.1.59085.1.1; RSA-4096-Kette; Signer-Zertifikat gültig bis
+2028-04-03. `openssl ts -verify` ist OK mit dem Open-CA-Root und den Zwischenzertifikaten als `-untrusted`. Das Token
+enthält **nur das Signer-Zertifikat**; unsere Bibliothek holt nichts nach, deshalb `ok` nur mit dem
+**Zwischenzertifikat als Anker**, mit dem Root allein `untrusted-chain`. Betreiber anonym, Bedingungen,
+Datenschutzerklärung und Impressum liefern 404, keine genannte Ratengrenze; die Seite wirbt mit „qualifiziert", nennt
+sich an anderer Stelle „Not eIDAS-qualified". Empfehlung: höchstens als zusätzlicher, als unqualifiziert gekennzeichneter
+Dienst, nicht aufgenommen.
+
+## 7b. Bezahlte und qualifizierte Dienste (Recherche, Seiten nur über Zusammenfassungen gelesen)
+
+Vollständiger Bericht mit Quellen: nicht im Repo (Arbeitsstand). Eckdaten, vor einer Übernahme am Original zu prüfen:
+
+- **SK ID Solutions (EE):** qualifiziert laut AGB, SHA-256 in der Anfrage, ECDSA P-256 oder RSA-4096, Zugang per
+  Vertrag und IP-Freigabe (feste Austritts-IP nötig), Test kostenlos, protokolliert alle Token unbefristet.
+- **GLOBALTRUST (AT):** 1000 Stempel 185 EUR/Jahr, 10 000 für 1700 EUR/Jahr; Endpunkt und Anmeldeart nicht öffentlich.
+- **Lleida.net (ES):** ab 0,03 EUR je Stempel, Benutzername und Passwort, wirbt mit Adobe-Kompatibilität.
+- **Disig (SK):** 1000 Stempel 62,50 EUR netto, Zugang per Zertifikat. **Sectigo `/qualified`:** gut dokumentiert, nur
+  http, Preis und Anmeldeart unklar. Weitere (D-Trust, GlobalSign, Utimaco, Certum): Preise nicht öffentlich.
+- **Nötig im Code:** je Dienst eine Anmeldeart in `services.json` (Basic, Bearer/API-Key, mTLS, IP-Freigabe),
+  Geheimnisse nur aus der Umgebung, Basic nur über https. Ungeprüft: SHA-512-Signatur mit P-256 gegen unsere Regel
+  „Signatur-OID passt zum `digestAlgorithm`", QC-Erweiterungen und EKU qualifizierter Zertifikate (echte Testtokens
+  nötig). Adobe vertraut sehr wahrscheinlich Anbietern der EU-Vertrauensliste (Verzug bis rund 30 Tage), freien Diensten
+  mit eigener Wurzel nicht.
+- **Nicht belegt:** Weiterverkauf oder Bündelung über ein Relay, Ratengrenzen, SLA, AVV-Angebot, aktueller EU-Listeneintrag.
+
+## 7c. Datenschutz-Einordnung des Hashes (keine Rechtsberatung)
+
+Ein SHA-256-Hash ist nicht umkehrbar, aber bei erratbaren Inhalten (kurze Texte, bekannte Dokumente, kleine Auswahl)
+durch Raten und Vergleichen bestätigbar; Personenbezug entsteht durch Verknüpfung (IP, Schlüssel, Zeit). Das Relay
+loggt nichts aus Anfragen, hält nur Zähler und den Wiederholungsschutz im Arbeitsspeicher und speichert kein Token. Der
+Zeitstempeldienst sieht die IP des Relays, nicht die des Nutzers; im Sammelbetrieb nur die Wurzel eines Baums mit
+verblindeten Blättern. Bunny: IP-Logs werden komplett gekürzt (Entscheidung); die technische Durchleitung der IP bleibt,
+ob dafür ein AVV nötig ist, ist eine Rechtsfrage. Apps mit erratbaren Inhalten sollten vor dem Hashen einen eigenen
+Salt anhängen und aufbewahren.
+
+## 6a. Entscheidungen zu den Schlüsselarten (2026-11-24)
+
+1. Typ-2-Schlüssel (`"solo": true`) vergibt nur Tobias. 2. Ein Schlüssel gilt **pro Nutzergruppe**. 3. Typ 2 darf jeden
+   Dienst nutzen. 4. Schlüssel werden ausgegeben und in der App im Browserspeicher abgelegt (für Nutzer dieses Browsers
+   auslesbar): niedriges Solo-Limit je Schlüssel, schnelles Sperren. 5. Typ 1 mit Solo-Wunsch wird bedient, wenn das
+   Fenster leer ist, sonst `403 solo-not-allowed`. 6. Gewartet wird nur im Mangelfall (`RELAY_MAX_WAIT_MS`, Vorgabe 30 s,
+   höchstens 60 s). 7./8. wie vorgeschlagen. 9. Schlüsseldatei wird **laufend neu gelesen** (strenger Leser, bei ungültiger
+   Datei bleibt die alte); zusätzlich `restartAfter` in der Datei: Das Relay beendet sich einmal, wenn
+   `Startzeit < restartAfter <= jetzt` (ein Prozess-Überwacher startet es neu; das Relay schreibt nie in die Datei).
+2. **Variante A:** keine Zahlen je Schlüssel im Betreiberlog; die Mengengrenze je Schlüssel im Arbeitsspeicher bleibt.
+
 ## 8. Offene Punkte
 
-- Zähler je Schlüsselkennung im Betreiber-Log (Vorschlag A, B oder C) und Frage, ob Schlüssel pro App oder pro Nutzer
-  vergeben werden.
 - Qualifizierter Dienst (Vertrag, Zugangsdaten), rechtliche Klärung der Nutzungsbedingungen, Datenschutzbewertung der
   Weitergabe von Hashes.
 - Menschliche Sicherheitsprüfung, signierter Aufruf und CORS mit Authentifizierung in echten Browsern, menschlicher
