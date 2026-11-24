@@ -242,13 +242,15 @@ describe('key type 2: who may ask for a solo stamp (collecting operation)', () =
     expect(h.stats()).toEqual({ stamped: more, refused: {} });
   });
 
-  it('single operation keeps its old budget answer: 429 with Retry-After, no waiting', async () => {
-    h = await start({ batch: null, minIntervalMs: 30_000 }); // two stamps per minute
-    for (const t of ['a', 'b']) expect((await h.stamp(sha256(t))).status).toBe(200);
-    const third = await h.timed(sha256('c'));
-    expect(third.res.status).toBe(429);
-    expect(Number(third.res.headers.get('retry-after'))).toBeGreaterThan(0);
-    expect(third.at).toBeLessThan(1000);
+  it('single operation: the budget per minute still answers 429 with Retry-After, no waiting', async () => {
+    // four stamps per budget window (the distance of 600 ms is kept in single operation, so they come one after the other, about 2 s)
+    h = await start({ batch: null, minIntervalMs: 600, budgetWindowMs: 2400, maxWaitMs: 8000 });
+    for (const t of ['a', 'b', 'c', 'd']) expect((await h.stamp(sha256(t))).status).toBe(200);
+    const fifth = await h.timed(sha256('e'));
+    expect(fifth.res.status).toBe(429);
+    expect(Number(fifth.res.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(fifth.at).toBeLessThan(1000);
+    expect(h.calls).toHaveLength(4);
   });
 });
 

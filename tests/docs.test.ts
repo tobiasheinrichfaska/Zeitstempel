@@ -447,7 +447,14 @@ describe('key types, solo stamps and the key file read again are written down wh
     expect(doc).toContain('liegen **mindestens `minIntervalMs` auseinander**');
     expect(doc).toContain('gleich ob der vorige ein Fenster oder ein Solo-Stempel war');
     expect(doc).toContain('**wartet das geschlossene Fenster** bis dahin');
-    expect(doc).toContain('Im **Einzelbetrieb** gibt es ihn nicht');
+    expect(doc).toContain(
+      'in **beiden Betriebsarten**: im Sammelbetrieb für Solo-Stempel und Fenster, im **Einzelbetrieb** für jeden Stempel',
+    );
+    expect(doc).not.toContain('Im **Einzelbetrieb** gibt es ihn nicht');
+    expect(doc).not.toContain('nur das Mengenbudget gilt');
+    expect(doc).toContain('`singleQueueMax` (16)');
+    expect(source).toContain('function gateWaitMs');
+    expect(source).toContain('RELAY_LIMITS.singleQueueMax');
     expect(doc).not.toContain('Kein Mindestabstand zwischen Stempeln');
     expect(doc).not.toContain('Einen **Mindestabstand** zwischen zwei Stempeln gibt es nicht');
     expect(doc).not.toContain('(kein Mindestabstand)');

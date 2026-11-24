@@ -90,7 +90,14 @@ export const RELAY_LIMITS = {
   soloPerMinutePerKey: 4,
   /** Solo requests that may wait for a slot, per service; a further one gets `503 busy`. */
   soloQueueMax: 6,
-  /** RELAY_MAX_WAIT_MS: value when not set (how long a request may wait for a free slot, then `503 busy`). */
+  /**
+   * Single operation: requests that may wait per service (and identity) for the minimum distance to the last call; a
+   * further one gets `503 busy`. Not `soloQueueMax`: that one counts the solo requests of the collecting operation.
+   * With the shipped services and the default wait of 30 s at most 7 wait (FreeTSA: one every 5 s), so it bites only
+   * with a service whose `minIntervalMs` is below 2 s (or a long `RELAY_MAX_WAIT_MS`).
+   */
+  singleQueueMax: 16,
+  /** RELAY_MAX_WAIT_MS: value when not set (how long a request may wait for a free slot or, in single operation, for the minimum distance, then `503 busy`). */
   maxWaitDefaultMs: 30_000,
   /** RELAY_MAX_WAIT_MS: smallest accepted value. */
   maxWaitMinMs: 1_000,

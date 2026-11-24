@@ -59,10 +59,16 @@ export interface RelayOptions {
    */
   batch?: { windowMs: number; max: number };
   /**
-   * Collecting operation only: the longest a request waits for a free slot of its service before it gets `503
-   * busy` (default `RELAY_LIMITS.maxWaitDefaultMs`). A slot that is not free within this time is a `429` at once.
+   * The longest a request waits for a free slot of its service (collecting operation) or for the minimum distance to
+   * the last call of its service (single operation) before it gets `503 busy` (default `RELAY_LIMITS.maxWaitDefaultMs`).
+   * A slot that is not free within this time is a `429` at once.
    */
   maxWaitMs?: number;
+  /**
+   * The monotonic clock in ms (default `performance.now()`): every wait of single operation (the minimum distance between
+   * two calls to a service) is measured on it, never on the wall clock (`now`). A parameter so a test can let it jump.
+   */
+  monotonicNow?: () => number;
   /** Window of the budget counters in ms (default `RELAY_LIMITS.windowMs`); a parameter so a test need not wait a minute. */
   budgetWindowMs?: number;
   /**
@@ -116,9 +122,9 @@ export interface Relay {
   requestTimedOut: (socket: Duplex) => void;
   stats: () => RelayStats;
   /**
-   * Ends collecting operation: the requests that wait in an open window are answered with `503
-   * shutting-down`, no timer is left, and new requests get the same answer. A window whose call to the
-   * service is already running finishes normally (bounded by `upstreamTimeoutMs`). Does nothing for single stamps.
+   * Ends the relay's waiting: the requests that wait in an open window, for a slot or (single operation) for the
+   * minimum distance to the last call are answered with `503 shutting-down`, no timer is left, and new requests get the
+   * same answer. A call to the service that is already running finishes normally (bounded by `upstreamTimeoutMs`).
    */
   close: () => void;
   /**
@@ -230,6 +236,8 @@ export function createRelay(options: RelayOptions): Relay {
   const windowMs = RELAY_LIMITS.authWindowSeconds * 1000;
   const bw = options.budgetWindowMs ?? RELAY_LIMITS.windowMs;
   const maxWaitMs = options.maxWaitMs ?? RELAY_LIMITS.maxWaitDefaultMs;
+  // The one place single operation reads the time of its waits (the monotonic clock of the process).
+  const mono = options.monotonicNow ?? (() => performance.now());
   const soloWindows = new Map<string, number[]>(); // key id -> solo request times (memory only, never logged)
   // A replay can arrive with its head at the edge of the window and its body up to the request
   // timeout later: an entry must outlive `ts + window` by that much.
@@ -539,7 +547,7 @@ export function createRelay(options: RelayOptions): Relay {
     // Without collecting operation every request is a direct stamp already: `mode: "solo"` changes nothing
     // and the key type is not looked at.
     const wantsSolo = batch !== undefined && parsed.solo;
-    if (batch && closed) return send(res, 503, { error: 'shutting-down' }, origin);
+    if (closed) return send(res, 503, { error: 'shutting-down' }, origin);
     // Solo stamps exist for key type 2 only (a direct stamp at once, with a slot of its own). A key of type 1 (or no key)
     // that asks for one is refused here, before any work: no window, no slot, no wait, no entry in the tree, no
     // identity, and no total or key budget spent (like `bad-mode`); only the counters know it.
@@ -576,9 +584,18 @@ export function createRelay(options: RelayOptions): Relay {
     if (batch && !joinsOpen && budgetNow.slotMs > maxWaitMs) {
       waits.push(Math.max(1, Math.ceil(budgetNow.slotMs / 1000)));
     }
+    // Single operation: the minimum distance to the last call of the service (and identity), looked at without
+    // reserving. Later than the longest wait: 429 at once, like a slot that is too late.
+    const gateMs = batch ? 0 : gateWaitMs(lk, service.minIntervalMs);
+    if (gateMs > maxWaitMs) waits.push(Math.max(1, Math.ceil(gateMs / 1000)));
     if (waits.length > 0) {
       return send(res, 429, { error: 'rate-limited' }, origin, {
         'Retry-After': String(Math.max(...waits)),
+      });
+    }
+    if (gateMs > 0 && (gates.get(lk)?.waiting.size ?? 0) >= RELAY_LIMITS.singleQueueMax) {
+      return send(res, 503, { error: 'busy' }, origin, {
+        'Retry-After': String(Math.max(1, Math.ceil(gateMs / 1000))),
       });
     }
     if (direct && (lanes.get(lk)?.solo.length ?? 0) >= RELAY_LIMITS.soloQueueMax) {
@@ -601,8 +618,8 @@ export function createRelay(options: RelayOptions): Relay {
         if (res.destroyed) return countAborted(req, res);
         return send(res, reply.status, reply.body, origin, reply.headers);
       }
-      const got = await obtain(service, hash, creds);
-      if (!got.ok) return send(res, got.status, got.body, origin);
+      const got = await spaced(service, lk, hash, creds);
+      if (!got.ok) return send(res, got.status, got.body, origin, got.headers);
       stats.stamped += 1;
       return send(res, 200, stampBody(service, got), origin);
     } finally {
@@ -663,6 +680,7 @@ export function createRelay(options: RelayOptions): Relay {
         lastCall.delete(key);
         lastCallMono.delete(key);
         lanes.delete(key);
+        gates.delete(key);
         continue;
       }
       count += 1;
@@ -697,7 +715,12 @@ export function createRelay(options: RelayOptions): Relay {
 
   type Obtained =
     | { ok: true; token: Uint8Array; verified: VerifiedTimestamp }
-    | { ok: false; status: number; body: { error: string; reason?: string } };
+    | {
+        ok: false;
+        status: number;
+        body: { error: string; reason?: string };
+        headers?: Record<string, string>;
+      };
 
   /**
    * One stamp from a service for `hash`: builds the request with a nonce of the relay, calls the one address of
@@ -757,6 +780,92 @@ export function createRelay(options: RelayOptions): Relay {
       };
     }
     return { ok: true, token: response.value.token, verified: verified.value };
+  }
+
+  // ---- Single operation: the minimum distance ----
+
+  /**
+   * The gate of one lane (service and identity) in single operation: the monotonic time of the last call made, the
+   * earliest time the next reservation may call (each reservation books `minIntervalMs` after the one before), and the
+   * requests that wait for their time. Memory only, never output.
+   */
+  interface Gate {
+    last: number;
+    next: number;
+    waiting: Set<GateWait>;
+  }
+  interface GateWait {
+    timer: ReturnType<typeof setTimeout> | null;
+    resolve: (how: 'go' | 'busy' | 'closing') => void;
+  }
+  const gates = new Map<string, Gate>();
+
+  /** Milliseconds until a call of this lane may be made without coming closer than `minIntervalMs` to the one before (0: now). */
+  function gateWaitMs(key: string, minIntervalMs: number): number {
+    const g = gates.get(key);
+    if (g === undefined) return 0;
+    return Math.max(0, g.next - mono(), g.last + minIntervalMs - mono());
+  }
+
+  /**
+   * One stamp in single operation, at least `minIntervalMs` after the call before it (on the monotonic clock, whatever
+   * the wall clock does): it takes the next free time of its lane at once (so the order is the order of arrival) and
+   * waits for it. The door has refused a time later than `maxWaitMs`; when the call is late because the ones before it
+   * were (a loop that stood still), it is `503 busy` rather than later than the limit. `close()` ends the wait.
+   */
+  async function spaced(
+    service: RelayService,
+    key: string,
+    hash: Uint8Array,
+    creds: UpstreamCredentials | undefined,
+  ): Promise<Obtained> {
+    const m = service.minIntervalMs;
+    let g = gates.get(key);
+    if (g === undefined) {
+      g = { last: -Infinity, next: -Infinity, waiting: new Set() };
+      gates.set(key, g);
+    }
+    const gate = g;
+    const start = mono();
+    const at = Math.max(start, gate.next, gate.last + m);
+    gate.next = at + m;
+    if (at <= start) {
+      gate.last = start;
+      return obtain(service, hash, creds);
+    }
+    const deadline = start + maxWaitMs;
+    const how = await new Promise<'go' | 'busy' | 'closing'>((resolve) => {
+      const entry: GateWait = { timer: null, resolve };
+      gate.waiting.add(entry);
+      const finish = (h: 'go' | 'busy' | 'closing'): void => {
+        gate.waiting.delete(entry);
+        entry.timer = null;
+        resolve(h);
+      };
+      const look = (): void => {
+        const t = mono();
+        // the distance to the call that was made last, as it really was (a timer may fire late or a bit early)
+        const due = Math.max(at, gate.last + m);
+        if (due > deadline) return finish('busy');
+        if (due > t) {
+          entry.timer = setTimeout(look, Math.ceil(due - t));
+          return;
+        }
+        gate.last = t; // the call is made now: the next one counts from here
+        finish('go');
+      };
+      entry.timer = setTimeout(look, Math.ceil(at - start));
+    });
+    if (how === 'closing') return { ok: false, status: 503, body: { error: 'shutting-down' } };
+    if (how === 'busy') {
+      return {
+        ok: false,
+        status: 503,
+        body: { error: 'busy' },
+        headers: { 'Retry-After': String(Math.max(1, Math.ceil((gate.next - mono()) / 1000))) },
+      };
+    }
+    return obtain(service, hash, creds);
   }
 
   // ---- Collecting operation ----
@@ -1141,6 +1250,13 @@ export function createRelay(options: RelayOptions): Relay {
 
   function close(): void {
     closed = true;
+    for (const g of gates.values()) {
+      for (const w of [...g.waiting]) {
+        if (w.timer !== null) clearTimeout(w.timer);
+        g.waiting.delete(w);
+        w.resolve('closing');
+      }
+    }
     for (const w of [...openWindows.values()]) {
       openWindows.delete(w.key);
       if (w.timer !== null) clearTimeout(w.timer);

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { fastMonotonic } from './fast-mono.ts';
 import type { AddressInfo } from 'node:net';
 import { fromBase64Url, readServices, toBase64Url, verifyBatchedTimestamp } from '../src/index.ts';
 import { isAuthHeaderName } from '../src/lib/services.ts';
@@ -142,6 +143,7 @@ async function start(
     upstream: over.upstream ?? stub,
     random: (n) => new Uint8Array(randomBytes(n)),
     now: () => clock.now,
+    monotonicNow: fastMonotonic(), // the minimum distance has its own tests (single-spacing.test.ts)
     keys: KEYS,
     upstreamAuth: over.upstreamAuth ?? RELAY_CREDS,
     ...(over.batch ? { batch: over.batch } : {}),

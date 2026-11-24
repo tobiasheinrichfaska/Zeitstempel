@@ -31,6 +31,7 @@ import {
   type TestKey,
 } from './auth-helpers.ts';
 import { FREETSA_NONCE, fixture, fixtureText, sha256 } from './helpers.ts';
+import { fastMonotonic } from './fast-mono.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
 
@@ -113,6 +114,7 @@ async function start(
     upstream: over.upstream ?? stand,
     random: over.random ?? (() => FREETSA_NONCE),
     now: () => clock.now,
+    monotonicNow: fastMonotonic(), // the minimum distance has its own tests (single-spacing.test.ts)
     keys: over.keys ?? KEYS,
     ...(over.verifySignature === undefined ? {} : { verifySignature: over.verifySignature }),
     ...(over.authReplayEntries === undefined ? {} : { authReplayEntries: over.authReplayEntries }),

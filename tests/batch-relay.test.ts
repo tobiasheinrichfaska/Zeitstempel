@@ -407,14 +407,18 @@ describe('relay, collecting operation: one stamp for a window', () => {
   });
 
   it('single stamps stay the default: no batch field, no batched counter, one call each', async () => {
-    h = await start({ batch: null });
+    // 300 ms distance: the second of two requests at once waits for it (single operation keeps the minimum distance)
+    h = await start({ batch: null, services: SERVICES.map((s) => ({ ...s, minIntervalMs: 300 })) });
     const answers = await Promise.all(hashes(2).map((x) => h.stamp(x)));
     const bodies = (await Promise.all(answers.map((a) => a.json()))) as Record<string, unknown>[];
     for (const b of bodies) expect('batch' in b).toBe(false);
     expect(h.calls).toHaveLength(2);
     expect(h.stats()).toEqual({ stamped: 2, refused: {} });
-    h.relay.close(); // no effect without collecting
-    expect((await h.stamp(sha256('after'))).status).toBe(200);
+    h.relay.close(); // single operation ends too: nothing is stamped after the close
+    const after = await h.stamp(sha256('after'));
+    expect(after.status).toBe(503);
+    expect(await after.json()).toEqual({ error: 'shutting-down' });
+    expect(h.calls).toHaveLength(2);
   });
 });
 
