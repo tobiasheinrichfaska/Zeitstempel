@@ -10,6 +10,7 @@ export const OID = {
   ekuTimeStamping: '1.3.6.1.5.5.7.3.8',
   anyExtendedKeyUsage: '2.5.29.37.0',
   extBasicConstraints: '2.5.29.19',
+  extSubjectKeyIdentifier: '2.5.29.14',
   extKeyUsage: '2.5.29.15',
   extEku: '2.5.29.37',
   extSubjectAltName: '2.5.29.17',
@@ -34,6 +35,9 @@ export const KNOWN_EXTENSIONS: ReadonlySet<string> = new Set([
   '2.5.29.37', // extKeyUsage
   '1.3.6.1.5.5.7.1.1', // authorityInfoAccess
 ]);
+
+/** Bounds of a subjectKeyIdentifier in bytes: the `[0]` identifier of a SignerInfo and the extension of a certificate. */
+export const SKI_BYTES = { min: 1, max: 64 } as const;
 
 export type HashName = 'SHA-1' | 'SHA-256' | 'SHA-384' | 'SHA-512';
 

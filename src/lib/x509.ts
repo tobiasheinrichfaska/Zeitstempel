@@ -15,7 +15,7 @@ import {
   unsignedBytes,
   type Node,
 } from './der.ts';
-import { KNOWN_EXTENSIONS, OID } from './oids.ts';
+import { KNOWN_EXTENSIONS, OID, SKI_BYTES } from './oids.ts';
 import { ReaderError } from './result.ts';
 
 /** What the verifier needs from a certificate; read strictly, nothing else is interpreted. */
@@ -44,6 +44,12 @@ export interface Certificate {
   eku: { oids: string[]; critical: boolean } | null;
   /** The value (DER) of the subjectAltName extension, or null; read only when a `tsa` name needs it (`subjectAltNames`). */
   subjectAltName: Uint8Array | null;
+  /**
+   * The key identifier of the subjectKeyIdentifier extension (1 to 64 bytes), or null when the extension is absent.
+   * Never computed from the key: a certificate without the extension has none (and is never found by a
+   * SignerInfo that names a key identifier).
+   */
+  subjectKeyIdentifier: Uint8Array | null;
   /** True when a critical extension is present that this reader does not know (RFC 5280 § 4.2). */
   unknownCritical: boolean;
 }
@@ -111,6 +117,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
   let keyUsage: number | null = null;
   let eku: Certificate['eku'] = null;
   let subjectAltName: Uint8Array | null = null;
+  let subjectKeyIdentifier: Uint8Array | null = null;
   let unknownCritical = false;
   const extNode = fields.find((f) => f.tag === ctx(3));
   if (extNode) {
@@ -128,6 +135,15 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
       keyUsage = bits.value[1] ?? 0;
     }
     subjectAltName = exts.get(OID.extSubjectAltName)?.value ?? null;
+    const skiExt = exts.get(OID.extSubjectKeyIdentifier);
+    if (skiExt) {
+      // an OCTET STRING (the key identifier) inside the extension's OCTET STRING, 1 to 64 bytes
+      const id = octets(parseDer(skiExt.value));
+      if (id.length < SKI_BYTES.min || id.length > SKI_BYTES.max) {
+        throw new ReaderError('bad-certificate');
+      }
+      subjectKeyIdentifier = id;
+    }
     const ex = exts.get(OID.extEku);
     if (ex) {
       eku = {
@@ -153,6 +169,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
     keyUsage,
     eku,
     subjectAltName,
+    subjectKeyIdentifier,
     unknownCritical,
   };
 }

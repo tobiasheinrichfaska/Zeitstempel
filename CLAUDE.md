@@ -184,8 +184,19 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   FALSE, non-empty extensions, else `bad-tst-info`). `minRsaBits` (default 2048, 0 = off) refuses a smaller RSA key in
   the signer and the chain, trust anchors exempt (`weak-key`). Stricter than OpenSSL there (it accepts RSA-512 and the
   odd TSTInfo shapes), looser only for `dNSName` case. Every measured difference is a row of `tests/openssl.test.ts`
-  and of the table in `docs/grenzen.md`. Not built, listed there: SubjectKeyIdentifier signers, pathLen and name
+  and of the table in `docs/grenzen.md`. Not built, listed there: pathLen and name
   constraints, Brainpool/Ed25519. `rootFromPath` is exported for the published RFC 6962 vectors only.
+- **Signer named by `subjectKeyIdentifier` (F4, `tests/ski-signer.test.ts`, rows in `tests/openssl.test.ts`):** a SignerInfo is
+  version 1 with `issuerAndSerialNumber` or version 3 with `[0]` IMPLICIT OCTET STRING (1 to 64 bytes, else
+  `bad-structure`); another version or a form that does not fit the version is `unsupported-version`. The SignedData
+  version stays 3 for both (the content is a TSTInfo). `readToken` gives `signer.sid` (`kind`), `Certificate` has
+  `subjectKeyIdentifier` (an unreadable or doubled extension makes the certificate unreadable). A certificate without
+  the extension is never found: the identifier is never computed from the key (OpenSSL does the same, measured). Several
+  certificates with the same identifier: the one the `signingCertificate(V2)` hash names is taken (at most 16 hashes,
+  one signature check); with issuer and serial the first match still wins (F8). `ts -verify` cannot read the form at all,
+  so the comparison is `cms -verify` (it takes the first match and ignores the version). Measured only with own tokens
+  and one written by `openssl cms -sign -keyid` (no signing certificate attribute, so it stops at
+  `signing-certificate-missing`), not with a real service.
 - **Relay authentication: not security-reviewed by a human, not tested in a browser** (the browser check of
   2026-11-23 ran without it, with `keys: 'off'` in the script). A private key in a web
   app is readable by that page's visitors: it keeps out other apps and scripts, not the users of the page. No key
@@ -204,4 +215,4 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   fixtures stay valid for the tests).
 - Not on npm; consumers take it by Git tag (none yet).
 
-_Last updated: 2026-11-24 (mandatory RELAY_SERVICES, Date exposed, anchors are roots; final audit findings 1-4, 7, 10-12: generation time freshness, signer validity, `at`, ESSCertIDv2, CryptoKey; run 17: named signature OID must match the digest algorithm; run 16: v1 anchors, simplified name matching, unreadable extra certificates skipped; run 7: inputs copied by length never iterated, `trust` at most 64 anchors, token in a SharedArrayBuffer verifies, start rule: `startMs` only ever falls (lowered on every request), heads from before it are refused, `signRelayRequest` never throws; round 5: honest "never throws" statement, hostile proxies, `trust` must be an array, chain search cut short by a limit always `untrusted-chain`, mutation guards, README/FEATURES aligned with the ECDSA authentication)_
+_Last updated: 2026-11-24 (F4 signer by subjectKeyIdentifier; mandatory RELAY_SERVICES, Date exposed, anchors are roots; final audit findings 1-4, 7, 10-12: generation time freshness, signer validity, `at`, ESSCertIDv2, CryptoKey; run 17: named signature OID must match the digest algorithm; run 16: v1 anchors, simplified name matching, unreadable extra certificates skipped; run 7: inputs copied by length never iterated, `trust` at most 64 anchors, token in a SharedArrayBuffer verifies, start rule: `startMs` only ever falls (lowered on every request), heads from before it are refused, `signRelayRequest` never throws; round 5: honest "never throws" statement, hostile proxies, `trust` must be an array, chain search cut short by a limit always `untrusted-chain`, mutation guards, README/FEATURES aligned with the ECDSA authentication)_

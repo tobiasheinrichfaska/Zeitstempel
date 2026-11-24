@@ -67,6 +67,13 @@
       wird nicht geschrieben (DER) und ist <code>bad-tst-info</code>; die Erweiterungen sind eine nicht leere Liste, ein
       <code>critical</code> FALSE wird nicht geschrieben; eine kritische, unbekannte Erweiterung wird nicht beurteilt. Jeder Verstoß ist <code>bad-tst-info</code>.
     </p>
+    <h3>Unterzeichner (<code>readToken(…).signer.sid</code>, RFC 5652 § 5.3)</h3>
+    <table>
+      <tr><th>Form (<code>kind</code>)</th><th>Felder</th><th>Version des <code>SignerInfo</code></th><th>Bedeutung</th></tr>
+      <tr><td>issuerAndSerialNumber</td><td>issuer (Bytes, DER des Namens), serial (Bytes ohne führende Nullen)</td><td>1</td><td>Das Zertifikat des Tokens mit diesem Aussteller und dieser Seriennummer (erster Treffer)</td></tr>
+      <tr><td>subjectKeyIdentifier</td><td>ski (Bytes, 1 bis 64)</td><td>3</td><td>Ein Zertifikat des Tokens, dessen Erweiterung <code>subjectKeyIdentifier</code> (Feld <code>subjectKeyIdentifier</code> von <code>Certificate</code>, Bytes oder <code>null</code>) bytegleich ist; bei mehreren das, dessen Hash das Attribut <code>signingCertificate(V2)</code> nennt. Ohne Erweiterung wird nie gefunden (nichts wird berechnet)</td></tr>
+    </table>
+    <p>Die <code>SignedData</code>-Version bleibt in beiden Fällen 3. Einzelheiten und der Abgleich mit OpenSSL: <code>docs/grenzen.md</code>, „Unterzeichner über <code>subjectKeyIdentifier</code>“.</p>
     <h3>TimestampResponse</h3>
     <table>
       <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
@@ -177,11 +184,11 @@
       <tr><td>indefinite-length</td><td>BER mit unbestimmter Länge (nicht erlaubt)</td></tr>
       <tr><td>too-deep</td><td>Verschachtelung über der Grenze</td></tr>
       <tr><td>trailing-bytes</td><td>Bytes nach dem Ende der Struktur</td></tr>
-      <tr><td>bad-structure</td><td>Aufbau stimmt nicht mit dem Standard überein</td></tr>
+      <tr><td>bad-structure</td><td>Aufbau stimmt nicht mit dem Standard überein (auch: Unterzeichner-Bezeichner weder <code>SEQUENCE</code> noch einfaches <code>[0]</code>, oder ein <code>subjectKeyIdentifier</code> im Eintrag mit weniger als 1 oder mehr als 64 Byte)</td></tr>
       <tr><td>rejected</td><td>Der Dienst hat abgelehnt (Status in <code>detail</code>)</td></tr>
       <tr><td>no-token</td><td>Gewährt, aber ohne Token</td></tr>
       <tr><td>not-signed-data</td><td>Token ist kein <code>SignedData</code></td></tr>
-      <tr><td>unsupported-version</td><td>Version einer Struktur nicht unterstützt</td></tr>
+      <tr><td>unsupported-version</td><td>Version einer Struktur nicht unterstützt: <code>SignedData</code> nicht 3; <code>SignerInfo</code> weder 1 noch 3, oder Form des Unterzeichner-Bezeichners passt nicht zur Version (Version 1 nur mit Aussteller und Seriennummer, Version 3 nur mit <code>subjectKeyIdentifier</code>)</td></tr>
       <tr><td>bad-content-type</td><td>Inhaltstyp ist nicht <code>TSTInfo</code></td></tr>
       <tr><td>bad-tst-info</td><td>Inhalt des Tokens ungültig: Version nicht 1, Felder des <code>TSTInfo</code> nicht im Schema (falsche Reihenfolge, doppelt, überzählig, <code>ordering</code> FALSE geschrieben, Milli- oder Mikrosekunden außerhalb 1 bis 999), <code>messageImprint</code> mit anderem Aufbau, ein <code>tsa</code>, das kein <code>GeneralName</code> ist, Erweiterungen <code>[1]</code> leer oder mit falschem Aufbau</td></tr>
       <tr><td>unsupported-hash</td><td>Hashverfahren nicht SHA-256 (Abdruck) oder SHA-1; ebenso SHA-1 oder eine unbekannte Hash-OID im Attribut <code>signingCertificateV2</code> (ESSCertIDv2; kein Rückfall auf SHA-256; SHA-1 gilt nur im v1-Attribut)</td></tr>
@@ -199,9 +206,9 @@
       <tr><td>signature-invalid</td><td>Signatur stimmt nicht</td></tr>
       <tr><td>tsa-mismatch</td><td>Das Feld <code>tsa</code> des Tokens nennt keinen der Namen des Zeitstempel-Zertifikats (Subject oder Eintrag der <code>subjectAltName</code> gleicher Art; RFC 3161 § 2.4.2)</td></tr>
       <tr><td>bad-pem</td><td>Anker nicht als PEM lesbar oder leer</td></tr>
-      <tr><td>bad-certificate</td><td>Zertifikat ungültig (auch: kritische, unbekannte Erweiterung in einem Zertifikat der Kette; ein nicht lesbares <code>subjectAltName</code> des Zeitstempel-Zertifikats, wenn ein <code>tsa</code>-Name damit verglichen werden muss)</td></tr>
+      <tr><td>bad-certificate</td><td>Zertifikat ungültig (auch: <code>subjectKeyIdentifier</code>-Erweiterung kein OCTET STRING von 1 bis 64 Byte ohne Rest, oder doppelt; kritische, unbekannte Erweiterung in einem Zertifikat der Kette; ein nicht lesbares <code>subjectAltName</code> des Zeitstempel-Zertifikats, wenn ein <code>tsa</code>-Name damit verglichen werden muss)</td></tr>
       <tr><td>weak-key</td><td>RSA-Schlüssel des Zeitstempel-Zertifikats oder eines Zertifikats der Kette (Anker ausgenommen) mit weniger Bit als <code>minRsaBits</code> (Vorgabe 2048)</td></tr>
-      <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token (oder unlesbar: unlesbare Zusatzzertifikate im Token werden übersprungen, <code>readToken</code> zählt sie in <code>skippedCertificates</code>)</td></tr>
+      <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token (kein Zertifikat mit passendem Aussteller und Seriennummer, oder, bei einem Eintrag mit <code>subjectKeyIdentifier</code>, keines mit genau diesem Bezeichner; ein Zertifikat ohne die Erweiterung wird nie gefunden, der Bezeichner wird nicht berechnet; oder unlesbar: unlesbare Zusatzzertifikate im Token werden übersprungen, <code>readToken</code> zählt sie in <code>skippedCertificates</code>)</td></tr>
       <tr><td>certificate-not-valid-at-time</td><td>Ein Zertifikat war zur Zeit des Tokens (<code>genTime</code>) oder, wenn gegeben, zu <code>at</code> nicht gültig</td></tr>
       <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) und ausschließlich für Zeitstempel zugelassen (erweiterte Schlüsselverwendung muss genau <code>id-kp-timeStamping</code> enthalten); ebenso eine Zwischen-CA der Kette mit erweiterter Schlüsselverwendung ohne <code>id-kp-timeStamping</code> und ohne <code>anyExtendedKeyUsage</code> (Anker ausgenommen)</td></tr>
       <tr><td>not-a-ca</td><td>Der Aussteller, der das Zertifikat darunter signiert hat, ist keine Zertifizierungsstelle (<code>basicConstraints</code> ohne CA oder Schlüsselverwendung ohne <code>keyCertSign</code>); ohne <code>basicConstraints</code> gilt nur ein übergebener Anker als CA</td></tr>
@@ -215,7 +222,8 @@
       <tr><td>maxBytes</td><td>262144</td><td>Größte gelesene DER-Struktur</td></tr>
       <tr><td>maxDepth</td><td>24</td><td>Größte Verschachtelung</td></tr>
       <tr><td>maxChildren</td><td>256</td><td>Elemente in einer Folge</td></tr>
-      <tr><td>MAX_CERTIFICATES</td><td>16</td><td>Zertifikate in einem Token</td></tr>
+      <tr><td>MAX_CERTIFICATES</td><td>16</td><td>Zertifikate in einem Token (zugleich die Zahl der Kandidaten für einen Unterzeichner über <code>subjectKeyIdentifier</code>: je Kandidat ein Hash, eine Signaturprüfung)</td></tr>
+      <tr><td>SKI_BYTES</td><td>1 bis 64</td><td>Länge eines <code>subjectKeyIdentifier</code> im Unterzeichner-Eintrag und in der Erweiterung eines Zertifikats</td></tr>
       <tr><td>MAX_CHAIN</td><td>6</td><td>Tiefe der Kettensuche: höchstens 5 Zwischenzertifikate; <code>chainLength</code> höchstens 7 (Anker eingerechnet)</td></tr>
       <tr><td>MAX_CANDIDATES</td><td>8</td><td>Brauchbare Kandidaten mit gültiger Signatur je Schritt der Kettensuche; unbrauchbare Zwillinge zählen nicht</td></tr>
       <tr><td>MAX_SIGNATURE_CHECKS</td><td>64</td><td>Signaturprüfungen für die ganze Kettensuche (die Prüfung der Token-Signatur kommt dazu)</td></tr>

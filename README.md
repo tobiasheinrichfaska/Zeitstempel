@@ -52,7 +52,10 @@ Die Prüfung ist streng: Das Feld `tsa` des Tokens muss zum Zeitstempel-Zertifik
 Tokens wird als Schema gelesen (`bad-tst-info`), und ein RSA-Schlüssel unter 2048 Bit im Zeitstempel-Zertifikat oder in
 der Kette (`weak-key`; Anker ausgenommen) wird abgelehnt. Die Option `minRsaBits` (Zahl, Vorgabe 2048, 0 schaltet aus)
 ändert die Grenze. Wo das strenger oder lockerer ist als `openssl ts -verify`: `docs/grenzen.md`, Tabelle „Abgleich
-mit OpenSSL“.
+mit OpenSSL“. Der Unterzeichner darf im Token über Aussteller und Seriennummer (Version 1) oder über den
+`subjectKeyIdentifier` seines Zertifikats (Version 3) genannt sein; ein Zertifikat ohne diese Erweiterung wird auf dem
+zweiten Weg nie gefunden (`docs/grenzen.md`, „Unterzeichner über `subjectKeyIdentifier`“; getestet nur mit eigenen
+Token und einem von OpenSSL geschriebenen, nicht mit einem echten Dienst).
 Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime` ist
 im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `response.value.info` dagegen eine Zahl
 (Millisekunden seit 1970).

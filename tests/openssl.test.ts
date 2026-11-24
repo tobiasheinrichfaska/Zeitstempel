@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readTimestampResponse, verifyTimestampToken } from '../src/index.ts';
+import { readTimestampResponse, readToken, verifyTimestampToken } from '../src/index.ts';
 import { fixture, sha256 } from './helpers.ts';
 import type { Reason } from '../src/lib/index.ts';
 import { tlv } from '../src/lib/der.ts';
@@ -720,4 +720,306 @@ describe.skipIf(!canJudgeAtTime)('agreement with openssl ts -verify', () => {
       if (!ours.ok && r.reason) expect(ours.reason).toBe(r.reason);
     });
   }
+
+  // ---- F4: the signer named by subjectKeyIdentifier (SignerInfo version 3). `openssl ts -verify` reads the token
+  // as PKCS#7 and cannot read that form at all (parse error); `openssl cms -verify` can, so it is the comparison
+  // here. Measured with OpenSSL 3.0.13: CMS ignores the SignerInfo version, takes the first certificate with the
+  // identifier (no search among several), finds no certificate without the extension (nothing is computed from
+  // the key) and refuses a critical extension. Where we differ the row says so.
+  const skiId = Uint8Array.from({ length: 20 }, (_, i) => i + 1);
+  interface SkiRow {
+    label: string;
+    opts: Opts;
+    /** `openssl ts -verify` accepts it (PKCS#7 reading). */
+    ts: boolean;
+    /** `openssl cms -verify -purpose timestampsign` accepts it. */
+    cms: boolean;
+    /** Our verdict: 'ok' or the reason. */
+    ours: Reason | 'ok';
+  }
+  const SKI_ROWS: SkiRow[] = [
+    { label: 'signer by key identifier', opts: { sid: 'ski' }, ts: false, cms: true, ours: 'ok' },
+    {
+      label: 'signer by key identifier, below an intermediate',
+      opts: { sid: 'ski', intermediate: {} },
+      ts: false,
+      cms: true,
+      ours: 'ok',
+    },
+    {
+      label: 'identifier fits no certificate',
+      opts: { sid: 'ski', sidSki: skiId },
+      ts: false,
+      cms: false,
+      ours: 'signer-certificate-missing',
+    },
+    {
+      label:
+        'signer certificate without the extension (identifier = SHA-1 of the key, not computed by either)',
+      opts: { sid: 'ski', tsaSki: null },
+      ts: false,
+      cms: false,
+      ours: 'signer-certificate-missing',
+    },
+    {
+      label: 'a look-alike with the same identifier and another key comes first',
+      opts: { sid: 'ski', tsaSki: skiId, skiTwins: [{ wrongKey: true }] },
+      ts: false,
+      cms: false,
+      ours: 'ok',
+    },
+    {
+      label: 'version 3 with issuer and serial number (ignored by OpenSSL)',
+      opts: { signerVersion: 3 },
+      ts: true,
+      cms: true,
+      ours: 'unsupported-version',
+    },
+    {
+      label: 'version 1 with a key identifier (ignored by CMS)',
+      opts: { sid: 'ski', signerVersion: 1 },
+      ts: false,
+      cms: true,
+      ours: 'unsupported-version',
+    },
+    {
+      label: 'identifier of 0 bytes in the SignerInfo',
+      opts: { sid: 'ski', sidSki: new Uint8Array(0) },
+      ts: false,
+      cms: false,
+      ours: 'bad-structure',
+    },
+    {
+      label: 'identifier of 65 bytes in the SignerInfo and in the certificate',
+      opts: { sid: 'ski', tsaSki: new Uint8Array(65).fill(7) },
+      ts: false,
+      cms: true,
+      ours: 'bad-structure',
+    },
+    {
+      label: 'critical subjectKeyIdentifier in the signer certificate',
+      opts: { sid: 'ski', tsaSkiCritical: true },
+      ts: false,
+      cms: false,
+      ours: 'ok',
+    },
+  ];
+  for (const r of SKI_ROWS) {
+    const same = r.cms === (r.ours === 'ok');
+    it(`${same ? 'same' : 'DIFFERENT'} (CMS ${r.cms ? 'accepts' : 'refuses'}, ts ${r.ts ? 'accepts' : 'refuses'}, we ${r.ours}): ${r.label}`, async () => {
+      const t = build(r.opts);
+      writeFileSync(path('ski.tok'), t.token);
+      writeFileSync(path('ski.ca.pem'), t.caPem);
+      const ts = openssl([
+        'ts',
+        '-verify',
+        '-in',
+        path('ski.tok'),
+        '-token_in',
+        '-digest',
+        Buffer.from(t.imprint).toString('hex'),
+        '-CAfile',
+        path('ski.ca.pem'),
+        '-attime',
+        '1767225600',
+      ]);
+      const cms = openssl([
+        'cms',
+        '-verify',
+        '-inform',
+        'DER',
+        '-in',
+        path('ski.tok'),
+        '-CAfile',
+        path('ski.ca.pem'),
+        '-attime',
+        '1767225600',
+        '-purpose',
+        'timestampsign',
+        '-out',
+        path('ski.out'),
+      ]);
+      const ours = await verifyTimestampToken(t.token, t.imprint, [t.caPem]);
+      expect(ts.ok, ts.stderr).toBe(r.ts);
+      expect(cms.ok, cms.stderr).toBe(r.cms);
+      expect(ours.ok ? 'ok' : ours.reason).toBe(r.ours);
+    });
+  }
+  it('ts -verify refuses a key identifier because it cannot read the form (not for a rule of ours)', () => {
+    const t = build({ sid: 'ski' });
+    writeFileSync(path('ski2.tok'), t.token);
+    writeFileSync(path('ski2.ca.pem'), t.caPem);
+    const ts = openssl([
+      'ts',
+      '-verify',
+      '-in',
+      path('ski2.tok'),
+      '-token_in',
+      '-digest',
+      Buffer.from(t.imprint).toString('hex'),
+      '-CAfile',
+      path('ski2.ca.pem'),
+      '-attime',
+      '1767225600',
+    ]);
+    expect(ts.stderr).toContain('PKCS7_ISSUER_AND_SERIAL');
+  });
+  it('a critical subjectKeyIdentifier in a signer with issuer and serial number: openssl ts refuses, we accept (same difference)', async () => {
+    const t = build({ tsaSki: skiId, tsaSkiCritical: true });
+    writeFileSync(path('ski3.tok'), t.token);
+    writeFileSync(path('ski3.ca.pem'), t.caPem);
+    const ts = openssl([
+      'ts',
+      '-verify',
+      '-in',
+      path('ski3.tok'),
+      '-token_in',
+      '-digest',
+      Buffer.from(t.imprint).toString('hex'),
+      '-CAfile',
+      path('ski3.ca.pem'),
+      '-attime',
+      '1767225600',
+    ]);
+    expect(ts.ok, ts.stderr).toBe(false);
+    expect((await verifyTimestampToken(t.token, t.imprint, [t.caPem])).ok).toBe(true);
+  });
+
+  // A token signed by OpenSSL itself with `cms -sign -keyid` (certificates made by OpenSSL, the identifier
+  // computed by it as `subjectKeyIdentifier=hash`): the form really occurs outside our own builder. OpenSSL adds
+  // no signingCertificate attribute, so the verification gets as far as that attribute and stops there.
+  describe('a SignerInfo written by OpenSSL', () => {
+    const run = (args: string[]) => spawnSync('openssl', args, { encoding: 'utf8' });
+    let made = false;
+    beforeAll(() => {
+      writeFileSync(
+        path('o.cnf'),
+        [
+          '[ca]',
+          'basicConstraints=critical,CA:TRUE',
+          'keyUsage=critical,keyCertSign',
+          'subjectKeyIdentifier=hash',
+          '[tsa]',
+          'keyUsage=critical,digitalSignature',
+          'extendedKeyUsage=critical,timeStamping',
+          'subjectKeyIdentifier=hash',
+          '[tsa_none]',
+          'keyUsage=critical,digitalSignature',
+          'extendedKeyUsage=critical,timeStamping',
+          'subjectKeyIdentifier=none',
+          '',
+        ].join('\n'),
+      );
+      const steps = [
+        ['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', path('o.ca.key')],
+        ['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', path('o.tsa.key')],
+        [
+          'req',
+          '-x509',
+          '-new',
+          '-key',
+          path('o.ca.key'),
+          '-subj',
+          '/CN=CA',
+          '-days',
+          '20000',
+          '-extensions',
+          'ca',
+          '-config',
+          path('o.cnf'),
+          '-out',
+          path('o.ca.pem'),
+        ],
+        ['req', '-new', '-key', path('o.tsa.key'), '-subj', '/CN=TSA', '-out', path('o.tsa.csr')],
+        [
+          'x509',
+          '-req',
+          '-in',
+          path('o.tsa.csr'),
+          '-CA',
+          path('o.ca.pem'),
+          '-CAkey',
+          path('o.ca.key'),
+          '-CAcreateserial',
+          '-days',
+          '20000',
+          '-extfile',
+          path('o.cnf'),
+          '-extensions',
+          'tsa',
+          '-out',
+          path('o.tsa.pem'),
+        ],
+        [
+          'x509',
+          '-req',
+          '-in',
+          path('o.tsa.csr'),
+          '-CA',
+          path('o.ca.pem'),
+          '-CAkey',
+          path('o.ca.key'),
+          '-CAcreateserial',
+          '-days',
+          '20000',
+          '-extfile',
+          path('o.cnf'),
+          '-extensions',
+          'tsa_none',
+          '-out',
+          path('o.none.pem'),
+        ],
+      ];
+      for (const a of steps) if (run(a).status !== 0) return;
+      const t = build();
+      writeFileSync(path('o.tst'), t.tst);
+      made = true;
+    });
+    const sign = (cert: string, out: string) =>
+      run([
+        'cms',
+        '-sign',
+        '-binary',
+        '-inform',
+        'DER',
+        '-in',
+        path('o.tst'),
+        '-signer',
+        path(cert),
+        '-inkey',
+        path('o.tsa.key'),
+        '-certfile',
+        path('o.ca.pem'),
+        '-keyid',
+        '-econtent_type',
+        'id-smime-ct-TSTInfo',
+        '-outform',
+        'DER',
+        '-nodetach',
+        '-md',
+        'sha256',
+        '-out',
+        path(out),
+      ]);
+    it('openssl writes version 3 with a key identifier; we read it and find the signer certificate by it', async () => {
+      expect(made).toBe(true);
+      expect(sign('o.tsa.pem', 'o.cms').status).toBe(0);
+      const token = new Uint8Array(readFileSync(path('o.cms')));
+      const parsed = readToken(token);
+      expect(parsed.signer.sid.kind).toBe('subjectKeyIdentifier');
+      expect(parsed.certificates).toHaveLength(2);
+      const t = build();
+      const r = await verifyTimestampToken(token, t.imprint, [
+        readFileSync(path('o.ca.pem'), 'utf8'),
+      ]);
+      // the signer was found by its key identifier; OpenSSL writes no signingCertificate attribute
+      expect(r).toEqual({ ok: false, reason: 'signing-certificate-missing' });
+    });
+    it('openssl itself cannot name a signer without the extension by key identifier (it does not compute one)', () => {
+      expect(made).toBe(true);
+      const r = sign('o.none.pem', 'o.none.cms');
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('certificate has no keyid');
+    });
+  });
 });

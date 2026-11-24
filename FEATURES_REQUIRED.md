@@ -10,6 +10,7 @@
 - [x] **Beleg im Sammelbetrieb prüfen** — `verifyBatchedTimestamp` gegen eine unabhängige Referenz des Baumes, jede Veränderung abgelehnt (`tests/batch.test.ts`)
 - [x] **Übereinstimmung mit openssl** — `tests/openssl.test.ts` (nur mit openssl auf dem Rechner)
 - [x] **`tsa`-Name, TSTInfo als Schema, RSA-Mindestgröße** — `tsa` gegen das Zeitstempel-Zertifikat (`tsa-mismatch`), Reihenfolge und Wertebereiche des TSTInfo (`bad-tst-info`), `minRsaBits` (`weak-key`); jede Regel mit OpenSSL-Gegenprobe und dokumentiertem Unterschied (`tests/tstinfo.test.ts`, `tests/rsa-bits.test.ts`, `tests/openssl.test.ts`, Tabelle in `docs/grenzen.md`)
+- [x] **Unterzeichner über `subjectKeyIdentifier` (SignerInfo Version 3)** — beide Formen gelesen, Version und Form müssen zusammenpassen (`unsupported-version`), Kandidatenwahl über den Hash des `signingCertificate`-Attributs, ein Zertifikat ohne die Erweiterung wird nie gefunden (`tests/ski-signer.test.ts`; Gegenprobe mit `openssl cms -verify` und einem von OpenSSL geschriebenen Token in `tests/openssl.test.ts`; noch kein echter Dienst, der so stempelt)
 - [x] **Merkle-Baum gegen veröffentlichte RFC-6962-Werte** — Wurzeln und Prüfpfade der acht Testblätter (`tests/batch-vectors.test.ts`)
 - [x] **Kern ohne Node-Importe** — Wächter-Test (`tests/coupling.test.ts`)
 - [x] **Läuft in einem Browser** — nur eingeschränkt: einmal in Headless-Chromium, von Hand (`node scripts/browser-check.mjs`), **ohne Anmeldung am Relay**; Firefox, Safari und die Anmeldung (`signRelayRequest`) im Browser nicht geprüft

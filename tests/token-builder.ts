@@ -122,6 +122,29 @@ export interface Opts {
   keys?: { ca: unknown; tsa: unknown };
   /** The signing certificate attribute: `v1` (ESSCertID, SHA-1), or `v2` with this hash OID instead of SHA-256 (the certificate hash stays SHA-256). Default v2 without an algorithm. */
   essCertId?: { v1: true } | { v2Hash: string };
+  /**
+   * How the SignerInfo names the signer: `'ski'` = `subjectKeyIdentifier` `[0]` (SignerInfo version 3, the signer
+   * certificate then carries a subjectKeyIdentifier extension of 20 bytes, SHA-1 of its key); default
+   * issuerAndSerialNumber (version 1).
+   */
+  sid?: 'ski';
+  /** Overrides the SignerInfo version number (default 1, or 3 with `sid: 'ski'`). */
+  signerVersion?: number;
+  /** The bytes of the `[0]` identifier in the SignerInfo (default: the SKI of the signer certificate). */
+  sidSki?: Uint8Array;
+  /** Replaces the whole `sid` element of the SignerInfo as it is (DER). */
+  sidRaw?: Uint8Array;
+  /** The subjectKeyIdentifier extension of the signer certificate: bytes, or `null` for none (default: with `sid: 'ski'` the SKI of the key, else none). */
+  tsaSki?: Uint8Array | null;
+  /** The value (DER) of the signer certificate's subjectKeyIdentifier extension as it is (replaces `tsaSki`), e.g. no OCTET STRING. */
+  tsaSkiValueRaw?: Uint8Array;
+  tsaSkiCritical?: boolean;
+  /**
+   * Look-alikes of the signer certificate (same subject, issuer and subjectKeyIdentifier, other serial), sent in
+   * the token before the real one: with the signer's own key (`wrongKey` not set; the certificate hash of the
+   * signing certificate attribute does not fit) or with an unrelated key (`wrongKey`).
+   */
+  skiTwins?: { wrongKey?: boolean }[];
 }
 const hashOf = (name: 'sha1' | 'sha256', b: Uint8Array) => u(createHash(name).update(b).digest());
 function essAttribute(kind: Opts['essCertId'], cert: Uint8Array): Uint8Array {
@@ -267,18 +290,45 @@ export function build(o: Opts = {}) {
   }
   const ekus = o.ekuOids ?? ['1.3.6.1.5.5.7.3.8'];
   const tsaSerial = o.serialRaw ?? Uint8Array.of(7);
+  const tsaSkiDefault = hashOf('sha1', spki(tsa)); // 20 bytes derived from the key
+  const tsaSki = o.tsaSki === undefined ? (o.sid === 'ski' ? tsaSkiDefault : null) : o.tsaSki;
+  const skiExt: Uint8Array[] =
+    o.tsaSkiValueRaw !== undefined
+      ? [ext('2.5.29.14', o.tsaSkiCritical ?? false, o.tsaSkiValueRaw)]
+      : tsaSki
+        ? [ext('2.5.29.14', o.tsaSkiCritical ?? false, octet(tsaSki))]
+        : [];
+  const tsaExts = [
+    ...skiExt,
+    ext('2.5.29.15', true, tlv(3, o.tsaKeyUsage ?? Uint8Array.of(0, 0x80))),
+    ...(o.noEku ? [] : [ext('2.5.29.37', o.ekuCritical ?? true, seq(...ekus.map(oidT)))]),
+    ...(o.extraTsaExts ?? []),
+  ];
+  const tsaIssuerDer = o.tsaIssuerName
+    ? nameWith(o.tsaIssuerName.tag, o.tsaIssuerName.text)
+    : tsaIssuer;
+  const tsaValidityDer = o.tsaValidity
+    ? seq(gt(o.tsaValidity[0]), gt(o.tsaValidity[1]))
+    : undefined;
   const tsaCert = mkCert(
     'TSA',
-    o.tsaIssuerName ? nameWith(o.tsaIssuerName.tag, o.tsaIssuerName.text) : tsaIssuer,
+    tsaIssuerDer,
     tsa,
     tsaIssuerKey,
-    [
-      ext('2.5.29.15', true, tlv(3, o.tsaKeyUsage ?? Uint8Array.of(0, 0x80))),
-      ...(o.noEku ? [] : [ext('2.5.29.37', o.ekuCritical ?? true, seq(...ekus.map(oidT)))]),
-      ...(o.extraTsaExts ?? []),
-    ],
+    tsaExts,
     tsaSerial,
-    o.tsaValidity ? seq(gt(o.tsaValidity[0]), gt(o.tsaValidity[1])) : undefined,
+    tsaValidityDer,
+  );
+  const skiTwinCerts = (o.skiTwins ?? []).map((t, i) =>
+    mkCert(
+      'TSA',
+      tsaIssuerDer,
+      t.wrongKey ? attacker : tsa,
+      tsaIssuerKey,
+      tsaExts,
+      Uint8Array.of(40 + i),
+      tsaValidityDer,
+    ),
   );
   const imprint = o.hash ?? sha256(new TextEncoder().encode('x'));
   const nonceField = o.nonceBytes ? [tlv(2, o.nonceBytes)] : [];
@@ -313,12 +363,17 @@ export function build(o: Opts = {}) {
   }
   const attrCtx = Uint8Array.from(attrsSet);
   attrCtx[0] = 0xa0;
+  const sidElement =
+    o.sidRaw ??
+    (o.sid === 'ski'
+      ? tlv(0x80, o.sidSki ?? tsaSki ?? tsaSkiDefault)
+      : seq(
+          o.sidIssuerName ? nameWith(o.sidIssuerName.tag, o.sidIssuerName.text) : name(tsaIssuer),
+          tlv(2, o.signerSerialRaw ?? tsaSerial),
+        ));
   const signerInfo = seq(
-    int(1),
-    seq(
-      o.sidIssuerName ? nameWith(o.sidIssuerName.tag, o.sidIssuerName.text) : name(tsaIssuer),
-      tlv(2, o.signerSerialRaw ?? tsaSerial),
-    ),
+    int(o.signerVersion ?? (o.sid === 'ski' ? 3 : 1)),
+    sidElement,
     seq(oidT('2.16.840.1.101.3.4.2.1')),
     attrCtx,
     o.signatureAlg ? seq(oidT(o.signatureAlg.oid)) : algFor(tsa),
@@ -331,6 +386,7 @@ export function build(o: Opts = {}) {
     tlv(
       ctx(0),
       ...(o.junkCerts ?? []),
+      ...skiTwinCerts,
       o.tsaCertOverride ?? tsaCert,
       ...(o.intermediate ? [...twinCerts, intCert] : []),
       ...more,

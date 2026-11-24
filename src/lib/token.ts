@@ -15,7 +15,7 @@ import {
   unsignedBytes,
   type Node,
 } from './der.ts';
-import { HASHES, OID, type HashName } from './oids.ts';
+import { HASHES, OID, SKI_BYTES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
 import { parseCertificate, type Certificate } from './x509.ts';
 
@@ -35,10 +35,17 @@ export interface TstInfo {
   tsa: Uint8Array | null;
 }
 
+/**
+ * How the SignerInfo names the signing certificate (`SignerIdentifier`, RFC 5652 § 5.3): by issuer and serial number
+ * (SignerInfo version 1) or by `subjectKeyIdentifier` `[0]` (version 3).
+ */
+export type SignerId =
+  | { kind: 'issuerAndSerialNumber'; issuer: Uint8Array; serial: Uint8Array }
+  | { kind: 'subjectKeyIdentifier'; ski: Uint8Array };
+
 export interface SignerParts {
-  /** Issuer name (DER) and serial of the signing certificate. */
-  issuer: Uint8Array;
-  serial: Uint8Array;
+  /** The signing certificate as named by the SignerInfo. */
+  sid: SignerId;
   digestOid: string;
   /** The signed attributes as the SET OF that was signed (tag 0x31), and the parsed attributes. */
   signedAttributesDer: Uint8Array;
@@ -216,6 +223,31 @@ function readAttributes(set: Node): Map<string, Node> {
   return map;
 }
 
+/**
+ * The `SignerIdentifier` of a SignerInfo (RFC 5652 § 5.3): version 1 goes with `issuerAndSerialNumber` (a
+ * SEQUENCE of issuer and serial number), version 3 with `subjectKeyIdentifier` (`[0]` IMPLICIT OCTET STRING,
+ * primitive, 1 to 64 bytes). Another version, or a form that does not belong to the version, is
+ * `unsupported-version`; any other shape is `bad-structure`.
+ */
+function readSignerId(version: number, node: Node | undefined): SignerId {
+  if (version !== 1 && version !== 3) throw new ReaderError('unsupported-version');
+  if (node?.tag === TAG.sequence) {
+    if (version !== 1) throw new ReaderError('unsupported-version');
+    const parts = children(node);
+    const issuer = expect(parts[0], TAG.sequence).raw;
+    const serial = trimZeros(unsignedBytes(parts[1]!));
+    return { kind: 'issuerAndSerialNumber', issuer, serial };
+  }
+  if (node?.tag === ctxPrimitive(0)) {
+    if (version !== 3) throw new ReaderError('unsupported-version');
+    if (node.value.length < SKI_BYTES.min || node.value.length > SKI_BYTES.max) {
+      throw new ReaderError('bad-structure');
+    }
+    return { kind: 'subjectKeyIdentifier', ski: node.value };
+  }
+  throw new ReaderError('bad-structure');
+}
+
 /** Reads a token (`ContentInfo` holding `SignedData` over a `TSTInfo`). Throws `ReaderError`. */
 export function readToken(bytes: Uint8Array): ParsedToken {
   try {
@@ -261,10 +293,7 @@ function readTokenStrict(bytes: Uint8Array): ParsedToken {
   if (signers.length !== 1) throw new ReaderError('one-signer-required');
   const s = children(expect(signers[0], TAG.sequence));
   const version = integerNumber(s[0]!);
-  const sid = children(expect(s[1], TAG.sequence)); // issuer and serial number only
-  if (version !== 1) throw new ReaderError('unsupported-version');
-  const issuer = expect(sid[0], TAG.sequence).raw;
-  const serial = trimZeros(unsignedBytes(sid[1]!));
+  const sid = readSignerId(version, s[1]);
   const digestOid = oid(children(expect(s[2], TAG.sequence))[0]!);
   if (!declaredDigests.includes(digestOid)) throw new ReaderError('bad-structure');
   const attrNode = s[3];
@@ -282,7 +311,7 @@ function readTokenStrict(bytes: Uint8Array): ParsedToken {
     info: readTstInfo(content),
     certificates,
     skippedCertificates,
-    signer: { issuer, serial, digestOid, signedAttributesDer, attributes, signatureOid, signature },
+    signer: { sid, digestOid, signedAttributesDer, attributes, signatureOid, signature },
   };
 }
 

@@ -309,6 +309,43 @@ async function checkSigningCertificate(token: ParsedToken, signer: Certificate):
   }
 }
 
+/**
+ * The signing certificate of the token. By issuer and serial number (SignerInfo version 1) the first certificate
+ * of the token that matches is taken. By `subjectKeyIdentifier` (version 3) several certificates may carry the
+ * same identifier (a look-alike with another key, a re-issued certificate): the one whose hash the signed
+ * `signingCertificate` attribute names is taken, so a look-alike never hides the real one. At most
+ * MAX_CERTIFICATES certificates are looked at, each costs one hash and no signature check; a certificate without
+ * the extension never matches (the identifier is never computed from the key). The attribute binds exactly one
+ * certificate, so the signature is checked against that one only. No match: `signer-certificate-missing`; matches
+ * but none the attribute names: the reason of the first one (`signing-certificate-mismatch` and the like).
+ */
+async function findSigner(token: ParsedToken): Promise<Certificate> {
+  const sid = token.signer.sid;
+  if (sid.kind === 'issuerAndSerialNumber') {
+    const signer = token.certificates.find(
+      (c) => sameName(c.issuer, sid.issuer) && same(trimZeros(c.serial), sid.serial),
+    );
+    if (!signer) throw new ReaderError('signer-certificate-missing');
+    await checkSigningCertificate(token, signer);
+    return signer;
+  }
+  const named = token.certificates.filter(
+    (c) => c.subjectKeyIdentifier !== null && same(c.subjectKeyIdentifier, sid.ski),
+  );
+  if (named.length === 0) throw new ReaderError('signer-certificate-missing');
+  let firstFailure: ReaderError | null = null;
+  for (const candidate of named) {
+    try {
+      await checkSigningCertificate(token, candidate);
+      return candidate;
+    } catch (e) {
+      if (!(e instanceof ReaderError)) throw e;
+      firstFailure ??= e;
+    }
+  }
+  throw firstFailure ?? new ReaderError('signer-certificate-missing');
+}
+
 const lowerAscii = (bytes: Uint8Array): Uint8Array =>
   bytes.map((b) => (b >= 0x41 && b <= 0x5a ? b + 32 : b));
 
@@ -559,13 +596,8 @@ async function verifyChecked(
       throw new ReaderError('message-digest-mismatch');
     }
 
-    // signer certificate
-    const signer = token.certificates.find(
-      (c) =>
-        sameName(c.issuer, token.signer.issuer) && same(trimZeros(c.serial), token.signer.serial),
-    );
-    if (!signer) throw new ReaderError('signer-certificate-missing');
-    await checkSigningCertificate(token, signer);
+    // signer certificate, found as the SignerInfo names it
+    const signer = await findSigner(token);
     // an RSA key below the smallest size is refused before it is used (a platform may or may not import it); a
     // signer the caller trusts as an anchor is exempt
     if (!anchors.some((a) => same(a.raw, signer.raw)) && isWeakRsa(signer, opts.minRsaBits)) {
