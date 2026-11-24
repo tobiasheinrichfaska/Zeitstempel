@@ -67,19 +67,19 @@ describe('no private names', () => {
       }
     }
   });
-  it('in commit messages', () => {
-    const read = (): string | null => {
-      try {
-        return execFileSync('git', ['-C', ROOT, 'log', '--no-merges', '--format=%B'], {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          encoding: 'utf8',
-        }).toLowerCase();
-      } catch {
-        return null; // not a git checkout (e.g. a tarball), or no commit yet
-      }
-    };
-    const log = read();
-    if (log === null) return;
-    for (const word of FORBIDDEN) expect(mentions(log, word), word).toBe(false);
+  const readLog = (): string | null => {
+    try {
+      return execFileSync('git', ['-C', ROOT, 'log', '--no-merges', '--format=%B'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+      }).toLowerCase();
+    } catch {
+      return null; // not a git checkout (e.g. a tarball), no git, or no commit yet
+    }
+  };
+  const log = readLog();
+  // Visibly skipped (not silently green) when there is no log to read.
+  it.skipIf(log === null)('in commit messages', () => {
+    for (const word of FORBIDDEN) expect(mentions(log!, word), word).toBe(false);
   });
 });

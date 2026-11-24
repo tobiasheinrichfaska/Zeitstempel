@@ -51,7 +51,7 @@ gilt die Vorgabe „alle Adressen“, außer `RELAY_HOST` ist gesetzt.
   hat genau ein Feld; Rohbytes gehen nur mit `Content-Type: application/octet-stream` (genau 32 Byte).
   Ein `charset`-Zusatz im `Content-Type` wird ignoriert. Mehr als 512 Byte Körper werden abgelehnt.
 - **200:** `service` (Kennung), `genTime` (ISO 8601, UTC, mit Millisekunden, z. B. `2026-11-23T13:05:56.000Z`;
-  die Zeit des Dienstes, sekundengenau), `accuracyMs` (ganze Zahl oder `null`), `serial` (Kleinbuchstaben-Hex),
+  die Zeit des Dienstes, sekundengenau), `accuracyMs` (Zahl, kann Bruchteile haben, z. B. `0.5`, oder `null`), `serial` (Kleinbuchstaben-Hex),
   `token` (base64url ohne Auffüllzeichen, das Token als DER, so wie es `readToken`/`verifyTimestampToken` der
   Bibliothek erwarten).
 - **`GET /v1/services`:** `{"services": [{"id", "name", "qualified", "intendedUse"}]}`. Die Reihenfolge ist die der Datei
@@ -156,6 +156,8 @@ Das Relay schreibt weder Kennung noch Zeit noch Signatur ins Protokoll; die Zäh
 Körper tröpfeln), beendet **der Server** die Verbindung und antwortet `408`. Das zählt unter `refused` als
 `request-timeout` (einmal je Verbindung), **nicht** als `client-aborted`: dieses zählt nur Clients, die von sich aus
 abbrechen. Die Zähler `unauthorized`, `rate-limited` usw. bleiben davon unberührt.
+
+**Pipelining mit Müll:** Wer mehrere Anfragen hintereinander schickt (pipelined) und danach Müll nachschickt, bekommt nur die `400` und verliert die Antwort der laufenden Anfrage (wie bei Node).
 
 **Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`.
 `publicKey` ist der **unkomprimierte Punkt** (65 Byte: `04 || X || Y`) als base64url ohne `=`. Streng gelesen: genau

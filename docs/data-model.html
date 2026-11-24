@@ -53,7 +53,7 @@
       <tr><td>imprint</td><td>Bytes</td><td>Der bestätigte Hash</td></tr>
       <tr><td>serial</td><td>Hex-Text</td><td>Seriennummer des Tokens</td></tr>
       <tr><td>genTime</td><td>Zahl: Millisekunden seit 1970</td><td>Zeit, die der Dienst bestätigt (noch nicht geprüft). <code>genTime</code> kommt an drei Stellen in zwei Formen vor: hier (<code>info</code>) als Zahl in Millisekunden, im Ergebnis von <code>verifyTimestampToken</code> und in der Antwort des Relays als ISO-8601-Text (UTC)</td></tr>
-      <tr><td>accuracyMs</td><td>Zahl oder null</td><td>Genauigkeit, wenn angegeben</td></tr>
+      <tr><td>accuracyMs</td><td>Zahl (kann Bruchteile haben) oder null</td><td>Genauigkeit in Millisekunden, wenn angegeben (Mikrosekunden gehen als Bruchteil ein)</td></tr>
       <tr><td>nonce</td><td>Bytes oder null</td><td>Die in der Anfrage gesendete Zufallszahl (ohne führende Nullen)</td></tr>
     </table>
     <h3>TimestampResponse</h3>
@@ -67,7 +67,7 @@
     <table>
       <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
       <tr><td>genTime</td><td>ISO-8601-Text (UTC)</td><td>Bestätigte Zeit</td></tr>
-      <tr><td>accuracyMs</td><td>Zahl oder null</td><td>Genauigkeit</td></tr>
+      <tr><td>accuracyMs</td><td>Zahl (kann Bruchteile haben) oder null</td><td>Genauigkeit</td></tr>
       <tr><td>policy</td><td>Text</td><td>Richtlinie</td></tr>
       <tr><td>serial</td><td>Hex-Text</td><td>Seriennummer</td></tr>
       <tr><td>signer</td><td>Text <code>CN=…, O=…</code></td><td>Lesbarer Name des Zeitstempel-Zertifikats; nicht zum Vergleichen</td></tr>

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +46,17 @@ describe('scripts/prepare.mjs (the `prepare` of npm)', () => {
       expect(existsSync(join(dir, 'dist', 'index.js'))).toBe(true);
       expect(existsSync(join(dir, 'dist', 'index.d.ts'))).toBe(true);
       expect(r.stdout).toContain('declarations rewritten');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('a broken source fails loudly: exit code not 0 and the compiler error on the output (not a silent skip)', () => {
+    const dir = project(true);
+    try {
+      appendFileSync(join(dir, 'src', 'index.ts'), "\nexport const broken: number = 'text';\n");
+      const r = prepare(dir);
+      expect(r.status, r.stderr + r.stdout).not.toBe(0);
+      expect(r.stdout + r.stderr).toContain('error TS');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

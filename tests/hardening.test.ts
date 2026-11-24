@@ -35,6 +35,26 @@ describe('L1: extended key usage must be exactly id-kp-timeStamping', () => {
     expect(await reason({ ekuOids: ['1.3.6.1.5.5.7.3.2'] })).toBe('bad-eku');
     expect(await reason({ ekuOids: [] })).toBe('bad-eku');
   });
+  it('refuses a signer without any extended key usage extension (also when criticality is not required)', async () => {
+    expect(await reason({ noEku: true })).toBe('bad-eku');
+    expect(await reason({ noEku: true }, { requireCriticalEku: false })).toBe('bad-eku');
+  });
+  it('accepts exactly the timeStamping OID: its neighbours and look-alikes are refused', async () => {
+    expect(await reason({ ekuOids: [TS] })).toBe('ok');
+    expect(await reason({ ekuOids: ['1.3.6.1.5.5.7.3.9'] })).toBe('bad-eku'); // OCSPSigning, next value
+    expect(await reason({ ekuOids: ['1.3.6.1.5.5.7.3.7'] })).toBe('bad-eku'); // previous value
+    expect(await reason({ ekuOids: ['1.3.6.1.5.5.7.3.88'] })).toBe('bad-eku');
+  });
+  it('the signer certificate must be valid at the stamped time (before and after)', async () => {
+    const short: [string, string] = ['20250101000000Z', '20260601000000Z'];
+    expect(await reason({ tsaValidity: short })).toBe('ok');
+    expect(await reason({ tsaValidity: short, genTime: '20240101000000Z' })).toBe(
+      'certificate-not-valid-at-time',
+    );
+    expect(await reason({ tsaValidity: short, genTime: '20270101000000Z' })).toBe(
+      'certificate-not-valid-at-time',
+    );
+  });
   it('still refuses a non-critical extension by default, allows it on request', async () => {
     expect(await reason({ ekuCritical: false })).toBe('bad-eku');
     expect(await reason({ ekuCritical: false }, { requireCriticalEku: false })).toBe('ok');

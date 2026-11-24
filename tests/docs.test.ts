@@ -11,6 +11,14 @@ const model = read('data-model.html');
 const relayDoc = read('relay.md');
 const limitsDoc = read('grenzen.md');
 
+/** True when `git` runs and the project folder is a checkout (decides whether the git tests run or are skipped). */
+const inGitCheckout = (() => {
+  const probe = spawnSync('git', ['check-ignore', '-q', 'relay-keys.json'], {
+    cwd: fileURLToPath(new URL('../', import.meta.url)),
+  });
+  return probe.error === undefined && (probe.status === 0 || probe.status === 1);
+})();
+
 // Every member of the union must be listed here, or this file does not compile.
 const REASONS: Record<lib.Reason, true> = {
   'bad-hash': true,
@@ -152,19 +160,23 @@ describe('key files stay out of the repository', () => {
       .map((l) => l.trim());
     for (const pattern of PATTERNS) expect(lines, pattern).toContain(pattern);
   });
-  it('git agrees: every usual key file name is ignored (checked with git where available)', () => {
-    const root = fileURLToPath(new URL('../', import.meta.url));
-    const probe = spawnSync('git', ['check-ignore', '-q', 'relay-keys.json'], { cwd: root });
-    const inRepo = probe.error === undefined && (probe.status === 0 || probe.status === 1);
-    if (!inRepo) return; // no git, or not a git checkout: the file content test above stands
-    for (const name of NAMES) {
-      const r = spawnSync('git', ['check-ignore', '-q', name], { cwd: root });
-      expect(r.status, `${name} must be ignored`).toBe(0);
-    }
-    // and nothing tracked has such a name
-    const tracked = spawnSync('git', ['ls-files', '*keys*.json'], { cwd: root, encoding: 'utf8' });
-    expect(tracked.stdout.trim()).toBe('');
-  });
+  // Visibly skipped (not silently green) without git or outside a git checkout; the content test above stands.
+  it.skipIf(!inGitCheckout)(
+    'git agrees: every usual key file name is ignored (checked with git where available)',
+    () => {
+      const root = fileURLToPath(new URL('../', import.meta.url));
+      for (const name of NAMES) {
+        const r = spawnSync('git', ['check-ignore', '-q', name], { cwd: root });
+        expect(r.status, `${name} must be ignored`).toBe(0);
+      }
+      // and nothing tracked has such a name
+      const tracked = spawnSync('git', ['ls-files', '*keys*.json'], {
+        cwd: root,
+        encoding: 'utf8',
+      });
+      expect(tracked.stdout.trim()).toBe('');
+    },
+  );
   it('relay.md describes the asymmetric file: public keys, integrity, no read warning, the open Content-Type', () => {
     expect(relayDoc).toContain('kein Geheimnis');
     expect(relayDoc).toContain('Unversehrtheit');

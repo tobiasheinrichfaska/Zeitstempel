@@ -46,6 +46,9 @@ im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `respo
 ```ts
 import { fromBase64Url, signRelayRequest, toBase64Url } from 'zeitstempel';
 
+// `scripts/make-key.ts` druckt den privaten Schlüssel als base64url-TEXT; `signRelayRequest` will die Bytes.
+const privateKey = fromBase64Url(privateKeyText); // null bei ungültigem Text
+if (!privateKey) throw new Error('privateKeyText is not base64url');
 const path = '/v1/stamp/freetsa';
 const body = new TextEncoder().encode(JSON.stringify({ hash: toBase64Url(sha256) }));
 const auth = await signRelayRequest({
@@ -66,7 +69,8 @@ const token = fromBase64Url((await res.json()).token); // 200 { service, genTime
 // das Token danach mit verifyTimestampToken prüfen (ohne expectedNonce: die Nonce wählt das Relay)
 ```
 
-Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt) gehört in die App; in einer Web-App ist er für die
+Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt) gehört in die App. `make-key` druckt ihn als
+base64url-Text auf das Terminal (im Beispiel oben macht `fromBase64Url` daraus die Bytes). In einer Web-App ist er für die
 Besucher der Seite lesbar. Das Relay und die Werkzeuge (`relay/`, `scripts/`) sind **nicht im Paket** (nur Bibliothek,
 Dienstliste und Anker): dafür das Repository klonen. Einzelheiten und „Lokal testen“ in [`docs/relay.md`](docs/relay.md).
 
@@ -89,7 +93,9 @@ npm install git+https://<adresse-des-repositories>#<tag>
 ```
 
 Beim Installieren aus Git führt npm das Skript `prepare` aus (`scripts/prepare.mjs`: baut `dist/`, wenn das
-mitinstallierte `typescript` da ist, und überspringt den Bau sonst mit einer Zeile auf stderr). Das Paket ist ESM-only (`import`), Node 24 oder ein Browser-Bündler.
+mitinstallierte `typescript` da ist, und überspringt den Bau sonst mit einer Zeile auf stderr). **Ohne TypeScript** (z. B. `npm install --omit=dev`)
+entsteht also kein `dist/`, und ein Import scheitert dann mit „Cannot find module …/dist/index.js“: Git-Installs brauchen
+die devDependencies. Ein Fehler beim Bauen selbst (Typfehler) lässt `prepare` und damit die Installation laut scheitern. Das Paket ist ESM-only (`import`), Node 24 oder ein Browser-Bündler.
 
 Außer dem Einstieg (`import … from 'zeitstempel'`) liefert das Paket die Daten für die Anwendung über `exports`:
 

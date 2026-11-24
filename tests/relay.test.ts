@@ -1,5 +1,7 @@
 import { verify, verify as nodeVerify } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import http from 'node:http';
 import net, { type AddressInfo } from 'node:net';
 import {
@@ -404,24 +406,29 @@ describe('relay: start configuration', () => {
   it.skipIf(process.platform === 'win32')(
     'judges a real file by its mode: 666 and 664 warn, 644 and 600 do not (path and mode only)',
     () => {
-      const dir = new URL('../.tmp/keyfile-mode/', import.meta.url);
-      mkdirSync(dir, { recursive: true });
-      const file = new URL('keys.json', dir).pathname;
+      const dir = mkdtempSync(join(tmpdir(), 'zeitstempel-keyfile-mode-'));
+      const file = join(dir, 'keys.json');
       const MARKER = 'PUBLIC-KEY-MARKER-0123456789';
-      writeFileSync(file, MARKER);
-      const warn = (mode: number) => {
-        chmodSync(file, mode);
-        return keyFilePermissionWarning(file);
-      };
-      for (const mode of [0o666, 0o664, 0o662, 0o646]) {
-        const text = warn(mode);
-        expect(text, mode.toString(8)).not.toBeNull();
-        expect(text).toContain(file);
-        expect(text).toContain(`Modus ${mode.toString(8)}`);
-        expect(text).not.toContain(MARKER);
-      }
-      for (const mode of [0o644, 0o640, 0o600, 0o400]) {
-        expect(warn(mode), mode.toString(8)).toBeNull();
+      try {
+        rmSync(file, { force: true }); // idempotent: a leftover read-only file must not stop the write
+        writeFileSync(file, MARKER);
+        const warn = (mode: number) => {
+          chmodSync(file, mode);
+          return keyFilePermissionWarning(file);
+        };
+        for (const mode of [0o666, 0o664, 0o662, 0o646]) {
+          const text = warn(mode);
+          expect(text, mode.toString(8)).not.toBeNull();
+          expect(text).toContain(file);
+          expect(text).toContain(`Modus ${mode.toString(8)}`);
+          expect(text).not.toContain(MARKER);
+        }
+        for (const mode of [0o644, 0o640, 0o600, 0o400]) {
+          expect(warn(mode), mode.toString(8)).toBeNull();
+        }
+      } finally {
+        chmodSync(dir, 0o700);
+        rmSync(dir, { recursive: true, force: true });
       }
     },
   );
@@ -628,13 +635,59 @@ describe('relay: start configuration', () => {
     });
     c.on('error', () => undefined);
     try {
-      await new Promise((res) => setTimeout(res, 300 + 2_300));
-      expect(await r.connections()).toBe(0);
+      // No fixed sleep: first see the connection, then poll until the server has closed it.
+      const until = async (done: (n: number) => boolean, ms: number) => {
+        for (const stop = Date.now() + ms; Date.now() < stop;) {
+          if (done(await r.connections())) return true;
+          await new Promise((res) => setTimeout(res, 25));
+        }
+        return false;
+      };
+      expect(await until((n) => n > 0, 10_000), 'the server saw the connection').toBe(true);
+      expect(await until((n) => n === 0, 10_000), 'the server closed the connection').toBe(true);
     } finally {
       c.destroy();
       await r.close();
     }
-  }, 10_000);
+  }, 30_000);
+  it('pipelined garbage during a running request: only the 400 comes back, the running request loses its answer (as in Node, docs/relay.md)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { server } = createRelayServer({
+      services: SERVICES,
+      origins: [ORIGIN],
+      allowPlainHttp: false,
+      upstream: async () => {
+        await gate; // the request is still running when the garbage arrives
+        throw new Error('gone');
+      },
+      random: () => FREETSA_NONCE,
+      now: () => NOW,
+      keys: 'off',
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const body = JSON.stringify({ hash: 'A'.repeat(43) });
+    try {
+      const text = await new Promise<string>((resolve) => {
+        let got = '';
+        const c = net.connect(port, '127.0.0.1', () => {
+          c.write(
+            `POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n${body}`,
+          );
+          setTimeout(() => c.write('FOO / HTTP/1.1\r\n\r\n'), 100);
+          setTimeout(release, 400);
+        });
+        c.on('data', (d) => (got += d.toString('utf8')));
+        c.on('error', () => undefined);
+        c.on('close', () => resolve(got));
+      });
+      expect(text).toMatch(/^HTTP\/1\.1 400 /);
+      expect(text.match(/HTTP\/1\.1 /g)).toHaveLength(1); // no second answer for the running request
+    } finally {
+      await new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r())));
+    }
+  });
   it('counts clients that go away during the body as client-aborted, not as internal', async () => {
     const h = await start({ keys: 'off' });
     const port = Number(new URL(h.base).port);

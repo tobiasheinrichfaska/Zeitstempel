@@ -19,6 +19,8 @@ const ext = (id: string, crit: boolean, val: Uint8Array) =>
 export interface Opts {
   ekuOids?: string[];
   ekuCritical?: boolean;
+  noEku?: boolean; // the signer certificate carries no extended key usage extension at all
+  tsaValidity?: [string, string]; // validity of the signer certificate (GeneralizedTime)
   extraTsaExts?: Uint8Array[]; // extra cert extensions
   tstExtra?: Uint8Array[]; // extra TSTInfo fields after genTime
   nonceBytes?: Uint8Array; // raw INTEGER content
@@ -200,10 +202,11 @@ export function build(o: Opts = {}) {
     tsaIssuerKey,
     [
       ext('2.5.29.15', true, tlv(3, o.tsaKeyUsage ?? Uint8Array.of(0, 0x80))),
-      ext('2.5.29.37', o.ekuCritical ?? true, seq(...ekus.map(oidT))),
+      ...(o.noEku ? [] : [ext('2.5.29.37', o.ekuCritical ?? true, seq(...ekus.map(oidT)))]),
       ...(o.extraTsaExts ?? []),
     ],
     tsaSerial,
+    o.tsaValidity ? seq(gt(o.tsaValidity[0]), gt(o.tsaValidity[1])) : undefined,
   );
   const imprint = o.hash ?? sha256(new TextEncoder().encode('x'));
   const nonceField = o.nonceBytes ? [tlv(2, o.nonceBytes)] : [];
