@@ -112,8 +112,43 @@ externem Dienst. Ist ein Fenster voll (Höchstzahl oder Anfrage der Art 2), wart
 
 ## 7. Weitere freie Zeitstempel-Dienste
 
-Eine Aussage „es gibt sicher keine anderen“ ist nicht belegbar. Die Recherche zu weiteren öffentlichen, kostenlosen Diensten
-(auch in Asien und Ozeanien) wurde beauftragt; das Ergebnis wird hier ergänzt.
+Eine Aussage „es gibt sicher keine anderen“ ist nicht belegbar. Die Recherche (nur Websuche und Seitenabrufe, keine Anfragen
+an die Dienste; gesucht wurde je einmal auf Englisch, Koreanisch und Chinesisch, also nicht erschöpfend) ergab. Die Zitate
+stammen aus der Zusammenfassung des Abrufwerkzeugs; vor einer Übernahme in `docs/dienste.md` am Original prüfen:
+
+**Belegt (Betreiberseite gelesen):**
+
+- **CNX (Kambodscha):** `https://free.tsa.cnx.net.kh/`. „available for evaluation, development, and general use without
+  registration“ (<https://cnx.net.kh/time/tsa/>). Policy (<https://tsa.cnx.net.kh/policy.html>): „best-effort basis with no
+  SLA“, Protokolle höchstens 30 Tage, Haftung für die Gratisstufe ausgeschlossen, keine Ratengrenze genannt, nicht
+  qualifiziert, Policy-OID `1.3.6.1.4.1.66148.1.2.1`. Zwecke laut Policy unter anderem Dokumentenintegrität und
+  Audit-Trail; „beliebige Hashes“ nicht ausdrücklich geregelt. Wurzel und Hash-Algorithmen nicht ermittelt. Der einzige belegt
+  freie Dienst in Asien/Ozeanien, den die Recherche fand.
+- **Open TSA (Nürnberg, 2026 gestartet):** `https://tsr.open-tsa.eu`, „free for everyone, forever“, „Not eIDAS-qualified“.
+  Eigene Wurzel laut Seite noch in keinem Trust Store, eine Sub-CA unter HARICA für 2027 geplant. Betreiber anonym
+  („Open TSA Project“), die Nutzungsbedingungen (`/terms/`) lieferten 404.
+- **IdenTrust (USA):** `http://timestamp.identrust.com`, „free of charge as a complement to IdenTrust Digital Certificate
+  offerings“, es gilt ein Timestamping Service Agreement (Text nicht gelesen). Nur http. Ob beliebige Hashes ohne
+  Zertifikatsbezug erlaubt sind, ist unklar.
+- **Nicht frei nutzbar (belegt):** Apple (Subscriber und Relying Parties „internal to Apple“), CESNET (Forschung und Bildung,
+  registrierte Nutzer), DFN (Teilnehmer, nicht kommerziell; Quelle eine Hochschulseite), Codegic (nur zum Testen, nicht für
+  Produktivsysteme).
+
+**Hörensagen, unklar oder keine Betreiberseite gefunden:**
+
+- Mahidol (Thailand) und WoTrus/MeSign (China) nur in Gists oder Sekundärquellen (MeSign-Test laut Sekundärquelle 20 Anfragen je IP
+  und Tag); Thai ETDA nur auf Antrag (Kosten und Bedingungen unbekannt); SwissSign, SSL.com, GlobalSign, Entrust, Microsoft,
+  BalTstamp: Gratisstatus oder Bedingungen für Dritte unklar; Safecreative und TU Graz laut Gist mit Fehlern; QuoVadis verlangt
+  laut Sekundärquelle die Registrierung der Quell-IP; StartCom/WoSign laut Gists seit Jahren tot.
+- **Keine Betreiberseite mit öffentlichem Endpunkt gefunden:** Cybertrust Japan, SECOM, KICA/KOSCOM, TWCA/Chunghwa, Actalis,
+  eMudhra, außerdem nichts für Singapur, Hongkong, Australien und den Nahen Osten.
+
+**Folgerung (Einschätzung):** Als zusätzliche freie Anbieter kommen am ehesten in Betracht: CNX (belegt frei, schriftliche Policy;
+Risiken: kleiner Betreiber, kein SLA, Anker zu klären, vorher den Betreiber zur Nutzung durch ein Relay fragen), IdenTrust
+(etabliert; nur http, Vertragstext zu lesen) und Open TSA (https, offene Quelle; sehr jung, anonym, eigene Wurzel, Bedingungen
+nicht lesbar; nur als zusätzlicher, deutlich gekennzeichneter Dienst). Nicht geprüft sind Erreichbarkeit, gelieferte Kette und
+Algorithmen (RSA-PSS und andere Hashes als SHA-256 lehnt die Bibliothek ab), Listenstatus bei Adobe und EU, und ob ein Relay,
+das den Verkehr aller Nutzer bündelt, noch unter „general use“ fällt.
 
 ## 8. Offene Punkte
 
