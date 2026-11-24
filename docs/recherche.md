@@ -1,0 +1,126 @@
+# Recherchestand (2026-11-24)
+
+Dieses Dokument hält fest, was bei der Weiterentwicklung geklärt wurde, womit belegt und mit welcher Sicherheit. Es ist
+**keine Rechtsberatung** und keine Zusage von Betreibern. Kennzeichnung: **gemessen** (selbst ausgeführt),
+**Quelle** (öffentliche Seite gelesen), **Schätzung** (gerechnet, nicht gemessen), **Annahme**.
+
+## 1. Zeitstempel-Dienste: Antwortzeit, Grenzen
+
+- **Antwortzeit (gemessen, 2026-11-24, eine Anfrage je Dienst mit dem Hash eines kurzen Testtexts, `npm run spike`):**
+  FreeTSA 308 ms, Sectigo 290 ms, DigiCert 104 ms (http), Certum 451 ms (http). Am 2026-11-23 waren es 697, 206, 398 und
+  220 ms. Einzelmessungen aus einer Cloud-Umgebung, keine Statistik. Für den Nutzer dauert ein Stempel insgesamt etwa
+  0,3 bis 1 s.
+- **Grenzen der Dienste (Quelle, `docs/dienste.md`):** FreeTSA erlaubt „a maximum of one timestamping request per second
+  per IP address“, auch kommerziell, ohne Zusage („best effort“). Sectigo bittet um 15 s Pause bei Skripten. DigiCert
+  und Certum nennen keine Grenzen; bei Certum ist ein Vertrag wahrscheinlich nötig. Alle vier sind nicht qualifiziert.
+- **Heutige Konfiguration:** `minIntervalMs` 15 000 je Dienst, also 4 Stempel pro Minute je Dienst für alle Nutzer
+  zusammen (die Annahme 15 s ist vorsichtig, belegt ist bei FreeTSA 1 pro Sekunde). Ein Schlüssel kann mit 4 Anfragen
+  pro Minute einen Dienst für alle sperren.
+
+## 2. Datenverkehr und Kosten bei Bunny
+
+- **Preise (Quelle, abgerufen 2026-11-24):** Datenverkehr (Egress) Europa und Nordamerika 0,01 $/GB, Asien und Ozeanien
+  0,03 $, Südamerika 0,045 $, Naher Osten und Afrika 0,06 $; bei Magic Containers und beim CDN-Standard-Tarif gleich
+  (<https://bunny.net/docs/magic-containers/pricing>, <https://bunny.net/docs/cdn/pricing>). Magic Containers: CPU 0,02 $
+  je CPU-Stunde verbrauchter CPU-Zeit, RAM 0,005 $ je GB-Stunde in 64-MB-Blöcken plus variablem Systemaufschlag,
+  Anycast-IPv4 2 $ im Monat. Zu Ingress, Freikontingenten und Monatsminimum steht auf diesen Seiten nichts.
+- **Annahmen:** Volllast heißt 60 angenommene Anfragen pro Minute rund um die Uhr (`perMinuteTotal`), also 86 400 pro
+  Tag und 2,59 Mio. in 30 Tagen. Antwort je Anfrage: Token base64url 6,2 KB (FreeTSA) bis 8,8 KB (Sectigo) laut
+  Fixtures, dazu etwa 0,25 KB JSON und 0,45 KB Header, im Sammelbetrieb etwa 0,4 KB für den Beleg, dazu Preflight
+  (OPTIONS) mit etwa 0,45 KB, wenn er nicht zwischengespeichert wird.
+- **Ergebnis (Schätzung):** nur FreeTSA, Einzelstempel: etwa 17,9 GB im Monat, 0,18 $. Nur FreeTSA, Sammelbetrieb mit
+  Preflight: etwa 20,1 GB, 0,20 $. Schlechtester Fall (Sectigo-große Token): etwa 26,8 GB, 0,27 $. Bei 600 pro Minute etwa
+  2 $, bei 6 000 pro Minute etwa 20 $. Alles bei Verkehr aus Europa und Nordamerika; aus der teuersten Region das
+  Sechsfache.
+- **Eingehender Verkehr:** etwa 1 KB je Anfrage, rund 2,6 GB im Monat; ob Bunny ihn berechnet, steht auf den Seiten nicht.
+- **Angriffsverkehr ist die eigentliche Kostenfrage:** abgelehnte Antworten (401, 429) sind etwa 0,45 KB. Ein Flood mit
+  1 000 Anfragen pro Sekunde wären etwa 1,2 TB und etwa 12 $ im Monat. Ratenbegrenzung pro Adresse vor dem Relay ist
+  Pflicht.
+- **Container (Schätzung, nicht gemessen):** etwa 10 ms CPU je Anfrage, also etwa 7 CPU-Stunden und etwa 0,15 $ im
+  Monat; 256 MB RAM etwa 0,93 $; mit Anycast-IP gut 3 $. Der echte Verbrauch ist nicht gemessen.
+
+## 3. Sammelverfahren (Entscheidung: Merkle-Baum)
+
+- **Idee:** Das Relay sammelt die Hashes eines Zeitfensters je externem Dienst, bildet daraus einen Baum und lässt nur
+  die Wurzel stempeln. Jeder Einreicher bekommt das Token plus Pfad, Salz, Position und Größe.
+- **Verschleierung:** Das Blatt ist `SHA-256(0x00 ‖ r ‖ Hash)` mit Zufallszahl `r` je Einreicher; die anderen Hashes im
+  Pfad sind dadurch keinem Dokument zuzuordnen. Ein XOR statt eines Hashes wäre falsch (das Relay könnte den Wert frei
+  wählen). Innere Knoten `SHA-256(0x01 ‖ links ‖ rechts)`, Form wie RFC 6962 (kein Verdoppeln des letzten Blatts),
+  Blätter vor dem Bau zufällig gemischt, gestempelt wird `SHA-256("zeitstempel-batch-v1\n" ‖ n ‖ Wurzel)`.
+- **Verglichen mit einer einfachen Verkettung aller verschleierten Hashes:** Die Verkettung ist einfacher, ihr Beleg
+  wächst aber linear (32 Byte mal n, bei 128 Hashes 4 KB). Der Baum braucht nur log₂(n) Hashes (bei 128 etwa 250 Byte).
+  Entschieden wurde der Baum.
+- **Wirkung:** ein externer Stempel je Fenster statt je Anfrage (Kapazität unabhängig von der Nutzerzahl), der externe
+  Dienst sieht nur den gestempelten Wert, die Zeitaussage „spätestens zu T“ bleibt (T liegt höchstens ein Fenster nach
+  dem Eingang). Preis: bis zu Fensterlänge plus etwa 0,3 s Wartezeit, ein zustandsbehaftetes Relay, ein neues Format.
+  Der Beleg ist kein Stempel auf den Hash selbst, hat also nicht dieselbe Beweiskraft wie ein direkter oder
+  qualifizierter Stempel.
+
+## 4. Eigene Zeitstempel am Relay
+
+- **Eigener Dienst (RFC 3161) am Relay:** möglich, ohne Kapazitätsgrenze und ohne Dritte. Die Beweiskraft ist aber gering:
+  eine Partei stempelt für sich selbst, wer den Schlüssel hat, kann jede Zeit stempeln. Dazu kämen Schlüsselverwahrung,
+  Zeitquelle, Protokollierung und Rotation, und die Bibliothek kann bisher keine Token erzeugen.
+- **Eigene signierte Quittung:** schnell und ohne externen Dienst, aber kein Zeitstempel im Sinne von RFC 3161 und mit
+  denselben Einschränkungen. Nur als Zusatz sinnvoll.
+
+## 5. PDF und Adobe Acrobat
+
+- **Möglich (Kenntnisstand, nicht geprüft):** Ein Token lässt sich als Dokument-Zeitstempel (PAdES, `ETSI.RFC3161`)
+  in eine PDF einbetten: inkrementelles Update mit Signaturfeld und Platzhalter für das Token (mindestens etwa 16 KB Hex),
+  SHA-256 über die `ByteRange`-Bytes, Token vom Relay in den Platzhalter. Acrobat zeigt das als Dokumentzeitstempel an.
+- **Nur im Einzelstempel-Betrieb:** Adobe vergleicht den Abdruck im Token mit dem Hash der `ByteRange`; ein Sammel-Token
+  bestätigt die Baumwurzel und passt dazu nicht.
+- **Keine Personenunterschrift:** Ein grüner Haken mit Namen braucht ein Signaturzertifikat, das Adobe kennt; das ist nicht
+  Teil dieses Projekts.
+- **Anzeige:** Ein grüner Haken setzt voraus, dass Adobe dem Zertifikat des Zeitstempel-Dienstes vertraut (Adobe-Liste,
+  EU-Liste). FreeTSA steht dort nach meinem Kenntnisstand nicht (dann „Gültigkeit unbekannt“); bei den Code-Signing-
+  Diensten ist unklar, ob ihre Zertifikate für diesen Zweck zählen; ein qualifizierter Dienst würde vertraut. Das ist
+  nicht geprüft und müsste in Acrobat selbst getestet werden. Für lange Gültigkeit braucht es eingebettete Prüfdaten (LTV).
+- **Aufwand:** PDF-Handling gehört in ein eigenes Modul oder in die App (die Bibliothek hat bewusst keine Abhängigkeiten).
+  Prüfbar mit `pdfsig` (poppler) und `pyHanko`, nicht mit Adobe selbst.
+
+## 6. Entwurf: zwei Schlüsselarten und zwei Betriebsarten (nicht umgesetzt)
+
+Vorgabe des Eigentümers: Schlüsselart 1 normal, Schlüsselart 2 berechtigt zur alleinigen Signatur. Zeitfenster gelten je
+externem Dienst. Ist ein Fenster voll (Höchstzahl oder Anfrage der Art 2), wartet der Rest.
+
+- **Schlüsseldatei:** optionales Feld `"solo": true` je Eintrag (Standard `false`); strikter Leser; die Art gehört zur
+  Relay-Konfiguration, nicht zur Anfrage.
+- **Anforderung:** im signierten Anfragekörper `{"hash": "…", "mode": "solo"}`; der Körper ist über den Körper-Hash an die
+  Signatur gebunden. Schlüsselart 1 mit `mode: "solo"` wird abgelehnt (403).
+- **Planer je externem Dienst** in festen Plätzen im Abstand `minIntervalMs`; jeder Platz gehört genau einem externen
+  Stempel. Wartet eine Solo-Anfrage, bekommt sie den nächsten Platz; danach folgt ein Platz für ein offenes Sammelfenster
+  (abwechselnd, damit nichts verhungert). Ist ein Sammelfenster voll, schließt es sofort und wartet auf den nächsten
+  Platz; neue Anfragen öffnen das nächste Fenster.
+- **Allein im Fenster:** Hat ein Sammelfenster genau einen Teilnehmer, wird dessen Hash direkt gestempelt (ohne Baum, kein
+  `batch`-Feld in der Antwort). So bekommt auch Schlüsselart 1 einen alleinigen Stempel, aber nur, wenn niemand sonst im
+  Fenster war. Nebenwirkung: Die Antwortart verrät dem Einreicher grob, ob im Fenster noch jemand anfragte.
+- **Wartegrenze („Sicherheitsfenster“):** Jede Anfrage hat eine höchste Wartezeit in der Warteschlange
+  (`RELAY_MAX_WAIT_MS`); danach `503 busy` mit `Retry-After`. Die Warteschlange je Dienst ist begrenzt. Die 60 s der
+  Anmeldung (Zeitfenster der Signatur) und die ±60 s der Frischeprüfung (um den Zeitpunkt der Anfrage an den Dienst)
+  werden von der Wartezeit nicht berührt, denn sie werden bei Eingang beziehungsweise beim Senden an den Dienst
+  gemessen. Eine Wartegrenze von 60 s ist technisch möglich; Client- und Proxy-Fristen müssten dann mindestens 77 s
+  betragen (Wartegrenze plus 17 s). Empfehlung: Standard 30 s, höchstens 60 s.
+- **Kapazität (Schätzung):** Mit FreeTSA und Plätzen alle 5 s sind es 12 externe Stempel pro Minute; bei abwechselnder
+  Vergabe höchstens 6 Solo-Stempel pro Minute für alle Schlüssel der Art 2 zusammen; die Solo-Warteschlange wäre auf etwa
+  6 begrenzt, eine Wartegrenze von 60 s trüge höchstens 12 wartende Stempel je Dienst.
+- **Zusätzliche Grenzen:** eigene Anfragegrenze je Schlüssel der Art 2 für Solo (zum Beispiel 6 pro Minute).
+- **Verhältnis zu PDF:** Die PDF-Zeitstempel brauchen den Solo-Betrieb (direkter Abdruck).
+- **Offen:** Reihenfolge Solo gegen laufendes Sammelfenster (abwechselnd gegen Vorrang), Standardwerte der Wartegrenze und
+  der Warteschlange, Antwortformat für beide Arten (Client muss mit und ohne `batch` umgehen).
+
+## 7. Weitere freie Zeitstempel-Dienste
+
+Eine Aussage „es gibt sicher keine anderen“ ist nicht belegbar. Die Recherche zu weiteren öffentlichen, kostenlosen Diensten
+(auch in Asien und Ozeanien) wurde beauftragt; das Ergebnis wird hier ergänzt.
+
+## 8. Offene Punkte
+
+- Zähler je Schlüsselkennung im Betreiber-Log (Vorschlag A, B oder C) und Frage, ob Schlüssel pro App oder pro Nutzer
+  vergeben werden.
+- Qualifizierter Dienst (Vertrag, Zugangsdaten), rechtliche Klärung der Nutzungsbedingungen, Datenschutzbewertung der
+  Weitergabe von Hashes.
+- Menschliche Sicherheitsprüfung, signierter Aufruf und CORS mit Authentifizierung in echten Browsern, menschlicher
+  Abgleich der Anker.
+- Image, Betrieb, Überwachung, Alarm und Notfallablauf; Schlüsselrotation.
