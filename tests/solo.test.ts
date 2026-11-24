@@ -65,6 +65,8 @@ function replyFor(request: Uint8Array): Uint8Array {
 
 interface Harness {
   calls: { imprint: Uint8Array; at: number }[];
+  /** The relay's clock is the real one plus `offset` ms (the tests set it back); requests are signed with it. */
+  clock: { offset: number };
   relay: ReturnType<typeof createRelayServer>['relay'];
   stats: ReturnType<typeof createRelayServer>['relay']['stats'];
   stamp: (
@@ -98,6 +100,7 @@ async function start(
   } = {},
 ): Promise<Harness> {
   const calls: Harness['calls'] = [];
+  const clock = { offset: 0 };
   const t0 = Date.now();
   const stub: Upstream = async (_t, body) => {
     calls.push({ imprint: imprintOf(body), at: Date.now() - t0 });
@@ -115,7 +118,7 @@ async function start(
     allowPlainHttp: false,
     upstream: stub,
     random: (n) => new Uint8Array(randomBytes(n)),
-    now: () => Date.now(),
+    now: () => Date.now() + clock.offset,
     keys: over.keys ?? KEYS,
     ...(batch === null ? {} : { batch }),
     ...(over.maxWaitMs === undefined ? {} : { maxWaitMs: over.maxWaitMs }),
@@ -135,7 +138,7 @@ async function start(
         key.id,
         'POST',
         path,
-        Math.floor(Date.now() / 1000),
+        Math.floor((Date.now() + clock.offset) / 1000),
         new TextEncoder().encode(o.signedRaw ?? text),
       );
     return fetch(base + path, {
@@ -146,6 +149,7 @@ async function start(
   };
   return {
     calls,
+    clock,
     relay,
     stats: relay.stats,
     stamp,
@@ -556,6 +560,72 @@ describe('planner: the slot of a window is booked at the time of its stamp (neve
     expect(windowCall).toBeGreaterThanOrEqual(580); // the window stamps when it closes ...
     expect(soloCall - windowCall).toBeGreaterThanOrEqual(1995); // ... and the solo stamp is a whole interval later
   });
+});
+
+describe('planner: a window that closes early, and a clock that is set back (audit 2: M04, M05, M08)', () => {
+  let h: Harness;
+  afterEach(() => h.close());
+
+  it('M04: a request that waits for a slot is served as soon as a window closes early, not at the time booked for the window', async () => {
+    // one call per 2000 ms; the window (1500 ms, two requests) is booked for 1500, but a second request fills it and it
+    // is stamped at once. The solo request that came in between waited for "1500 + 2000" and must look again.
+    h = await start({
+      batch: { windowMs: 1500, max: 2 },
+      minIntervalMs: 2000,
+      budgetWindowMs: 2000,
+      maxWaitMs: 5000,
+    });
+    const first = h.stamp(sha256('e1'));
+    await sleep(30);
+    const x = sha256('e-solo');
+    const soloAnswer = h.timed(x, { key: KEY_B, body: solo(x) }); // waits: the slot is booked until after the window
+    await sleep(60);
+    const second = h.stamp(sha256('e2')); // fills the window: stamped now
+    const [a, b, c] = await Promise.all([first, second, soloAnswer]);
+    expect([a.status, b.status, c.res.status]).toEqual([200, 200, 200]);
+    expect(h.calls).toHaveLength(2);
+    const [windowCall, soloCall] = h.calls.map((c2) => c2.at) as [number, number];
+    expect(windowCall).toBeLessThan(400);
+    expect(soloCall - windowCall).toBeGreaterThanOrEqual(1995); // never before the interval ...
+    expect(soloCall - windowCall).toBeLessThan(2400); // ... but at that time, not at 1500 + 2000 after the opening (3500)
+  });
+
+  it('M05: a clock set back while a window is open does not push a waiting request past its limit (no lock)', async () => {
+    // one call per 2000 ms; the window (600 ms) opens, then the clock goes back 5 s. The stamp of the window is still
+    // at most one window length ahead, so the solo request waits about 2.6 s and is served; a stamp "booked" 5.6 s
+    // ahead would make its slot later than the longest wait (5 s): a 429 for a clock that jumped.
+    h = await start({
+      batch: { windowMs: 600, max: 100 },
+      minIntervalMs: 2000,
+      budgetWindowMs: 2000,
+      maxWaitMs: 5000,
+    });
+    const normal = h.stamp(sha256('c1'));
+    await sleep(40);
+    h.clock.offset = -5000;
+    const x = sha256('c2');
+    const soloAnswer = await h.timed(x, { key: KEY_B, body: solo(x) });
+    expect(soloAnswer.res.status).toBe(200);
+    expect((await normal).status).toBe(200);
+    expect(h.calls).toHaveLength(2);
+  }, 15_000);
+
+  it('M08: a stamp "in the future" after a clock set back counts as now when a waiting request looks again (no lock)', async () => {
+    // one call per 1000 ms. Solo A is stamped, solo B waits for the slot (900 ms), the clock goes back 5 s while it waits:
+    // when B looks again A's stamp lies 5 s ahead. Counted as it is, B would wait 6 s and get 503 busy at 5 s; counted as
+    // now, B waits one more interval and is served.
+    h = await start({ minIntervalMs: 1000, budgetWindowMs: 1000, maxWaitMs: 5000 });
+    const xa = sha256('m8-a');
+    expect((await h.stamp(xa, { key: KEY_B, body: solo(xa) })).status).toBe(200);
+    const xb = sha256('m8-b');
+    const waiting = h.timed(xb, { key: KEY_C, body: solo(xb) });
+    await sleep(100);
+    h.clock.offset = -5000;
+    const b = await waiting;
+    expect(b.res.status).toBe(200);
+    expect(b.at).toBeLessThan(3500);
+    expect(h.calls).toHaveLength(2);
+  }, 15_000);
 });
 
 describe('RELAY_MAX_WAIT_MS is read strictly', () => {

@@ -1,4 +1,4 @@
-import { copyKnown, typedLength } from './bytes.ts';
+import { copyKnown, uint8Length } from './bytes.ts';
 import { ReaderError } from './result.ts';
 
 /**
@@ -82,11 +82,11 @@ function readOne(buf: Uint8Array, pos: number, end: number): { node: Node; next:
  * A private copy of the bytes a reader is given (its own `ArrayBuffer`, also when the input lives in a
  * `SharedArrayBuffer`), so that nothing a reader returns points into the caller's buffer. The length is read from
  * the internal slot and checked against `maxBytes` BEFORE anything is copied; the copy is made with `set`, never
- * through the iterator. A typed array of another realm is fine; anything else (a proxy, an array, a string) is
- * `malformed`.
+ * through the iterator. A `Uint8Array` of another realm is fine; anything else (another typed array such as `Uint16Array`, a proxy, an
+ * array, a string) is `malformed`.
  */
 export function ownBytes(bytes: unknown): Uint8Array {
-  const length = typedLength(bytes);
+  const length = uint8Length(bytes);
   if (length === null) throw new ReaderError('malformed');
   if (length > DER_LIMITS.maxBytes) throw new ReaderError('too-large');
   const copy = copyKnown(bytes as Uint8Array, length);

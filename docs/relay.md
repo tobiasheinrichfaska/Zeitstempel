@@ -23,7 +23,7 @@ Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nut
 
 | Einstellung                | Bedeutung                                                                                                                                                                                                                                                                                               | Vorgabe                                      |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `PORT`                     | Port                                                                                                                                                                                                                                                                                                    | 8080                                         |
+| `PORT`                     | Port, ganze Zahl von 1 bis 65535, nur Dezimalziffern (`0x50`, `1e2`, Leerzeichen, `0` und ein leerer Wert beenden den Start; `0` = vom System gewählter Port ist nicht erlaubt, Proxy und Firewall brauchen einen bekannten Port)                                                                       | 8080                                         |
 | `RELAY_ORIGINS`            | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                                                                                                                                                                                         | keine                                        |
 | `RELAY_ALLOW_PLAIN_HTTP`   | `1` erlaubt Dienste, die nur über `http` antworten                                                                                                                                                                                                                                                      | aus                                          |
 | `RELAY_SERVICES`           | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                                                                                                                                                                            | keine                                        |
@@ -271,8 +271,9 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    Code der Seite ausführen kann, kann den Schlüssel **benutzen**, nur nicht auslesen.)
 
    **`nowMs` ist die Zeit in Millisekunden seit 1970 (`Date.now()`), nicht in Sekunden.** Die Bibliothek verlangt eine
-   endliche Zahl ab 1e11 (Bruchteile sind erlaubt); ein kleinerer Wert, etwa Sekunden, ergibt `bad-options`, damit
-   nicht stillschweigend eine Zeit im Jahr 1970 signiert wird.
+   endliche Zahl ab 1e11 und **unter 1e15** (Bruchteile sind erlaubt); ein kleinerer Wert, etwa Sekunden, ergibt `bad-options`, damit
+   nicht stillschweigend eine Zeit im Jahr 1970 signiert wird, und ebenso ein größerer (`Number.MAX_VALUE`, `1e17`): unter 1e15
+   hat `ts` höchstens 12 Stellen, mehr nimmt das Kopfformat des Relays nicht (1e15 ms sind das Jahr 33658).
 
    `signRelayRequest` wirft nie und weist nie ab: auch für feindliche Proxys als Eingabe, als `privateKey` oder als
    `body` (werfendes `getPrototypeOf`/`get`) gibt es einen Code (`bad-options`/`bad-key`). Jede Eingabe wird einmal
@@ -485,14 +486,14 @@ mindestens `RELAY_BATCH_MS=15000`). Die Startzeile im Protokoll nennt dann `batc
 
 ### Fehlerfälle
 
-| Fall                                                            | Folge                                                                                                                                                                                     |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Dienst nicht erreichbar, Frist, Ablehnung, ungültiges Token     | **Alle** Anfragen des Fensters bekommen dieselbe Antwort wie sonst (`502`/`504` mit demselben Code und `reason`)                                                                          |
-| Das Relay wird beendet (`SIGTERM`), Fenster ist offen           | Die wartenden Anfragen bekommen `503 shutting-down`, nichts hängt; ein Fenster, dessen Aufruf läuft, wird noch fertig                                                                     |
-| Neue Anfrage nach dem Beenden                                   | `503 shutting-down`                                                                                                                                                                       |
-| Prozess stirbt, Neustart                                        | Wartende Anfragen verlieren die Verbindung (kein Zustand wird gespeichert); die App versucht es neu, mit frischem Kopf                                                                    |
-| Ein Client bricht ab, während er wartet                         | Sein Blatt bleibt im Baum (der Baum ist beim Schließen schon festgelegt), die anderen werden bedient; Zähler `client-aborted`                                                             |
-| Dienstbudget aufgebraucht, wenn ein neues Fenster öffnen müsste | `429` mit `Retry-After`, wenn der nächste Platz später als `RELAY_MAX_WAIT_MS` frei wird; sonst wartet die Anfrage (siehe „Schlüsselarten und Solo-Stempel“, danach höchstens `503 busy`) |
+| Fall                                                            | Folge                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dienst nicht erreichbar, Frist, Ablehnung, ungültiges Token     | **Alle** Anfragen des Fensters bekommen dieselbe Antwort wie sonst (`502`/`504` mit demselben Code und `reason`)                                                                                                                                           |
+| Das Relay wird beendet (`SIGTERM`), Fenster ist offen           | Die wartenden Anfragen bekommen `503 shutting-down`; ein Fenster, dessen Aufruf läuft, wird noch fertig (siehe „Fristen beim Beenden“: nach `shutdownGraceMs` werden alle Verbindungen geschlossen, nach `shutdownHardMs` endet der Prozess in jedem Fall) |
+| Neue Anfrage nach dem Beenden                                   | `503 shutting-down`                                                                                                                                                                                                                                        |
+| Prozess stirbt, Neustart                                        | Wartende Anfragen verlieren die Verbindung (kein Zustand wird gespeichert); die App versucht es neu, mit frischem Kopf                                                                                                                                     |
+| Ein Client bricht ab, während er wartet                         | Sein Blatt bleibt im Baum (der Baum ist beim Schließen schon festgelegt), die anderen werden bedient; Zähler `client-aborted`                                                                                                                              |
+| Dienstbudget aufgebraucht, wenn ein neues Fenster öffnen müsste | `429` mit `Retry-After`, wenn der nächste Platz später als `RELAY_MAX_WAIT_MS` frei wird; sonst wartet die Anfrage (siehe „Schlüsselarten und Solo-Stempel“, danach höchstens `503 busy`)                                                                  |
 
 ### Latenz und Fristen
 
@@ -673,6 +674,12 @@ Solo-Stempel; **der Rest wartet**.
   bei den Diensten mit 15 s sind es 4 Plätze, also höchstens 2.
 - **Beim Beenden** (`SIGTERM`, `restartAfter`) bekommen auch die auf einen Platz Wartenden `503 shutting-down`; Verbindungen,
   die ihre Antwort bekommen haben, werden danach geschlossen, damit der Prozess nicht auf das Ende ihres Keep-alive wartet.
+  **Fristen beim Beenden:** Nach `server.close()` prüft Node die Fristen für Kopfzeilen und Anfrage nicht mehr; eine
+  Verbindung mit halbem Request (halber Header, halber Body) bliebe sonst offen und hielte den Prozess. Deshalb schließt
+  das Relay nach `shutdownGraceMs` (2 s) **alle** Verbindungen, auch solche mit laufender Anfrage (ein Aufruf beim Dienst,
+  der noch läuft, bekommt seine Antwort also nur, wenn er innerhalb dieser Frist fertig wird), und beendet den Prozess
+  spätestens nach `shutdownHardMs` (10 s) mit Exit-Code 0, was auch noch offen ist. Die Zeitgeber halten den Prozess
+  nicht (`unref`); ohne offene Verbindungen endet er sofort.
 
 ### Zähler
 
@@ -722,7 +729,7 @@ bliebe ein gesperrter Schlüssel gültig). Das Lesen ist billig: die Datei ist h
 Optionales Feld der Schlüsseldatei auf oberster Ebene: `{"version": 2, "restartAfter": 1795000000, "keys": […]}`, eine
 ganze Zahl in Unix-Sekunden (1000000000 bis 99999999999, sonst ist die Datei ungültig). Das Relay merkt sich seine
 Startzeit. Gilt `Startzeit / 1000 < restartAfter <= jetzt / 1000`, beendet es sich **einmal** sauber (wie bei `SIGTERM`:
-`close()` beantwortet Wartende mit `503 shutting-down`, die Verbindungen enden, **Exit-Code 0**, eine Zeile
+`close()` beantwortet Wartende mit `503 shutting-down`, die Verbindungen enden (spätestens nach `shutdownHardMs`, auch bei halbem Request), **Exit-Code 0**, eine Zeile
 `{"event":"restart-after"}`). Ein **Prozess-Überwacher** (systemd `Restart=always`, Docker `restart: always`) startet es
 neu; ohne Überwacher bleibt es aus. Der neue Prozess startet **nach** `restartAfter` und beendet sich deshalb nicht
 erneut: keine Schleife, auch wenn die Datei unverändert bleibt. Das Relay schreibt **nie** in die Datei.
@@ -942,6 +949,8 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `upstreamPasswordMax`   | 128    | längstes Passwort bei `basic` (druckbares ASCII)                                                                                                               |
 | `upstreamTokenMax`      | 384    | längstes Token bei `bearer` und `header` (druckbares ASCII ohne Leerzeichen, `"` und `\`)                                                                      |
 | `upstreamIdentitiesMax` | 64     | gleichzeitig bekannte Zugangsdaten-Identitäten je Dienst (nur Arbeitsspeicher); eine weitere neue bekommt `503 busy`                                           |
+| `shutdownGraceMs`       | 2000   | Beenden: nach dieser Zeit werden alle Verbindungen geschlossen (auch eine mit halbem Request; Leerlauf-Verbindungen sofort)                                    |
+| `shutdownHardMs`        | 10000  | Beenden: spätestens nach dieser Zeit endet der Prozess mit Exit-Code 0, was auch noch offen ist                                                                |
 | `keyFileCheckMs`        | 5000   | Abstand, in dem das Relay die Schlüsseldatei liest (SHA-256 des Inhalts) und ihre Schreibrechte prüft                                                          |
 | `keyFileMaxBytes`       | 65536  | Größte Schlüsseldatei, die das Relay liest (Bytes); größere und Nicht-Dateien (FIFO, Gerät, Verzeichnis) werden nicht gelesen                                  |
 

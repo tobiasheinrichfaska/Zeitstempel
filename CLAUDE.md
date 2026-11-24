@@ -111,7 +111,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   checked: `trust` must be an array and `options` omitted or a plain object (prototype `Object.prototype` or
   `null`; not a class instance, `Map`, array), `expectedNonce` a `Uint8Array` of 1 to 16 bytes,
   `requireCriticalEku` a boolean, `now`/`at` a real valid `Date`, `maxSkewMs` a number >= 0, `minRsaBits` a finite number >= 0, otherwise `bad-options` (never a silently skipped check; only `undefined`
-  means "not given"). A `Uint8Array` of another realm (iframe, worker, `vm`) is refused (`bad-hash` / `bad-options`; a token: `malformed`; the nonce of `buildTimestampRequest`: `bad-nonce`): pass `new Uint8Array(x)`; `readTimestampResponse` and `readToken` check no `instanceof` and accept such bytes. The chain search tries every signature-valid issuer candidate (bounded), so a look-alike
+  means "not given"). A `Uint8Array` of another realm (iframe, worker, `vm`) is refused (`bad-hash` / `bad-options`; a token: `malformed`; the nonce of `buildTimestampRequest`: `bad-nonce`): pass `new Uint8Array(x)`; `readTimestampResponse`, `readToken` and `parseCertificate` check no `instanceof` and accept such bytes, but only a `Uint8Array` (any other typed array such as `Uint16Array` is `malformed`). The chain search tries every signature-valid issuer candidate (bounded), so a look-alike
   certificate cannot block a valid token. A negative serial number makes a trust anchor or the signer's `sid` unreadable (`malformed`); an unreadable extra certificate inside the token is skipped (`skippedCertificates`, it can never be a candidate). A named signature OID of the signer (e.g. ecdsa-with-SHA384) must agree with the `digestAlgorithm` of the SignerInfo, else `signature-invalid` (a bare OID takes that hash). Looser than `openssl ts -verify`: extra keyUsage bits of the signer, validity inclusive (time == notAfter still valid), `crls` checked by tag only (`docs/grenzen.md`). A trust anchor without basicConstraints (X.509 v1) counts as a CA (the caller chose it); names are matched by a simplified RFC 5280 §7.1 rule to select issuer candidates only, the signature decides.
 - **No revocation check, no name or path-length constraints, no policy check** (`docs/grenzen.md`). RSA-PSS and
   BER are refused; SHA-1 is accepted only as the certificate hash in the `signingCertificate` (v1) attribute, anywhere
@@ -135,7 +135,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   shipped services (it bites only when the service limits add up to more). Counters cap
   future timestamps at `now` (a clock set back does not lock the budget). `refused` has `request-timeout` and
   `client-aborted`; the 408/431/400 answers of the server are closed hard after 1 s even if the client never reads;
-  `nowMs` must be milliseconds >= 1e11; key file errors name the entry index (`keys[i]`, no content).
+  `nowMs` must be milliseconds >= 1e11 and < 1e15 (`signRelayRequest`: `ts` stays within the relay's 12 digits); key file errors name the entry index (`keys[i]`, no content).
 - **Relay settings and behaviour since the final audit:** `RELAY_SERVICES` is mandatory (no default of "all services"; a
   plain-http service without `RELAY_ALLOW_PLAIN_HTTP=1` ends the start). The relay binds `127.0.0.1` unless `RELAY_HOST`
   is set (a container needs `RELAY_HOST=0.0.0.0`). Keep-alive depends on the binding: loopback 65 s (a proxy on the
@@ -144,6 +144,10 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   larger `RELAY_KEEPALIVE_MS`. CORS exposes `Retry-After` and `Date` (clock offset recipe in `docs/relay.md`: on a 401
   read `Date`, correct once). The relay checks `genTime` within ±60 s around the request (`genTimeSlackMs`, replaces
   `maxSkewMs`).
+- **Ending and PORT (audit 2):** after `server.close()` Node no longer enforces the header and request deadlines, so ending
+  (`SIGTERM`, `restartAfter`) closes all connections after `shutdownGraceMs` (2 s; a request still in flight is cut then) and
+  exits with 0 after `shutdownHardMs` (10 s) whatever is open (`stopServer` in `relay/main.ts`, `docs/relay.md`). `PORT` is
+  read like the other numbers (decimal digits, 1 to 65535; `0x50`, `1e2`, blanks, empty and `0` end the start).
 - **Freshness and long-term value (library):** freshness is checked only with `minGenTime` (`time-too-old`); without it a
   back-dated token from an expired service key passes. `at` is checked in addition to `genTime`. The result has
   `signerNotBefore`/`signerNotAfter`: the evidence weakens when the signer certificate expires or its key is
@@ -210,7 +214,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   rotation. Anyone who can write the key file can add a key. Replay cache (digest of the signed message, at most
   180 entries by the limits) and counters live in memory only (empty after a restart; a head with `ts` from the start on, up to +60 s when the app clock runs ahead, can be replayed after a restart until its window ends, i.e. up to 120 s after the relay start: `ts` <= start + 60 s plus the 60 s window; the replay cache is empty then; no code fix); client and relay clocks
   must agree within ±60 s.
-- **Reader rules after the audit of 2026-11-24 (`tests/strict-readers.test.ts`, `tests/openssl-interop.test.ts`: 40 tokens
+- **Reader rules after the audit of 2026-11-24 (`tests/strict-readers.test.ts`, `tests/reader-input.test.ts`, `tests/openssl-interop.test.ts`: 40 tokens
   written by `openssl ts -reply` must still be read and verified):** a SEQUENCE of fixed shape has exactly its elements
   (`EncapsulatedContentInfo`, `issuerAndSerialNumber`, an Attribute, an AttributeTypeAndValue of a name: `bad-structure`,
   in a name: unreadable). `readTimestampResponse`, `readToken` and `parseCertificate` copy their input first (by length,

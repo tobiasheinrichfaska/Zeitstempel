@@ -831,10 +831,12 @@ export function createRelay(options: RelayOptions): Relay {
    */
   function slotWaitMs(key: string, service: RelayService): number {
     const now = options.now();
-    const own = (windows.get(key) ?? []).filter((t) => now - t < bw);
+    // times in the future (the clock was set back) count as `now` and are stored so: a request that waits and looks again
+    // (no new request passes `budget`) would else see the same future time every time and wait for the length of the jump
+    const own = (windows.get(key) ?? []).filter((t) => now - t < bw).map((t) => Math.min(t, now));
     windows.set(key, own);
-    // times in the future (the clock was set back) count as `now`, except the stamp that is still to come
-    const booked = [...own.map((t) => Math.min(t, now)), ...reservedStamp(key, now)];
+    // except the stamp that is still to come (an open window, at most one window length ahead)
+    const booked = [...own, ...reservedStamp(key, now)];
     const limit = Math.max(1, Math.floor(bw / service.minIntervalMs));
     return booked.length >= limit ? Math.max(1, bw - (now - booked[booked.length - limit]!)) : 0;
   }

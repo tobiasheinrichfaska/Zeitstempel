@@ -59,9 +59,13 @@ export function readSettings(env: NodeJS.ProcessEnv) {
       );
     }
   }
-  const port = Number(env.PORT ?? 8080);
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
-    throw new Error('PORT: ungültig (ganze Zahl von 1 bis 65535 erwartet)');
+  // Decimal digits only, like the other numbers (`Number()` would take 0x50, 1e2, " 80 "); not set is 8080, an empty value
+  // is invalid. 0 (a port chosen by the system) is refused on purpose: the start line, the proxy and the firewall need a
+  // port that is known beforehand.
+  const portRaw = env.PORT ?? '8080';
+  const port = /^[0-9]{1,5}$/.test(portRaw) ? Number(portRaw) : NaN;
+  if (!(port >= 1 && port <= 65535))
+    throw new Error('PORT: ungültig (ganze Zahl von 1 bis 65535 erwartet, nur Dezimalziffern)');
   const only = (env.RELAY_SERVICES ?? '')
     .split(',')
     .map((s) => s.trim())
@@ -318,6 +322,28 @@ export function buildRelayOptions(
   };
 }
 
+/**
+ * Ends the server for good: stops listening, closes idle connections as they become idle, closes ALL connections after
+ * `shutdownGraceMs` (`server.close()` stops the server's own deadline check, so a connection with half a request would
+ * otherwise never end) and calls `exit(0)` when the server is closed or, at the latest, after `shutdownHardMs`. Every timer
+ * is unref'd: they never hold the process, they only end it.
+ */
+export function stopServer(
+  server: Pick<Server, 'close' | 'closeIdleConnections' | 'closeAllConnections'>,
+  exit: (code: number) => void,
+  limits: { graceMs: number; hardMs: number } = {
+    graceMs: RELAY_LIMITS.shutdownGraceMs,
+    hardMs: RELAY_LIMITS.shutdownHardMs,
+  },
+): void {
+  server.close(() => exit(0));
+  // `close` only ends idle connections at the moment of the call: one that was busy (it just got its 503) would stay
+  // open until its keep-alive ends (65 s on a loopback binding). So idle ones are closed as they become idle.
+  setInterval(() => server.closeIdleConnections(), 200).unref();
+  setTimeout(() => server.closeAllConnections(), limits.graceMs).unref();
+  setTimeout(() => exit(0), limits.hardMs).unref();
+}
+
 function main(): void {
   let config: ReturnType<typeof readConfig>;
   try {
@@ -353,11 +379,7 @@ function main(): void {
     ending = true;
     watcher?.stop();
     relay.close(); // requests that wait in a window or for a slot are answered (503), nothing hangs
-    server.close(() => process.exit(0));
-    // `close` only ends idle connections at the moment of the call: a connection that was busy (it just got its
-    // 503) would stay open until its keep-alive ends (65 s on a loopback binding) and hold the exit. So idle ones
-    // are closed as they become idle; a request still in flight is not cut.
-    setInterval(() => server.closeIdleConnections(), 200).unref();
+    stopServer(server, process.exit);
   };
   // The key file is read again while the relay runs (new keys count, removed ones stop at once); a
   // `restartAfter` in it ends the process once cleanly, a supervisor starts it again. The relay only reads the file.

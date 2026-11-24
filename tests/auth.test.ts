@@ -53,6 +53,9 @@ describe('signRelayRequest', () => {
     const frac = await signRelayRequest(input({ nowMs: NOW_MS + 0.25 }));
     expect(frac.ok).toBe(true);
     expect((await signRelayRequest(input({ nowMs: 1e11 }))).ok).toBe(true);
+    // the largest accepted time gives a 12 digit `ts`, which the relay's header format still reads
+    const top = await signRelayRequest(input({ nowMs: 1e15 - 1 }));
+    expect(top.ok && /^v2\.[a-z0-9-]+\.999999999999\./.test(top.value)).toBe(true);
     expect(await signRelayRequest(input({ nowMs: NOW_MS / 1000 }))).toEqual({
       ok: false,
       reason: 'bad-options',
@@ -246,6 +249,11 @@ describe('signRelayRequest', () => {
       [{ nowMs: Number.POSITIVE_INFINITY }, 'bad-options'],
       [{ nowMs: Math.floor(NOW_MS / 1000) }, 'bad-options'], // seconds instead of milliseconds
       [{ nowMs: 0 }, 'bad-options'],
+      [{ nowMs: Number.MAX_VALUE }, 'bad-options'], // audit 2, B4: an upper bound too
+      [{ nowMs: 1e300 }, 'bad-options'],
+      [{ nowMs: 1e17 }, 'bad-options'],
+      [{ nowMs: 1e15 }, 'bad-options'], // ts of 13 digits: the relay's header takes 12
+      [{ nowMs: Number.NEGATIVE_INFINITY }, 'bad-options'],
       [{ nowMs: 1e11 - 1 }, 'bad-options'],
     ];
     for (const [over, reason] of codes) {

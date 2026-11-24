@@ -19,6 +19,12 @@ const MAX_PRIVATE_KEY_BYTES = 256;
 const MAX_BODY_BYTES = 512;
 /** `nowMs` below this is taken for seconds (or garbage): 1e11 ms is 1973, 1e11 s is the year 5138. */
 const MIN_NOW_MS = 1e11;
+/**
+ * `nowMs` from this on is refused: 1e15 ms is the year 33658, and below it `ts` (seconds) has at most 12 digits, the most the
+ * relay's header format takes (`[0-9]{1,12}`). A larger value (`Number.MAX_VALUE`, 1e17) would give a head the relay always
+ * refuses, so it is `bad-options` here, not a silent `ok`.
+ */
+const MAX_NOW_MS = 1e15;
 
 export interface SignRelayRequestInput {
   /**
@@ -136,8 +142,13 @@ async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
   if (typeof path !== 'string' || !PATH.test(path) || /[?#]/.test(path)) return fail('bad-options');
   const body = copyOf(fields.body, 0, MAX_BODY_BYTES);
   if (body === null) return fail('bad-options');
-  if (typeof nowMs !== 'number' || !Number.isFinite(nowMs) || nowMs < MIN_NOW_MS) {
-    return fail('bad-options'); // also a time in seconds
+  if (
+    typeof nowMs !== 'number' ||
+    !Number.isFinite(nowMs) ||
+    nowMs < MIN_NOW_MS ||
+    nowMs >= MAX_NOW_MS
+  ) {
+    return fail('bad-options'); // also a time in seconds, and one the relay's header could not carry
   }
   const subtle = globalThis.crypto?.subtle;
   if (typeof subtle?.importKey !== 'function') return fail('unsupported-signature'); // e.g. plain http

@@ -175,9 +175,11 @@ function readServicesUnchecked(data: unknown): Result<Service[]> {
     if (!s.anchors.every((a) => typeof a === 'string' && /^anchors\/[a-z0-9-]+\.pem$/.test(a))) {
       return fail('bad-services');
     }
+    // a string only: `new URL` would turn an array or an object with a `toString` into text
+    if (typeof s.url !== 'string') return fail('bad-services');
     let url: URL;
     try {
-      url = new URL(s.url as string);
+      url = new URL(s.url);
     } catch {
       return fail('bad-services');
     }

@@ -25,12 +25,21 @@ export function byteLength(value: unknown): number | null {
   }
 }
 
+// The built-in `Symbol.toStringTag` getter of every typed array: the element type from the internal slot ("Uint8Array",
+// "Uint16Array", ...), whatever the realm, an own property or a subclass says.
+const typedArrayTag = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype) as object,
+  Symbol.toStringTag,
+)!.get!;
+
 /**
- * The length of any genuine typed array (internal slot, so a `Uint8Array` of another realm counts, an own `length`
- * does not); `null` for anything else (a proxy included); never throws.
+ * The length of a genuine `Uint8Array` of any realm (internal slots, so an iframe, worker or `vm` array and a Node byte buffer
+ * count, an own `length` or a subclass override does not); `null` for anything else: another element type
+ * (`Uint16Array`, `Uint8ClampedArray`, `Float64Array`, ...), a proxy, an array, a string. Never throws.
  */
-export function typedLength(value: unknown): number | null {
+export function uint8Length(value: unknown): number | null {
   try {
+    if (typedArrayTag.call(value) !== 'Uint8Array') return null;
     const n = typedArrayLength.call(value) as unknown;
     return typeof n === 'number' ? n : null;
   } catch {

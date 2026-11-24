@@ -314,7 +314,7 @@ Aufrufer seinen Puffer nach dem Lesen (z. B. einen wiederverwendeten Netzpuffer)
 `length`-Getter der typisierten Arrays (nicht aus einer überschriebenen Eigenschaft) und wird gegen die Grenze
 geprüft, bevor etwas angelegt oder kopiert wird (Token höchstens 262 144 Byte, sonst `too-large`; Nonce 1 bis 16,
 Hash 32 Byte); kopiert wird mit `TypedArray.prototype.set`, nie über `Symbol.iterator` (ein überschriebener,
-endloser Iterator wird nicht aufgerufen). Ein Token in einem `SharedArrayBuffer` ist deshalb gültig, und ein Puffer,
+endloser Iterator wird nicht aufgerufen). Eingabe ist ein `Uint8Array` (auch aus einem anderen Realm, ein `Buffer` oder eine Sicht auf einen `SharedArrayBuffer`); jede andere typisierte Art (`Uint16Array`, `Float64Array`, `Uint8ClampedArray` usw.) ist `malformed`, wie bei `verifyTimestampToken`, und wird nie auf Bytes gekürzt. Ein Token in einem `SharedArrayBuffer` ist deshalb gültig, und ein Puffer,
 den der Aufrufer nach dem Aufruf leert oder ändert, ändert das Ergebnis nicht. `trust` wird über `length` und
 Index gelesen (jeder Eintrag einmal, nie über den Iterator); mehr als 64 Einträge sind `bad-options`, geprüft
 bevor ein Eintrag gelesen wird.

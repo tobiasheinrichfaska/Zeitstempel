@@ -1,13 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, type AddressInfo } from 'node:net';
+import { connect, createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { toBase64Url } from '../src/index.ts';
 import type { UpstreamCredentials } from '../relay/credentials.ts';
 import type { RelayKey } from '../relay/keys.ts';
-import { buildRelayOptions, readConfig } from '../relay/main.ts';
+import { buildRelayOptions, readConfig, stopServer } from '../relay/main.ts';
+import { RELAY_LIMITS } from '../relay/limits.ts';
 import type { RelayService } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import type { Upstream } from '../relay/upstream.ts';
@@ -324,6 +325,26 @@ describe('relay/main.ts as a process', () => {
     expect((await p.exited).code).toBe(0);
   }, 45_000);
 
+  it('a PORT that is not decimal ends the start with a German config-error line and exit code 1', async () => {
+    const child = spawn(process.execPath, ['relay/main.ts'], {
+      cwd: ROOT,
+      env: {
+        PATH: process.env.PATH ?? '',
+        PORT: '0x50',
+        RELAY_SERVICES: 'freetsa',
+        RELAY_AUTH: 'off',
+      },
+    });
+    running.push(child);
+    let err = '';
+    child.stderr!.on('data', (c: Buffer) => (err += c.toString('utf8')));
+    const code = await new Promise((r) => child.on('exit', (c) => r(c)));
+    expect(code).toBe(1);
+    const line = JSON.parse(err.trim().split('\n')[0]!) as { event: string; message: string };
+    expect(line.event).toBe('config-error');
+    expect(line.message).toMatch(/^PORT: ungültig \(ganze Zahl von 1 bis 65535 erwartet/);
+  }, 15_000);
+
   it('SIGTERM closes the relay (a waiting request gets 503 shutting-down) and the process ends with 0', async () => {
     writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
     const p = await startMain({ RELAY_BATCH_MS: '5000' });
@@ -370,4 +391,112 @@ describe('relay/main.ts as a process', () => {
     },
     20_000,
   );
+
+  // A connection with half a request: after `server.close()` Node no longer enforces the header and request deadlines,
+  // so the process used to wait for it for ever (nothing ended it, a supervisor never restarted the relay).
+  describe('ending with a connection that holds half a request', () => {
+    const halfRequests: Record<string, string> = {
+      'half a header': 'GET /health HTTP/1.1\r\nHost: x\r\nX-A:',
+      'half a POST body':
+        'POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\nContent-Length: 32\r\n\r\nabc',
+    };
+    for (const [name, head] of Object.entries(halfRequests)) {
+      it(`SIGTERM with ${name} ends the process with 0 within the hard deadline`, async () => {
+        writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
+        const p = await startMain();
+        const sock = connect(p.port, '127.0.0.1');
+        sock.on('error', () => undefined);
+        await new Promise<void>((r) => sock.once('connect', () => r()));
+        sock.write(head);
+        await new Promise((r) => setTimeout(r, 300));
+        const t0 = Date.now();
+        p.child.kill('SIGTERM');
+        const end = await Promise.race([
+          p.exited,
+          new Promise<'hang'>((r) =>
+            setTimeout(() => r('hang'), RELAY_LIMITS.shutdownHardMs + 3000),
+          ),
+        ]);
+        sock.destroy();
+        expect(end).toEqual({ code: 0, signal: null });
+        expect(Date.now() - t0).toBeLessThan(RELAY_LIMITS.shutdownHardMs + 2000);
+      }, 30_000);
+    }
+
+    it('restartAfter with half a request ends the process with 0 as well', async () => {
+      writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
+      const p = await startMain();
+      const sock = connect(p.port, '127.0.0.1');
+      sock.on('error', () => undefined);
+      await new Promise<void>((r) => sock.once('connect', () => r()));
+      sock.write('GET /health HTTP/1.1\r\nHost: x\r\nX-A:');
+      // a restart time after the start that has passed at the next look of the watcher (every 5 s)
+      const restartAfter = Math.floor(Date.now() / 1000) + 1;
+      writeFileSync(keysPath, JSON.stringify({ version: 2, restartAfter, keys: [entry(KEY_A)] }), {
+        mode: 0o600,
+      });
+      const end = await Promise.race([
+        p.exited,
+        new Promise<'hang'>((r) => setTimeout(() => r('hang'), 8000 + RELAY_LIMITS.shutdownHardMs)),
+      ]);
+      sock.destroy();
+      expect(end).toEqual({ code: 0, signal: null });
+      expect(p.out.some((l) => l.includes('restart-after'))).toBe(true);
+    }, 40_000);
+  });
+});
+
+describe('stopServer (the deadlines of ending)', () => {
+  const stub = () => {
+    const calls: string[] = [];
+    let onClose: () => void = () => undefined;
+    return {
+      calls,
+      closeDone: () => onClose(),
+      server: {
+        close: (cb?: () => void) => {
+          calls.push('close');
+          onClose = cb ?? (() => undefined);
+          return undefined as never;
+        },
+        closeIdleConnections: () => void calls.push('idle'),
+        closeAllConnections: () => void calls.push('all'),
+      },
+    };
+  };
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('closes all connections after the grace time, not before, and exits at the hard deadline when nothing ends', () => {
+    const s = stub();
+    const exits: number[] = [];
+    stopServer(s.server, (c) => exits.push(c), { graceMs: 2000, hardMs: 10_000 });
+    vi.advanceTimersByTime(1999);
+    expect(s.calls.includes('all')).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(s.calls.filter((c) => c === 'all')).toHaveLength(1);
+    expect(exits).toEqual([]);
+    vi.advanceTimersByTime(7999);
+    expect(exits).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(exits).toEqual([0]);
+  });
+
+  it('exits at once when the server reports itself closed', () => {
+    const s = stub();
+    const exits: number[] = [];
+    stopServer(s.server, (c) => exits.push(c), { graceMs: 2000, hardMs: 10_000 });
+    s.closeDone();
+    expect(exits).toEqual([0]);
+  });
+
+  it('uses the limits of relay/limits.ts by default', () => {
+    const s = stub();
+    const exits: number[] = [];
+    stopServer(s.server, (c) => exits.push(c));
+    vi.advanceTimersByTime(RELAY_LIMITS.shutdownGraceMs);
+    expect(s.calls).toContain('all');
+    vi.advanceTimersByTime(RELAY_LIMITS.shutdownHardMs);
+    expect(exits).toEqual([0]);
+  });
 });

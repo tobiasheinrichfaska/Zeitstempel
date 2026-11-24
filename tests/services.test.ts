@@ -196,3 +196,89 @@ describe('E7: readServices never throws', () => {
     expect(readServices(inList)).toEqual({ ok: false, reason: 'bad-services' });
   });
 });
+
+describe('readServices reads every member strictly (nothing is accepted by coercion)', () => {
+  const asText = { toString: () => 'https://x.example/tsr' };
+  const coerced = (text: string): Record<string, unknown> => ({
+    toString: () => text,
+    valueOf: () => text,
+  });
+  const wrongs: Record<string, (good: unknown) => unknown> = {
+    'an array of one text': (good) => [good],
+    'an object with toString': (good) => coerced(String(good)),
+    'a number': () => 12345,
+    'a boolean': () => true,
+    null: () => null,
+  };
+  const members = [
+    'id',
+    'name',
+    'url',
+    'hash',
+    'intendedUse',
+    'terms',
+    'qualified',
+    'minIntervalMs',
+  ] as const;
+  for (const member of members) {
+    for (const [name, make] of Object.entries(wrongs)) {
+      // 12345 and `true` are the right type for these two members (the range and the value are checked elsewhere)
+      if (
+        (member === 'qualified' && name === 'a boolean') ||
+        (member === 'minIntervalMs' && name === 'a number')
+      )
+        continue;
+      it(`${member} as ${name} is refused`, () => {
+        const d = clone();
+        d.services[0]![member] = make(d.services[0]![member]);
+        expect(readServices(d)).toEqual({ ok: false, reason: 'bad-services' });
+      });
+    }
+  }
+  it('an anchor path as an array or an object with toString is refused', () => {
+    for (const wrong of [['anchors/freetsa.pem'], coerced('anchors/freetsa.pem')]) {
+      const d = clone();
+      d.services[0]!.anchors = [wrong];
+      expect(readServices(d)).toEqual({ ok: false, reason: 'bad-services' });
+    }
+  });
+  it('the url as an object that turns into a valid address is refused, the text itself is read', () => {
+    const d = clone();
+    d.services[0]!.url = asText;
+    expect(readServices(d).ok).toBe(false);
+    d.services[0]!.url = 'https://x.example/tsr';
+    expect(readServices(d).ok).toBe(true);
+  });
+});
+
+describe('PORT is read as strictly as the other numbers (audit 2)', () => {
+  it('takes decimal digits from 1 to 65535 only', () => {
+    expect(readSettings({}).port).toBe(8080);
+    expect(readSettings({ PORT: '80' }).port).toBe(80);
+    expect(readSettings({ PORT: '1' }).port).toBe(1);
+    expect(readSettings({ PORT: '65535' }).port).toBe(65535);
+    for (const bad of [
+      '0x50',
+      '1e2',
+      ' 80',
+      '80 ',
+      '80.0',
+      '+80',
+      '-1',
+      '0',
+      '00',
+      '65536',
+      '123456',
+      '',
+      'abc',
+      '８０',
+      '8_0',
+      '0b101',
+      '80\n',
+    ]) {
+      expect(() => readSettings({ PORT: bad }), JSON.stringify(bad)).toThrow(
+        /^PORT: ungültig \(ganze Zahl von 1 bis 65535 erwartet/,
+      );
+    }
+  });
+});

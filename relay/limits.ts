@@ -12,6 +12,14 @@ export const RELAY_LIMITS = {
    * a limit per address belongs to the reverse proxy in front).
    */
   requestTimeoutMs: 5_000,
+  /**
+   * Ending (`SIGTERM`, `restartAfter`): after `server.close()` the server no longer enforces its header and request
+   * deadlines, so a connection with half a request would hold the process for ever. After this time all connections
+   * are closed (idle ones are closed from the start; a request still in flight has this long to be answered).
+   */
+  shutdownGraceMs: 2_000,
+  /** Ending: the process exits (code 0) at the latest after this time, whatever is still open (an upstream call lasts 10 s at most). */
+  shutdownHardMs: 10_000,
   /** Requests per minute over all services and clients: nothing is counted per client. */
   perMinuteTotal: 60,
   /**
