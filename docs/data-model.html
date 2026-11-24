@@ -160,10 +160,10 @@
       <tr><td>signature-invalid</td><td>Signatur stimmt nicht</td></tr>
       <tr><td>bad-pem</td><td>Anker nicht als PEM lesbar oder leer</td></tr>
       <tr><td>bad-certificate</td><td>Zertifikat ungültig (auch: kritische, unbekannte Erweiterung in einem Zertifikat der Kette)</td></tr>
-      <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token</td></tr>
+      <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token (oder unlesbar: unlesbare Zusatzzertifikate im Token werden übersprungen, <code>readToken</code> zählt sie in <code>skippedCertificates</code>)</td></tr>
       <tr><td>certificate-not-valid-at-time</td><td>Ein Zertifikat war zur Zeit des Tokens nicht gültig</td></tr>
       <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) und ausschließlich für Zeitstempel zugelassen (erweiterte Schlüsselverwendung muss genau <code>id-kp-timeStamping</code> enthalten); ebenso eine Zwischen-CA der Kette mit erweiterter Schlüsselverwendung ohne <code>id-kp-timeStamping</code> und ohne <code>anyExtendedKeyUsage</code> (Anker ausgenommen)</td></tr>
-      <tr><td>not-a-ca</td><td>Der Aussteller, der das Zertifikat darunter signiert hat, ist keine Zertifizierungsstelle (<code>basicConstraints</code> ohne CA oder Schlüsselverwendung ohne <code>keyCertSign</code>)</td></tr>
+      <tr><td>not-a-ca</td><td>Der Aussteller, der das Zertifikat darunter signiert hat, ist keine Zertifizierungsstelle (<code>basicConstraints</code> ohne CA oder Schlüsselverwendung ohne <code>keyCertSign</code>); ohne <code>basicConstraints</code> gilt nur ein übergebener Anker als CA</td></tr>
       <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker. Dazu zählen: kein Aussteller mit passendem Namen und gültiger Signatur im Token oder bei den Ankern; das Suchbudget ist erschöpft (Kandidaten- oder Signaturgrenze, Abschnitt 5); das echte Zwischenzertifikat wird von Scheinkandidaten verdeckt (sie sehen brauchbar aus, sind aber nicht vom echten Aussteller signiert); das Zertifikat des Zeitstempel-Dienstes ist selbstsigniert und nicht selbst einer der Anker. Ein genauerer Grund wird nur gemeldet, wenn er innerhalb des kleinen Budgets für die Ursachensuche gefunden wird</td></tr>
       <tr><td>chain-too-long</td><td>Kette länger als die Grenze</td></tr>
     </table>

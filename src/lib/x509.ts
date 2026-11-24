@@ -1,4 +1,4 @@
-import { fromBase64 } from './bytes.ts';
+import { equalBytes, fromBase64 } from './bytes.ts';
 import {
   TAG,
   bitStringBytes,
@@ -28,7 +28,7 @@ export interface Certificate {
   /** Signature algorithm OID (outer) and the signature bytes. */
   signatureOid: string;
   signature: Uint8Array;
-  /** DER of the issuer and subject names, compared byte for byte. */
+  /** DER of the issuer and subject names (`sameName` compares them; the signature decides in the end). */
   issuer: Uint8Array;
   subject: Uint8Array;
   notBefore: number;
@@ -154,6 +154,72 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
 
 function equalNode(a: Node, b: Node): boolean {
   return a.raw.length === b.raw.length && a.raw.every((v, k) => v === b.raw[k]);
+}
+
+const STRING_TAGS = new Set([0x0c, 0x13, 0x14, 0x16, 0x1e]);
+
+/** The text of a directory string, or the bytes as hex when the type is unknown or not decodable. */
+function nameValue(node: Node): string {
+  const v = node.value;
+  let text: string | null = null;
+  try {
+    if (node.tag === 0x0c) text = new TextDecoder('utf-8', { fatal: true }).decode(v);
+    else if (node.tag === 0x1e) text = new TextDecoder('utf-16be', { fatal: true }).decode(v);
+    else if (node.tag === 0x14)
+      text = new TextDecoder('latin1').decode(v); // TeletexString: Latin-1 subset
+    else if (STRING_TAGS.has(node.tag)) text = new TextDecoder('latin1').decode(v);
+  } catch {
+    text = null;
+  }
+  if (text === null)
+    return `#${node.tag.toString(16)}:${Array.from(v, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  // RFC 5280 § 7.1, simplified: ASCII letters case-insensitive, outer spaces dropped, inner runs of spaces
+  // become one space
+  const folded = text
+    .replace(/[A-Z]/g, (c) => c.toLowerCase())
+    .replace(/ +/g, ' ')
+    .trim();
+  return `s:${folded}`;
+}
+
+const canonicalNames = new WeakMap<Uint8Array, string | null>();
+
+/** The name as a comparable text (attribute types exact, values as `nameValue`), or null when unreadable. */
+function canonicalName(name: Uint8Array): string | null {
+  const known = canonicalNames.get(name);
+  if (known !== undefined) return known;
+  let out: string | null;
+  try {
+    out = JSON.stringify(
+      children(expect(parseDer(name), TAG.sequence)).map((rdn) =>
+        children(expect(rdn, TAG.set))
+          .map((atv) => {
+            const [id, value] = children(expect(atv, TAG.sequence));
+            if (!id || !value) throw new ReaderError('bad-structure');
+            return `${oid(id)}=${nameValue(value)}`;
+          })
+          .sort(),
+      ),
+    );
+  } catch {
+    out = null;
+  }
+  canonicalNames.set(name, out);
+  return out;
+}
+
+/**
+ * Whether two distinguished names (DER) name the same party, by the simplified rule of RFC 5280 § 7.1:
+ * attribute types exact; values decoded (UTF8String, PrintableString, IA5String, TeletexString, BMPString),
+ * ASCII letters case-insensitive, outer spaces removed, inner runs of spaces collapsed; an unknown value type
+ * is compared by its bytes. A name that cannot be read is compared byte for byte. This only picks which
+ * issuer candidates are tried: the signature against the candidate's key decides.
+ */
+export function sameName(a: Uint8Array, b: Uint8Array): boolean {
+  if (equalBytes(a, b)) return true;
+  const x = canonicalName(a);
+  const y = canonicalName(b);
+  return x !== null && y !== null && x === y;
 }
 
 /** Reads every certificate of a PEM text (a bundle may hold several). */

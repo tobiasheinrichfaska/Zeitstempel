@@ -111,7 +111,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   `null`; not a class instance, `Map`, array), `expectedNonce` a `Uint8Array` of 1 to 16 bytes,
   `requireCriticalEku` a boolean, `now`/`at` a real valid `Date`, `maxSkewMs` a number >= 0, otherwise `bad-options` (never a silently skipped check; only `undefined`
   means "not given"). A `Uint8Array` of another realm (iframe, worker, `vm`) is refused (`bad-hash` / `bad-options`; a token: `malformed`; the nonce of `buildTimestampRequest`: `bad-nonce`): pass `new Uint8Array(x)`; `readTimestampResponse` and `readToken` check no `instanceof` and accept such bytes. The chain search tries every signature-valid issuer candidate (bounded), so a look-alike
-  certificate cannot block a valid token. A negative serial number makes a certificate unreadable (`malformed`).
+  certificate cannot block a valid token. A negative serial number makes a trust anchor or the signer's `sid` unreadable (`malformed`); an unreadable extra certificate inside the token is skipped (`skippedCertificates`, it can never be a candidate). A trust anchor without basicConstraints (X.509 v1) counts as a CA (the caller chose it); names are matched by a simplified RFC 5280 §7.1 rule to select issuer candidates only, the signature decides.
 - **No revocation check, no name or path-length constraints, no policy check** (`docs/grenzen.md`). RSA-PSS and
   BER are refused; SHA-1 is accepted only as the certificate hash in the `signingCertificate` (v1) attribute, anywhere
   else it is refused.
@@ -152,4 +152,4 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   fixtures stay valid for the tests).
 - Not on npm; consumers take it by Git tag (none yet).
 
-_Last updated: 2026-11-23 (run 7: inputs copied by length never iterated, `trust` at most 64 anchors, token in a SharedArrayBuffer verifies, start rule: `startMs` only ever falls (lowered on every request), heads from before it are refused, `signRelayRequest` never throws; round 5: honest "never throws" statement, hostile proxies, `trust` must be an array, chain search cut short by a limit always `untrusted-chain`, mutation guards, README/FEATURES aligned with the ECDSA authentication)_
+_Last updated: 2026-11-24 (run 16: v1 anchors, simplified name matching, unreadable extra certificates skipped; run 7: inputs copied by length never iterated, `trust` at most 64 anchors, token in a SharedArrayBuffer verifies, start rule: `startMs` only ever falls (lowered on every request), heads from before it are refused, `signRelayRequest` never throws; round 5: honest "never throws" statement, hostile proxies, `trust` must be an array, chain search cut short by a limit always `untrusted-chain`, mutation guards, README/FEATURES aligned with the ECDSA authentication)_

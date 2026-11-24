@@ -3,7 +3,7 @@ import { DER_LIMITS, TAG, children, expect, integerBytes, octets, oid, parseDer 
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
 import { MAX_CERTIFICATES, readToken, type ParsedToken, type TstInfo } from './token.ts';
-import { parsePemCertificates, type Certificate } from './x509.ts';
+import { parsePemCertificates, sameName, type Certificate } from './x509.ts';
 
 /** Trusted root (or intermediate) certificates, as PEM text. The caller decides whom to trust. */
 export type TrustAnchors = readonly string[];
@@ -254,11 +254,14 @@ function validAt(cert: Certificate, at: number): boolean {
 
 /** Why a candidate issuer is unusable at time `at`, or null when it is fine. */
 function issuerFlaw(issuer: Certificate, anchors: readonly Certificate[], at: number) {
-  if (issuer.isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
+  const isAnchor = anchors.some((a) => same(a.raw, issuer.raw));
+  // no basicConstraints at all (an X.509 v1 root): a CA only when the caller handed it over as an anchor
+  // (the caller's decision); an explicit cA=false and every intermediate without the extension stay refused
+  const isCa = issuer.isCa === null && isAnchor ? true : issuer.isCa;
+  if (isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
     return 'not-a-ca' as const;
   }
   if (!validAt(issuer, at)) return 'certificate-not-valid-at-time' as const;
-  const isAnchor = anchors.some((a) => same(a.raw, issuer.raw));
   if (issuer.unknownCritical && !isAnchor) {
     return 'bad-certificate' as const; // a trust anchor is the caller's decision, not checked
   }
@@ -321,7 +324,7 @@ async function buildChain(
     }
     const named = SIGNATURES[current.signatureOid]?.hash
       ? pool.filter(
-          (c) => same(c.subject, current.issuer) && !path.some((p) => same(p.raw, c.raw)), // not self-signed, no loop
+          (c) => sameName(c.subject, current.issuer) && !path.some((p) => same(p.raw, c.raw)), // not self-signed, no loop
         )
       : [];
     const usable: Certificate[] = [];
@@ -444,7 +447,8 @@ async function verifyChecked(
 
     // signer certificate
     const signer = token.certificates.find(
-      (c) => same(c.issuer, token.signer.issuer) && same(trimZeros(c.serial), token.signer.serial),
+      (c) =>
+        sameName(c.issuer, token.signer.issuer) && same(trimZeros(c.serial), token.signer.serial),
     );
     if (!signer) throw new ReaderError('signer-certificate-missing');
     await checkSigningCertificate(token, signer);

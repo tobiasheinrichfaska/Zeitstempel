@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readTimestampResponse, verifyTimestampToken } from '../src/index.ts';
 import { fixture, sha256 } from './helpers.ts';
+import { build, type Opts } from './token-builder.ts';
 
 const probe = spawnSync('openssl', ['version'], { encoding: 'utf8' });
 const major = Number(/^OpenSSL (\d+)/.exec(probe.stdout ?? '')?.[1] ?? 0);
@@ -168,4 +169,53 @@ describe.skipIf(!canJudgeAtTime)('agreement with openssl ts -verify', () => {
     expect(theirs.stderr).toContain('self-signed certificate in certificate chain');
     expect(ours).toBe(false);
   });
+
+  // Built tokens: both must agree on the names, the v1 root and an unreadable extra certificate.
+  const SHAPES: [string, Opts, boolean][] = [
+    [
+      'issuer PrintableString "ca" against UTF8String "CA"',
+      { tsaIssuerName: { tag: 0x13, text: 'ca' } },
+      true,
+    ],
+    [
+      'sid issuer IA5String " Ca " against UTF8String "CA"',
+      { sidIssuerName: { tag: 0x16, text: ' Ca ' } },
+      true,
+    ],
+    [
+      'another name',
+      { tsaIssuerName: { tag: 0x13, text: 'cb' }, sidIssuerName: { tag: 0x13, text: 'cb' } },
+      false,
+    ],
+    ['a v1 root without extensions as anchor', { rootV1: true }, true],
+    ['an anchor with cA=false', { rootNotCa: true }, false],
+    [
+      'an unreadable extra certificate in the token',
+      { junkCerts: [build({ serialRaw: Uint8Array.of(0x80) }).tsaCert] },
+      true,
+    ],
+  ];
+  for (const [label, shape, accepted] of SHAPES) {
+    it(`both ${accepted ? 'accept' : 'refuse'}: ${label}`, async () => {
+      const t = build(shape);
+      writeFileSync(path('built.tok'), t.token);
+      writeFileSync(path('built.ca.pem'), t.caPem);
+      const theirs = openssl([
+        'ts',
+        '-verify',
+        '-in',
+        path('built.tok'),
+        '-token_in',
+        '-digest',
+        Buffer.from(t.imprint).toString('hex'),
+        '-CAfile',
+        path('built.ca.pem'),
+        '-attime',
+        '1767225600', // 2026-01-01, the built genTime
+      ]);
+      const ours = (await verifyTimestampToken(t.token, t.imprint, [t.caPem])).ok;
+      expect(theirs.ok, theirs.stderr).toBe(accepted);
+      expect(ours).toBe(accepted);
+    });
+  }
 });

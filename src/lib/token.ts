@@ -49,7 +49,10 @@ export interface ParsedToken {
   /** DER of the TSTInfo (the signed content). */
   content: Uint8Array;
   info: TstInfo;
+  /** The readable certificates of the token. */
   certificates: Certificate[];
+  /** Certificates in the token that could not be read: skipped, never a candidate (they still count against the limit). */
+  skippedCertificates: number;
   signer: SignerParts;
 }
 
@@ -133,10 +136,21 @@ function readTokenStrict(bytes: Uint8Array): ParsedToken {
   const content = octets(inner(expect(encap[1], ctx(0))));
   let i = 3;
   const certificates: Certificate[] = [];
+  let skippedCertificates = 0;
   if (sd[i]?.tag === ctx(0)) {
     const certs = children(sd[i]!);
     if (certs.length > MAX_CERTIFICATES) throw new ReaderError('too-large');
-    for (const c of certs) if (c.tag === TAG.sequence) certificates.push(parseCertificate(c.raw));
+    for (const c of certs) {
+      if (c.tag !== TAG.sequence) continue;
+      try {
+        certificates.push(parseCertificate(c.raw));
+      } catch (e) {
+        // an unreadable extra certificate is no reason to refuse the token: it is no candidate; the signer's
+        // own certificate is looked up later (`signer-certificate-missing`), the anchors are read strictly
+        if (!(e instanceof ReaderError)) throw e;
+        skippedCertificates += 1;
+      }
+    }
     i += 1;
   }
   if (sd[i]?.tag === ctx(1)) i += 1; // revocation lists: ignored
@@ -165,6 +179,7 @@ function readTokenStrict(bytes: Uint8Array): ParsedToken {
     content,
     info: readTstInfo(content),
     certificates,
+    skippedCertificates,
     signer: { issuer, serial, digestOid, signedAttributesDer, attributes, signatureOid, signature },
   };
 }

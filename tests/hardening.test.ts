@@ -8,7 +8,8 @@ import {
 } from '../src/lib/index.ts';
 import type { Reason } from '../src/lib/index.ts';
 import { ctx, tlv } from '../src/lib/der.ts';
-import { build, ext, int, octet, oidT, seq, type Opts } from './token-builder.ts';
+import { sameName } from '../src/lib/x509.ts';
+import { build, ext, int, nameWith, octet, oidT, seq, type Opts } from './token-builder.ts';
 
 const TIME = new Date('2026-01-01T00:00:00Z');
 
@@ -201,9 +202,10 @@ describe('L4: readers throw nothing but ReaderError', () => {
   });
   it('readToken and verify with such a certificate inside the token', async () => {
     const t = build({ tsaCertOverride: emptyTbs });
-    expect(isReader(reasonOfThrow(() => readToken(t.token)))).toBe(true);
+    // an unreadable certificate in the token is skipped (B4); it was the signer's, so that one is missing
+    expect(readToken(t.token).skippedCertificates).toBe(1);
     const r = await verifyTimestampToken(t.token, t.imprint, [t.caPem]);
-    expect(r).toEqual({ ok: false, reason: 'bad-certificate' });
+    expect(r).toEqual({ ok: false, reason: 'signer-certificate-missing' });
   });
   it('readToken on every truncation and single-byte change of a built token', () => {
     const { token } = build();
@@ -295,8 +297,9 @@ describe('R2: certificate times carry no fraction (RFC 5280), genTime keeps up t
   const FRAC: [string, string] = ['20200101000000.5Z', '20400101000000Z'];
   const FRAC_END: [string, string] = ['20200101000000Z', '20400101000000.5Z'];
   it('refuses a fraction in notBefore or notAfter of the signer chain (intermediate)', async () => {
-    expect(await reason({ intermediate: { validity: FRAC } })).toBe('bad-time');
-    expect(await reason({ intermediate: { validity: FRAC_END } })).toBe('bad-time');
+    // the intermediate is unreadable (`bad-time`), so it is skipped (B4) and the chain has no way up
+    expect(await reason({ intermediate: { validity: FRAC } })).toBe('untrusted-chain');
+    expect(await reason({ intermediate: { validity: FRAC_END } })).toBe('untrusted-chain');
   });
   it('refuses a fraction in the validity of a trust anchor and of a bare certificate', async () => {
     expect(await reason({ caValidity: FRAC })).toBe('bad-time');
@@ -884,6 +887,146 @@ describe('G9: a search cut short by a limit always says untrusted-chain', () => 
   it('and still names the exact reason when no limit was reached', async () => {
     expect(await reason({ intermediate: { noKeyCertSign: true }, twins: [{ noCa: true }] })).toBe(
       'not-a-ca',
+    );
+  });
+});
+
+describe('B1: a trust anchor without basicConstraints (X.509 v1 root) may be a CA', () => {
+  it('a v1 root handed over as anchor verifies, directly and above an intermediate', async () => {
+    expect(await reason({ rootV1: true })).toBe('ok');
+    expect(await reason({ rootV1: true, intermediate: {} })).toBe('ok');
+  });
+  it('an anchor that says cA=false stays refused', async () => {
+    expect(await reason({ rootNotCa: true })).toBe('not-a-ca');
+    expect(await reason({ rootNotCa: true, intermediate: {} })).toBe('not-a-ca');
+  });
+  it('an intermediate without basicConstraints (not an anchor) stays refused', async () => {
+    expect(await reason({ intermediate: { noBasicConstraints: true } })).toBe('not-a-ca');
+  });
+  it("the same intermediate handed over as anchor is the caller's decision", async () => {
+    const t = build({ intermediate: { noBasicConstraints: true } });
+    const r = await verifyTimestampToken(t.token, t.imprint, [t.intPem]);
+    expect(r.ok).toBe(true);
+  });
+  it('a v1 root is read without extensions', () => {
+    const t = build({ rootV1: true });
+    expect(parsePemCertificates(t.caPem)[0]!.isCa).toBeNull();
+  });
+});
+
+describe('B2: issuer names are matched by the simplified rule of RFC 5280 § 7.1', () => {
+  const STRINGS = [
+    ['PrintableString', 0x13],
+    ['IA5String', 0x16],
+    ['TeletexString', 0x14],
+    ['BMPString', 0x1e],
+    ['UTF8String', 0x0c],
+  ] as const;
+  for (const [label, tag] of STRINGS) {
+    it(`${label} against UTF8String: same text, other case, spaces around`, async () => {
+      for (const text of ['CA', 'ca', 'Ca', '  ca ']) {
+        expect(await reason({ tsaIssuerName: { tag, text } })).toBe('ok');
+        expect(await reason({ sidIssuerName: { tag, text } })).toBe('ok');
+      }
+    });
+  }
+  it('a really different name stays untrusted / not found', async () => {
+    const cb = { tag: 0x13, text: 'CB' };
+    expect(await reason({ tsaIssuerName: cb, sidIssuerName: cb })).toBe('untrusted-chain');
+    expect(await reason({ sidIssuerName: { tag: 0x13, text: 'CB' } })).toBe(
+      'signer-certificate-missing',
+    );
+    const spaced = { tag: 0x13, text: 'C A' };
+    expect(await reason({ tsaIssuerName: spaced, sidIssuerName: spaced })).toBe('untrusted-chain');
+  });
+  it('sameName: inner runs of spaces count as one, other letters and attribute types do not', () => {
+    const n = (tag: number, text: string) => nameWith(tag, text);
+    expect(sameName(n(0x0c, 'Foo   Bar'), n(0x13, ' foo bar'))).toBe(true);
+    expect(sameName(n(0x0c, 'Foo Bar'), n(0x0c, 'FooBar'))).toBe(false);
+    expect(sameName(n(0x0c, 'a'), n(0x0c, 'b'))).toBe(false);
+    // other attribute type, same value
+    const ou = seq(tlv(0x31, seq(oidT('2.5.4.10'), tlv(0x0c, new TextEncoder().encode('CA')))));
+    expect(sameName(ou, n(0x0c, 'CA'))).toBe(false);
+  });
+  it('sameName: only ASCII letters fold, a non-ASCII letter does not', () => {
+    expect(sameName(nameWith(0x0c, 'Ä'), nameWith(0x0c, 'ä'))).toBe(false);
+  });
+  it('sameName: an unknown value type is compared by its bytes', () => {
+    expect(sameName(nameWith(0x1c, 'CA'), nameWith(0x1c, 'CA'))).toBe(true);
+    expect(sameName(nameWith(0x1c, 'CA'), nameWith(0x1c, 'ca'))).toBe(false);
+    expect(sameName(nameWith(0x1c, 'CA'), nameWith(0x0c, 'CA'))).toBe(false);
+  });
+  it('sameName: a name that cannot be read is compared byte for byte', () => {
+    const junk = Uint8Array.of(1, 2, 3);
+    expect(sameName(junk, Uint8Array.of(1, 2, 3))).toBe(true);
+    expect(sameName(junk, Uint8Array.of(1, 2, 4))).toBe(false);
+    expect(sameName(junk, nameWith(0x0c, 'CA'))).toBe(false);
+  });
+  it('sameName: a multi-valued RDN is a set (order does not matter)', () => {
+    const cn = seq(oidT('2.5.4.3'), tlv(0x0c, new TextEncoder().encode('X')));
+    const o = seq(oidT('2.5.4.10'), tlv(0x13, new TextEncoder().encode('x')));
+    expect(sameName(seq(tlv(0x31, cn, o)), seq(tlv(0x31, o, cn)))).toBe(true);
+  });
+  it('case-different twins count against the candidate limits like equal ones', async () => {
+    const seven = Array.from({ length: 7 }, () => ({ forged: true, subject: 'int' }));
+    expect(await reason({ intermediate: {}, twins: seven })).toBe('ok');
+    const eight = Array.from({ length: 8 }, () => ({ forged: true, subject: 'int' }));
+    expect(await reason({ intermediate: {}, twins: eight })).toBe('untrusted-chain');
+    // and an unusable (no CA) twin of another spelling still costs nothing
+    const unusable = Array.from({ length: 14 }, () => ({ noCa: true, subject: ' Int' }));
+    expect(await reason({ intermediate: {}, twins: unusable })).toBe('ok');
+  });
+  it('the name only selects candidates: a look-alike with the right name and a wrong key is refused', async () => {
+    expect(
+      await reason({
+        intermediate: {},
+        twins: [{ forged: true, subject: 'int' }],
+        tsaIssuerName: { tag: 0x13, text: 'int' },
+      }),
+    ).toBe('ok'); // the real intermediate is still found behind the forged twin
+  });
+});
+
+describe('B4: unreadable extra certificates in the token are skipped', () => {
+  const NEG = Uint8Array.of(0x80);
+  const negativeSerial = () => build({ serialRaw: NEG }).tsaCert; // a real certificate nobody can read
+  const garbage = seq(int(1)); // a SEQUENCE that is no certificate
+  it('a certificate with a negative serial number does not fail the token', async () => {
+    expect(await reason({ junkCerts: [negativeSerial()] })).toBe('ok');
+  });
+  it('a SEQUENCE that is no certificate is skipped too, and is only counted', async () => {
+    expect(await reason({ junkCerts: [garbage, negativeSerial(), garbage] })).toBe('ok');
+    const t = build({ junkCerts: [garbage, negativeSerial()] });
+    const token = readToken(t.token);
+    expect(token.skippedCertificates).toBe(2);
+    expect(token.certificates).toHaveLength(1);
+    expect(readToken(build().token).skippedCertificates).toBe(0);
+  });
+  it('a skipped certificate is never a candidate and never makes a chain valid', async () => {
+    expect(await reason({ intermediate: {}, junkCerts: [negativeSerial(), garbage] })).toBe('ok');
+    expect(
+      await reason({ intermediate: { noKeyCertSign: true }, junkCerts: [negativeSerial()] }),
+    ).toBe('not-a-ca');
+  });
+  it('an unreadable signer certificate is signer-certificate-missing', async () => {
+    expect(await reason({ serialRaw: NEG, signerSerialRaw: Uint8Array.of(7) })).toBe(
+      'signer-certificate-missing',
+    );
+  });
+  it('the signer info with a negative serial number stays malformed', async () => {
+    expect(await reason({ signerSerialRaw: NEG })).toBe('malformed');
+  });
+  it('an unreadable trust anchor stays a hard error', async () => {
+    const bad = build({ serialRaw: NEG });
+    const t = build();
+    const pem = `-----BEGIN CERTIFICATE-----\n${Buffer.from(bad.tsaCert).toString('base64')}\n-----END CERTIFICATE-----\n`;
+    const r = await verifyTimestampToken(t.token, t.imprint, [pem]);
+    expect(r).toEqual({ ok: false, reason: 'malformed' });
+  });
+  it('the limit of 16 certificates counts the skipped ones', async () => {
+    expect(await reason({ junkCerts: Array.from({ length: 15 }, () => garbage) })).toBe('ok');
+    expect(await reason({ junkCerts: Array.from({ length: 16 }, () => garbage) })).toBe(
+      'too-large',
     );
   });
 });

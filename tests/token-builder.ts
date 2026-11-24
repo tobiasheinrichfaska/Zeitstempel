@@ -10,6 +10,14 @@ const int = (n: number) => tlv(2, Uint8Array.of(n));
 const octet = (b: Uint8Array) => tlv(4, b);
 const name = (cn: string) =>
   seq(set(seq(oidT('2.5.4.3'), tlv(0x0c, new TextEncoder().encode(cn)))));
+/** A one-attribute name `CN=<text>` with the string type `tag` (0x0c UTF8, 0x13 Printable, 0x16 IA5, 0x14 Teletex, 0x1e BMP). */
+export function nameWith(tag: number, text: string): Uint8Array {
+  const value =
+    tag === 0x1e
+      ? Uint8Array.from([...text].flatMap((ch) => [0, ch.charCodeAt(0)]))
+      : new TextEncoder().encode(text);
+  return seq(set(seq(oidT('2.5.4.3'), tlv(tag, value))));
+}
 const gt = (s: string) => tlv(0x18, new TextEncoder().encode(s));
 const ecdsa256 = seq(oidT('1.2.840.10045.4.3.2'));
 const sha256 = (b: Uint8Array) => u(createHash('sha256').update(b).digest());
@@ -40,6 +48,7 @@ export interface Opts {
     extraExts?: Uint8Array[];
     validity?: [string, string]; // not-before, not-after (GeneralizedTime)
     noKeyCertSign?: boolean; // key usage without keyCertSign
+    noBasicConstraints?: boolean; // no basicConstraints extension at all
   };
   /**
    * Look-alikes of the intermediate (same name and key, other serial, signed by the root), sent in the
@@ -53,6 +62,8 @@ export interface Opts {
     forged?: boolean;
     /** Carries an unrelated public key: it never verifies the certificate below it. */
     wrongKey?: boolean;
+    /** Another spelling of the name `INT` (e.g. `int`). */
+    subject?: string;
   }[];
   /** `n` chained intermediates I1..In (I1 signed by the root); the signer hangs below In. */
   deepChain?: number;
@@ -74,6 +85,16 @@ export interface Opts {
    */
   anchorTwins?: number;
   caValidity?: [string, string]; // validity of the root
+  /** The root is an X.509 v1 certificate: no version field, no extensions at all (so no basicConstraints). */
+  rootV1?: boolean;
+  /** The root carries basicConstraints with cA=false (an anchor that says it is no CA). */
+  rootNotCa?: boolean;
+  /** Replaces the issuer name of the signer certificate (default: UTF8String of the issuer's name). */
+  tsaIssuerName?: { tag: number; text: string };
+  /** Replaces the issuer name in the signer info (`sid`). */
+  sidIssuerName?: { tag: number; text: string };
+  /** Certificates (DER) sent in the token as they are, before the signer's. */
+  junkCerts?: Uint8Array[];
   genTime?: string; // GeneralizedTime text of TSTInfo.genTime (default 20260101000000Z)
   selfSignedSigner?: boolean; // the signer certificate is its own issuer
 }
@@ -84,22 +105,23 @@ export function build(o: Opts = {}) {
   const validity = seq(gt('20200101000000Z'), gt('20400101000000Z'));
   const mkCert = (
     subject: string,
-    issuer: string,
+    issuer: string | Uint8Array,
     k: any,
     signKey: any,
     exts: Uint8Array[],
     serial: Uint8Array,
     validityOverride?: Uint8Array,
+    v1 = false,
   ) => {
     const tbs = seq(
-      tlv(ctx(0), int(2)),
+      ...(v1 ? [] : [tlv(ctx(0), int(2))]),
       tlv(2, serial),
       ecdsa256,
-      name(issuer),
+      typeof issuer === 'string' ? name(issuer) : issuer,
       validityOverride ?? validity,
       name(subject),
       spki(k),
-      tlv(ctx(3), seq(...exts)),
+      ...(v1 ? [] : [tlv(ctx(3), seq(...exts))]),
     );
     const sig = u(sign('sha256', tbs, signKey.privateKey));
     return seq(tbs, ecdsa256, tlv(3, Uint8Array.of(0), sig));
@@ -110,17 +132,18 @@ export function build(o: Opts = {}) {
     ca,
     ca,
     [
-      ext('2.5.29.19', true, seq(tlv(1, Uint8Array.of(0xff)))),
+      ext('2.5.29.19', true, o.rootNotCa ? seq() : seq(tlv(1, Uint8Array.of(0xff)))),
       ext('2.5.29.15', true, tlv(3, Uint8Array.of(1, 0x04))),
       ...(o.caExts ?? []),
     ],
     Uint8Array.of(1),
     o.caValidity ? seq(gt(o.caValidity[0]), gt(o.caValidity[1])) : undefined,
+    o.rootV1,
   );
   const attacker = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const mid = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-  const caExts = (extra: Uint8Array[], isCa = true, keyCertSign = true) => [
-    ext('2.5.29.19', true, isCa ? seq(tlv(1, Uint8Array.of(0xff))) : seq()),
+  const caExts = (extra: Uint8Array[], isCa = true, keyCertSign = true, noBc = false) => [
+    ...(noBc ? [] : [ext('2.5.29.19', true, isCa ? seq(tlv(1, Uint8Array.of(0xff))) : seq())]),
     ext('2.5.29.15', true, tlv(3, keyCertSign ? Uint8Array.of(1, 0x04) : Uint8Array.of(7, 0x80))),
     ...extra,
   ];
@@ -129,7 +152,12 @@ export function build(o: Opts = {}) {
     'CA',
     mid,
     ca,
-    caExts(o.intermediate?.extraExts ?? [], true, !o.intermediate?.noKeyCertSign),
+    caExts(
+      o.intermediate?.extraExts ?? [],
+      true,
+      !o.intermediate?.noKeyCertSign,
+      o.intermediate?.noBasicConstraints,
+    ),
     Uint8Array.of(2),
     o.intermediate?.validity
       ? seq(gt(o.intermediate.validity[0]), gt(o.intermediate.validity[1]))
@@ -137,7 +165,7 @@ export function build(o: Opts = {}) {
   );
   const twinCerts = (o.twins ?? []).map((t, i) =>
     mkCert(
-      'INT',
+      t.subject ?? 'INT',
       'CA',
       t.wrongKey ? attacker : mid,
       t.forged ? attacker : ca,
@@ -199,7 +227,7 @@ export function build(o: Opts = {}) {
   const tsaSerial = o.serialRaw ?? Uint8Array.of(7);
   const tsaCert = mkCert(
     'TSA',
-    tsaIssuer,
+    o.tsaIssuerName ? nameWith(o.tsaIssuerName.tag, o.tsaIssuerName.text) : tsaIssuer,
     tsa,
     tsaIssuerKey,
     [
@@ -247,7 +275,10 @@ export function build(o: Opts = {}) {
   attrCtx[0] = 0xa0;
   const signerInfo = seq(
     int(1),
-    seq(name(tsaIssuer), tlv(2, o.signerSerialRaw ?? tsaSerial)),
+    seq(
+      o.sidIssuerName ? nameWith(o.sidIssuerName.tag, o.sidIssuerName.text) : name(tsaIssuer),
+      tlv(2, o.signerSerialRaw ?? tsaSerial),
+    ),
     seq(oidT('2.16.840.1.101.3.4.2.1')),
     attrCtx,
     ecdsa256,
@@ -259,6 +290,7 @@ export function build(o: Opts = {}) {
     seq(oidT('1.2.840.113549.1.9.16.1.4'), tlv(ctx(0), octet(tst))),
     tlv(
       ctx(0),
+      ...(o.junkCerts ?? []),
       o.tsaCertOverride ?? tsaCert,
       ...(o.intermediate ? [...twinCerts, intCert] : []),
       ...more,

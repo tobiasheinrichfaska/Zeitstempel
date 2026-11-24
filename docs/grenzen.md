@@ -17,7 +17,10 @@ Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 8. Alle Zertifikate der Kette waren **zur bestätigten Zeit** gültig, kein Zertifikat der Kette (Anker ausgenommen) trägt eine
    kritische, unbekannte Erweiterung, die Aussteller sind
    Zertifizierungsstellen und erlauben das Ausstellen von Zertifikaten, und die Kette endet bei einem der
-   übergebenen Anker.
+   übergebenen Anker. **Ausnahme Anker:** Ein übergebener Anker ohne `basicConstraints` (X.509 v1, ohne
+   Erweiterungen) darf als CA gelten (Entscheidung des Aufrufers, wie bei kritischen Erweiterungen und der
+   erweiterten Schlüsselverwendung); ein Anker mit ausdrücklichem `cA=false` bleibt abgelehnt (`not-a-ca`), und
+   ein Zwischenzertifikat ohne `basicConstraints` (kein Anker) ebenfalls.
 9. Eine Zwischen-CA der Kette, die eine erweiterte Schlüsselverwendung trägt, muss `id-kp-timeStamping` oder
    `anyExtendedKeyUsage` enthalten (sonst `bad-eku`); ohne diese Erweiterung gilt keine Einschränkung. Der
    Anker ist ausgenommen (Entscheidung des Aufrufers).
@@ -25,6 +28,25 @@ Stand: 2026-11-23. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 Punkt 9 ist **strenger als `openssl ts -verify`**, der eine solche Zwischen-CA annimmt; die Regel folgt der
 Praxis der Browser (Verschachtelung der erweiterten Schlüsselverwendung entlang der Kette). Eine Zwischen-CA nur
 für Codesignatur oder nur für Server-Authentifizierung kann also keinen Zeitstempel-Signierer ausstellen.
+
+**Strenger als `openssl ts -verify`** (jeweils eine falsche Ablehnung möglich, nie eine falsche Annahme):
+
+- Punkt 9 (erweiterte Schlüsselverwendung einer Zwischen-CA, s. o.).
+- **Bruchteil in Zertifikatszeiten:** `notBefore` und `notAfter` mit Sekundenbruchteil gelten als ungültig gelesen
+  (`bad-time`, s. „Zeiten“), openssl liest sie.
+- **Nullen am Ende des Sekundenbruchteils in `genTime`** (z. B. `20260101000000.50Z`, `…00.000Z`): RFC 3161 § 2.4.2
+  verbietet sie (Sekundenbruchteil ohne Nullen am Ende); diese Bibliothek folgt dem, openssl ist hier lockerer.
+  Ein Dienst, der so stempelt, wird abgelehnt.
+
+Die Namen von Ausstellern werden nach der vereinfachten Regel von RFC 5280 § 7.1 verglichen (nur zur **Auswahl** der
+Kandidaten; entschieden wird durch die Signatur): Attributtypen (OID) genau; Werte als `UTF8String`,
+`PrintableString`, `IA5String`, `TeletexString` oder `BMPString` gelesen, ASCII-Buchstaben ohne Beachtung der
+Groß-/Kleinschreibung, Leerzeichen am Anfang und Ende entfernt, innere Folgen von Leerzeichen zu einem
+zusammengefasst; ein unbekannter Werttyp wird bytegleich verglichen, ein nicht lesbarer Name insgesamt ebenfalls.
+Das gilt für das `issuer`-Feld eines Zertifikats gegen das `subject` des Ausstellers und für den Aussteller im
+Unterzeichner-Eintrag (`sid`) gegen das Zeitstempel-Zertifikat. Eine lockerere Namensübereinstimmung macht die
+Grenzen nicht leichter erreichbar: Ein Zwilling, der sich nur in der Schreibweise unterscheidet, zählt wie ein
+namensgleicher gegen die 8 Kandidaten und die 64 Signaturprüfungen (Zwillinge ohne CA-Recht usw. kosten weiter nichts).
 
 Gegengeprüft wird mit `openssl ts -verify` an den aufgezeichneten Antworten von vier Diensten und beim
 Schnelltest (`npm run spike`).
@@ -50,7 +72,7 @@ Schnelltest (`npm run spike`).
   Nachkommastellen). Ein `genTime` bis knapp unter 1 ms nach `notAfter` gilt deshalb noch als gültig, und das
   `genTime` als ISO-Text kann bis knapp unter 1 ms früher sein als im Token. Die Gültigkeit von Zertifikaten
   (`notBefore`, `notAfter`) wird dagegen **ohne Nachkommastellen** gelesen (RFC 5280 verbietet sie): ein Zertifikat mit
-  Bruchteil in der Gültigkeit ist ungültig gelesen (`bad-time`), auch ein Anker.
+  Bruchteil in der Gültigkeit ist ungültig gelesen (`bad-time`): ein Anker macht die Eingabe ungültig, ein Zusatzzertifikat im Token wird übersprungen (s. „Bewusst streng“).
 - **Die Anker selbst:** Wem man vertraut, entscheidet der Aufrufer. Die mitgelieferten Anker stammen aus
   einem Zertifikatspaket und der Seite von FreeTSA; ihre Fingerabdrücke (`docs/dienste.md`) wurden am
   2026-11-23 mit öffentlichen Betreiberseiten und dem System-Trust-Store abgeglichen (Netzabgleich, keine
@@ -145,9 +167,16 @@ gilt es.
 ## Bewusst streng
 
 - **Negative Seriennummer:** Ein Zertifikat mit negativer Seriennummer (auch ein mitgegebener Anker) wird nicht
-  gelesen. In einer Ankerliste macht das die ganze Liste ungültig (Grund `malformed`), in einem
-  Token das Token (ebenfalls `malformed`; ein sonst kaputtes Zertifikat ergibt `bad-certificate`). Das ist gewollt (RFC 5280 verlangt positive Seriennummern) und wird
-  nicht aufgeweicht; ein solcher Anker muss vom Aufrufer ausgetauscht werden.
+  gelesen. In einer Ankerliste macht das die ganze Liste ungültig (Grund `malformed`; ein Anker bleibt
+  Eingabe des Aufrufers und wird streng gelesen). Das ist gewollt (RFC 5280 verlangt positive Seriennummern) und wird
+  nicht aufgeweicht; ein solcher Anker muss vom Aufrufer ausgetauscht werden. Eine negative Seriennummer im
+  Unterzeichner-Eintrag (`sid`) des Tokens macht das Token `malformed`.
+- **Unlesbare Zusatzzertifikate im Token** (Lesefehler jeder Art: negative Seriennummer, EC mit ausdrücklichen
+  Kurvenparametern, Bruchteil in der Gültigkeit, kaputte Struktur) lassen das Token **nicht** scheitern: Sie
+  werden übersprungen, sind nie Kandidat und werden nur gezählt (`skippedCertificates` von `readToken`; sie zählen
+  zur Grenze von 16 Zertifikaten). Ist das Zertifikat des Unterzeichners selbst unlesbar, fehlt es:
+  `signer-certificate-missing`. Fehlt dadurch ein Zwischenzertifikat der Kette, ist der Grund `untrusted-chain` (die
+  genauere Ursache, z. B. `bad-time`, wird dann nicht gemeldet). Anker und Unterzeichner-Eintrag bleiben streng.
 
 ## Was ein bestandener Test aussagt
 
