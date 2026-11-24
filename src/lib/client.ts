@@ -52,6 +52,11 @@ export interface RelayClientOptions {
   now: () => number;
   /** The services the caller trusts: service id → PEM text of its trust anchors. */
   trusted: ReadonlyMap<string, TrustAnchors>;
+  /**
+   * Wall clock in milliseconds since the epoch. Used only to turn a `Retry-After` given as an HTTP date into
+   * a pause; without it such a header counts as unusable (60 s). Never used for the pause itself.
+   */
+  wallNow?: () => number;
   /** Deadline of one call; default `CLIENT_LIMITS.timeoutMs`. */
   timeoutMs?: number;
   /** Replaceable in tests; default `verifyTimestampToken` (without a nonce: the relay chooses it). */
@@ -206,6 +211,30 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   const unreachable = (r: Extract<Reply, { kind: 'failed' }>): Failure =>
     fail(r.timedOut ? 'relay-timeout' : 'relay-unreachable', r.detail);
 
+  /** Seconds of a `Retry-After` header: whole seconds or (with `wallNow`) an HTTP date; else the default. */
+  function retrySeconds(header: string | null): number {
+    const max = CLIENT_LIMITS.maxRetrySeconds;
+    const text = (header ?? '').trim();
+    if (/^[0-9]+$/.test(text)) {
+      const asked = Number(text);
+      if (Number.isSafeInteger(asked) && asked > 0) return Math.min(asked, max);
+    } else if (options.wallNow && text !== '' && !/^-?[0-9.]+$/.test(text)) {
+      const at = Date.parse(text);
+      if (!Number.isNaN(at)) {
+        const seconds = Math.ceil((at - options.wallNow()) / 1000);
+        if (seconds > 0) return Math.min(seconds, max);
+      }
+    }
+    return CLIENT_LIMITS.defaultRetrySeconds;
+  }
+
+  /** A 429: set the pause and answer `relay-rate-limited` (one place for both calls). */
+  function rateLimited(headers: FetchResponse['headers']): Failure {
+    const seconds = retrySeconds(headers.get('Retry-After'));
+    blockedUntil = now() + seconds * 1000;
+    return fail('relay-rate-limited', `retry in ${seconds} s`);
+  }
+
   function pausedForMs(): number {
     // a pause longer than the longest one ever set means the clock went back: forget it
     if (blockedUntil - now() > CLIENT_LIMITS.maxRetrySeconds * 1000) blockedUntil = -Infinity;
@@ -215,6 +244,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   async function services(): Promise<Result<string[]>> {
     const r = await call('/v1/services', { method: 'GET' });
     if (r.kind === 'failed') return unreachable(r);
+    if (r.status === 429) return rateLimited(r.headers);
     if (r.status !== 200) return fail('relay-refused', `status ${r.status}${errorCode(r.body)}`);
     return parseServiceList(r.body);
   }
@@ -240,16 +270,11 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hash: toBase64Url(sha256) }),
       });
-      if (r.kind === 'failed') return unreachable(r);
-      if (r.status === 429) {
-        const asked = Number(r.headers.get('Retry-After'));
-        const seconds =
-          Number.isInteger(asked) && asked > 0
-            ? Math.min(asked, CLIENT_LIMITS.maxRetrySeconds)
-            : CLIENT_LIMITS.defaultRetrySeconds;
-        blockedUntil = now() + seconds * 1000;
-        return fail('relay-rate-limited', `retry in ${seconds} s`);
+      if (r.kind === 'failed') {
+        last = unreachable(r);
+        continue; // this service could not be reached: the next one may
       }
+      if (r.status === 429) return rateLimited(r.headers);
       if (r.status === 502 || r.status === 504) {
         last = fail('relay-unreachable', `status ${r.status}${errorCode(r.body)}`);
         continue; // this service did not answer: the next one may

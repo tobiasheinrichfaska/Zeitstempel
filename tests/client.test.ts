@@ -240,6 +240,44 @@ describe('relay client: 502, 504, timeout', () => {
       expect(calls.map((c) => c.url.split('/').pop())).toEqual(['services', 'one', 'freetsa']);
     }
   });
+  it('tries the next service after a network error or a timeout', async () => {
+    const { client, calls } = setup(
+      routes(
+        (url) => {
+          if (url.endsWith('/one')) throw new Error('network down');
+          return reply(200, goodAnswer());
+        },
+        ['one', 'freetsa'],
+      ),
+      {
+        trusted: new Map([
+          ['one', [freetsaRoot]],
+          ['freetsa', [freetsaRoot]],
+        ]),
+      },
+    );
+    expect((await client.stamp(HASH)).ok).toBe(true);
+    expect(calls.map((c) => c.url.split('/').pop())).toEqual(['services', 'one', 'freetsa']);
+  });
+  it('reports the last failure when every tried service cannot be reached', async () => {
+    const { client, calls } = setup(
+      routes(() => {
+        throw new Error('network down');
+      }, ['a', 'b']),
+      {
+        trusted: new Map([
+          ['a', [freetsaRoot]],
+          ['b', [freetsaRoot]],
+        ]),
+      },
+    );
+    expect(await client.stamp(HASH)).toMatchObject({
+      ok: false,
+      reason: 'relay-unreachable',
+      detail: 'network down',
+    });
+    expect(calls).toHaveLength(3);
+  });
   it('gives relay-unreachable after at most three services', async () => {
     const ids = ['a', 'b', 'c', 'd'];
     const { client, calls } = setup(
@@ -320,6 +358,41 @@ describe('relay client: 429', () => {
       await client.stamp(HASH);
       expect(client.pausedForMs()).toBe(seconds * 1000);
     }
+  });
+  it('handles 429 on the service list like on a stamp', async () => {
+    const { client, calls, setClock } = setup(() =>
+      reply(429, { error: 'rate-limited' }, { 'Retry-After': '45' }),
+    );
+    expect(await client.services()).toMatchObject({
+      ok: false,
+      reason: 'relay-rate-limited',
+      detail: 'retry in 45 s',
+    });
+    expect(client.pausedForMs()).toBe(45_000);
+    const sent = calls.length;
+    expect(await client.stamp(HASH)).toMatchObject({ reason: 'relay-rate-limited' });
+    expect(calls).toHaveLength(sent);
+    setClock(45_000);
+    expect(client.pausedForMs()).toBe(0);
+  });
+  describe('Retry-After as an HTTP date', () => {
+    const NOW = Date.parse('2026-11-24T12:00:00Z');
+    const date = (offsetMs: number) => new Date(NOW + offsetMs).toUTCString();
+    const pauseFor = async (header: string, wallNow?: () => number) => {
+      const { client } = setup(limited({ 'Retry-After': header }), wallNow ? { wallNow } : {});
+      await client.stamp(HASH);
+      return client.pausedForMs();
+    };
+    it('uses the date with the wall clock, rounded up and clamped', async () => {
+      expect(await pauseFor(date(90_000), () => NOW)).toBe(90_000);
+      expect(await pauseFor(date(90_000), () => NOW - 400)).toBe(91_000);
+      expect(await pauseFor(date(10 * 3600_000), () => NOW)).toBe(3600_000);
+    });
+    it('falls back to 60 s without wallNow, with a past or invalid date', async () => {
+      expect(await pauseFor(date(90_000))).toBe(60_000);
+      expect(await pauseFor(date(-90_000), () => NOW)).toBe(60_000);
+      expect(await pauseFor('not a date at all', () => NOW)).toBe(60_000);
+    });
   });
   it('a clock that went back does not stretch the pause', async () => {
     const { client, calls, setClock } = setup(limited({ 'Retry-After': '3600' }));

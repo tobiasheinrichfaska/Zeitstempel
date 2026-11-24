@@ -72,6 +72,7 @@ const client = createRelayClient({
   fetch: (url, init) => fetch(url, init),
   now: () => performance.now(),
   trusted: new Map([['freetsa', [freetsaRootPem]]]), // Kennung → Anker (PEM), die Entscheidung des Aufrufers
+  wallNow: () => Date.now(), // optional: nur für ein `Retry-After` als HTTP-Datum (siehe 3.)
 });
 const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime, serial, verified }>
 ```
@@ -83,11 +84,15 @@ const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime,
    gefragte sein, das Token wird mit `verifyTimestampToken` gegen Hash und Anker des Dienstes geprüft (ohne
    `expectedNonce`: die Nonce wählt das Relay) und die Seriennummer mit der des Tokens verglichen. Maßgeblich
    sind `genTime` und `serial` der eigenen Prüfung, nicht die des Relays.
-3. Bei `429` liest der Client `Retry-After` (ganze Sekunden; fehlt es oder ist es ungültig: 60 s; höchstens
-   3600 s) und sendet bis dahin **nichts**; `pausedForMs()` nennt den Rest. Die Pause wird auf der monotonen
-   Uhr gemessen; springt diese zurück (Pause länger als das Höchste), wird sie vergessen. Bei `502`/`504` kommt
-   der nächste Dienst; sind alle durch, ist das Ergebnis `relay-unreachable`. Netzwerkfehler und Fristüberschreitung
-   (`relay-timeout`) brechen ab.
+3. Bei `429` (auf `GET /v1/services` ebenso wie auf `POST /v1/stamp/<id>`) liest der Client `Retry-After` und
+   sendet bis dahin **nichts**; `pausedForMs()` nennt den Rest. Erlaubt sind ganze Sekunden oder ein
+   HTTP-Datum (RFC 9110); ein Datum wird nur ausgewertet, wenn `wallNow` (Millisekunden seit Epoche) übergeben
+   wurde: Sekunden = aufgerundet (Datum − `wallNow()`). Fehlt der Header, ist er ungültig, ist das Datum
+   vergangen oder fehlt `wallNow`: 60 s; sonst mindestens 1 s und höchstens 3600 s. Die Pause selbst wird auf
+   der monotonen Uhr gemessen; springt diese zurück (Pause länger als das Höchste), wird sie vergessen. Bei
+   `502`/`504`, Netzwerkfehler und Fristüberschreitung (`relay-timeout`) eines Dienstes kommt der nächste
+   Dienst; sind alle (höchstens drei) durch, ist das Ergebnis der letzte Fehler (`relay-unreachable` oder
+   `relay-timeout`). Schlägt schon `GET /v1/services` fehl, endet der Aufruf sofort.
 4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes und Hash aufbewahren; geprüft wird später
    mit denselben Mitteln, ohne das Relay.
 
@@ -100,7 +105,7 @@ Fehlercodes des Clients: `relay-unreachable`, `relay-timeout`, `relay-refused`, 
 | `timeoutMs`           | 20000 | Frist eines Aufrufs                                   |
 | `defaultRetrySeconds` | 60    | Pause nach 429 ohne brauchbares `Retry-After`         |
 | `maxRetrySeconds`     | 3600  | Längste Pause nach dem Wort des Relays                |
-| `maxServicesTried`    | 3     | Dienste, die bei 502/504 nacheinander versucht werden |
+| `maxServicesTried`    | 3     | Dienste, die bei Ausfall nacheinander versucht werden |
 | `maxServices`         | 32    | Längste gelesene Dienstliste                          |
 | `maxSerialChars`      | 64    | Längste Seriennummer (Hex-Zeichen)                    |
 | `maxTokenChars`       | 12288 | Längstes Token (base64url-Zeichen)                    |
