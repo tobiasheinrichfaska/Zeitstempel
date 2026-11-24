@@ -112,7 +112,7 @@ describe('relay key file reader', () => {
 });
 
 describe('relay start: authentication', () => {
-  const env = { RELAY_ORIGINS: 'https://app.example' };
+  const env = { RELAY_ORIGINS: 'https://app.example', RELAY_SERVICES: 'freetsa' };
   it('refuses to start without a key file', () => {
     expect(() => readConfig(env, () => SERVICES)).toThrow(/RELAY_KEYS_FILE/);
   });
@@ -146,13 +146,35 @@ describe('relay start: authentication', () => {
     const r = spawnSync(process.execPath, ['relay/main.ts'], {
       cwd: root,
       encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '', RELAY_ORIGINS: 'https://app.example' },
+      env: {
+        PATH: process.env.PATH ?? '',
+        RELAY_ORIGINS: 'https://app.example',
+        RELAY_SERVICES: 'freetsa',
+      },
       timeout: 15_000,
     });
     expect(r.status).toBe(1);
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('config-error');
     expect(r.stderr).toContain('RELAY_KEYS_FILE');
+  });
+  it('the process ends with exit code 1 and a config-error naming the ids when RELAY_SERVICES is missing', () => {
+    const root = new URL('..', import.meta.url);
+    const r = spawnSync(process.execPath, ['relay/main.ts'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', RELAY_AUTH: 'off' },
+      timeout: 15_000,
+    });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toBe('');
+    const line = JSON.parse(r.stderr.trim()) as { event: string; message: string };
+    expect(line.event).toBe('config-error');
+    expect(line.message).toMatch(/^RELAY_SERVICES fehlt/);
+    for (const id of ['freetsa', 'sectigo', 'digicert', 'certum']) {
+      expect(line.message).toContain(id);
+    }
+    expect(line.message).toContain('docs/dienste.md');
   });
 });
 

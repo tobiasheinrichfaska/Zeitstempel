@@ -59,6 +59,8 @@ export interface RelayStats {
 }
 
 const JSON_TYPE = 'application/json';
+/** Response headers a browser page may read: Retry-After (429) and Date (the relay's clock, for a 401 from clock skew). */
+const EXPOSED_HEADERS = 'Retry-After, Date';
 const AUTH_FORM = /^v2\.([a-z][a-z0-9-]{0,31})\.(0|[1-9][0-9]{0,11})\.([A-Za-z0-9_-]{86})$/;
 const AUTH_PREFIX = 'zeitstempel-auth-v2';
 const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
@@ -143,8 +145,9 @@ export function createRelay(options: RelayOptions): Relay {
       ...(origin
         ? {
             'Access-Control-Allow-Origin': origin,
-            // Without this a browser hides Retry-After from the page's script.
-            'Access-Control-Expose-Headers': 'Retry-After',
+            // Without this a browser hides Retry-After and Date (the relay's clock, which the app reads to
+            // correct its own after a 401) from the page's script.
+            'Access-Control-Expose-Headers': EXPOSED_HEADERS,
             Vary: 'Origin',
           }
         : { Vary: 'Origin' }),
@@ -478,7 +481,12 @@ export function createRelay(options: RelayOptions): Relay {
         'Access-Control-Allow-Methods': 'GET, POST',
         'Access-Control-Allow-Headers': 'Content-Type, X-Zeitstempel-Auth',
         'Access-Control-Max-Age': '600',
-        ...(echo ? { 'Access-Control-Allow-Origin': echo } : {}),
+        ...(echo
+          ? {
+              'Access-Control-Allow-Origin': echo,
+              'Access-Control-Expose-Headers': EXPOSED_HEADERS,
+            }
+          : {}),
         Vary: 'Origin',
       });
       return void res.end();

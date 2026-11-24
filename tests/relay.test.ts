@@ -494,7 +494,7 @@ describe('relay: input', () => {
 });
 
 describe('relay: start configuration', () => {
-  const OFF = { RELAY_AUTH: 'off' };
+  const OFF = { RELAY_AUTH: 'off', RELAY_SERVICES: 'freetsa,sectigo' };
   it('names an unknown service id in RELAY_SERVICES and refuses to start', () => {
     expect(() => readConfig({ ...OFF, RELAY_SERVICES: 'freetsa,nope' }, () => SERVICES)).toThrow(
       /nope/,
@@ -515,12 +515,29 @@ describe('relay: start configuration', () => {
     ).toEqual(['digicert']);
   });
   it('refuses to start with no services at all', () => {
-    expect(() => readConfig(OFF, () => [])).toThrow(/keine Dienste/);
+    expect(() => readConfig({ RELAY_AUTH: 'off' }, () => [])).toThrow(/keine Dienste/);
     expect(() => readConfig({ ...OFF, RELAY_SERVICES: 'freetsa' }, () => [])).toThrow(
       /nicht angeboten/,
     );
   });
-  it('offers all loaded services, or the chosen ones', () => {
+  it('refuses to start without RELAY_SERVICES (missing, empty or blank) and names the possible ids', () => {
+    for (const value of [undefined, '', '  ', ' , ']) {
+      const env =
+        value === undefined ? { RELAY_AUTH: 'off' } : { RELAY_AUTH: 'off', RELAY_SERVICES: value };
+      let message = '';
+      try {
+        readConfig(env, () => SERVICES);
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message, String(value)).toMatch(/^RELAY_SERVICES fehlt/);
+      expect(message).toContain('freetsa, sectigo');
+      expect(message).toContain('docs/dienste.md');
+    }
+    // the possible ids come from the loaded file, not from a fixed list
+    expect(() => readConfig({ RELAY_AUTH: 'off' }, () => [SERVICES[1]!])).toThrow(/: sectigo;/);
+  });
+  it('offers the chosen services (all of them when all are named)', () => {
     expect(readConfig(OFF, () => SERVICES).services.map((s) => s.id)).toEqual([
       'freetsa',
       'sectigo',
@@ -578,7 +595,7 @@ describe('relay: start configuration', () => {
     },
   );
   it('hands the permission warning to the start (no key data in it)', () => {
-    const env = { RELAY_KEYS_FILE: '/etc/z/keys.json' };
+    const env = { RELAY_KEYS_FILE: '/etc/z/keys.json', RELAY_SERVICES: 'freetsa' };
     const warned = readConfig(
       env,
       () => SERVICES,
@@ -604,15 +621,18 @@ describe('relay: start configuration', () => {
     expect(real.warnings[0]).not.toContain(toBase64Url(KEYS[0]!.publicKey));
   });
   it('with RELAY_AUTH=off it listens on 127.0.0.1 only and warns; with keys 127.0.0.1 is the default, RELAY_HOST widens it', async () => {
-    const off = readConfig({ RELAY_AUTH: 'off' }, () => SERVICES);
+    const off = readConfig({ RELAY_AUTH: 'off', RELAY_SERVICES: 'freetsa' }, () => SERVICES);
     expect(off.settings.host).toBe('127.0.0.1');
     expect(off.warnings).toHaveLength(1);
     expect(off.warnings[0]).toContain('auth off, loopback only');
-    expect(() => readConfig({ RELAY_AUTH: 'off', RELAY_HOST: '0.0.0.0' }, () => SERVICES)).toThrow(
-      /Loopback/,
-    );
+    expect(() =>
+      readConfig(
+        { RELAY_AUTH: 'off', RELAY_HOST: '0.0.0.0', RELAY_SERVICES: 'freetsa' },
+        () => SERVICES,
+      ),
+    ).toThrow(/Loopback/);
     const keyed = readConfig(
-      { RELAY_KEYS_FILE: '/k.json' },
+      { RELAY_KEYS_FILE: '/k.json', RELAY_SERVICES: 'freetsa' },
       () => SERVICES,
       () => KEYS,
       () => null,
@@ -1001,8 +1021,44 @@ describe('relay: origins (CORS)', () => {
         Origin: ORIGIN,
       });
     expect(last!.status).toBe(429);
-    expect(last!.headers.get('access-control-expose-headers')).toBe('Retry-After');
+    expect(last!.headers.get('access-control-expose-headers')).toBe('Retry-After, Date');
     await h2.close();
+  });
+  it('exposes Date together with Retry-After on 200, 401, 429 and the preflight (the app reads the relay clock after a 401)', async () => {
+    const exposed = (res: Response) =>
+      (res.headers.get('access-control-expose-headers') ?? '').split(',').map((v) => v.trim());
+    const ok = await post(h, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json', {
+      Origin: ORIGIN,
+    });
+    expect(ok.status).toBe(200);
+    const unauth = await fetch(`${h.base}/v1/stamp/freetsa`, {
+      method: 'POST',
+      body: hashJson(sha256('probe')),
+      headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
+    });
+    expect(unauth.status).toBe(401);
+    const preflight = await fetch(`${h.base}/v1/stamp/freetsa`, {
+      method: 'OPTIONS',
+      headers: { Origin: ORIGIN },
+    });
+    expect(preflight.status).toBe(204);
+    const h2 = await start();
+    const per = Math.floor(RELAY_LIMITS.windowMs / SERVICES[0]!.minIntervalMs);
+    let limited: Response | undefined;
+    for (let i = 0; i <= per; i += 1)
+      limited = await post(h2, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json', {
+        Origin: ORIGIN,
+      });
+    expect(limited!.status).toBe(429);
+    await h2.close();
+    for (const res of [ok, unauth, limited!, preflight]) {
+      expect(exposed(res), String(res.status)).toEqual(
+        expect.arrayContaining(['Retry-After', 'Date']),
+      );
+      // and the header itself is there to be read (the relay's clock)
+      if (res.status !== 204)
+        expect(Number.isNaN(Date.parse(res.headers.get('date') ?? ''))).toBe(false);
+    }
   });
   it('answers a caller without an Origin header (not a browser)', async () => {
     const res = await post(h, '/v1/stamp/freetsa', hashJson(sha256('probe')), 'application/json');

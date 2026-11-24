@@ -13,17 +13,20 @@ und führt die Befehle dort aus (`npm install`, dann `npm run relay`).
 ## Start
 
 ```bash
-RELAY_ORIGINS=https://app.example RELAY_KEYS_FILE=/etc/zeitstempel/relay-keys.json npm run relay
+RELAY_ORIGINS=https://app.example RELAY_SERVICES=freetsa RELAY_KEYS_FILE=/etc/zeitstempel/relay-keys.json npm run relay
 ```
 
-Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stderr, Exit-Code 1).
+Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stderr, Exit-Code 1). Ebenso **nicht ohne
+`RELAY_SERVICES`**: Die Dienste werden ausdrücklich gewählt, es gibt keine Vorgabe „alle“ (Zeile `config-error`,
+Exit-Code 1, die Meldung nennt die möglichen Kennungen aus `services.json`). Wer wählt, liest vorher die
+Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich.
 
 | Einstellung              | Bedeutung                                                                                       | Vorgabe        |
 | ------------------------ | ----------------------------------------------------------------------------------------------- | -------------- |
 | `PORT`                   | Port                                                                                            | 8080           |
 | `RELAY_ORIGINS`          | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`) | keine          |
 | `RELAY_ALLOW_PLAIN_HTTP` | `1` erlaubt Dienste, die nur über `http` antworten                                              | aus            |
-| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt                                         | alle passenden |
+| `RELAY_SERVICES`         | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)    | keine          |
 | `RELAY_KEYS_FILE`        | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`         | keine          |
 | `RELAY_AUTH`             | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                  | aus            |
 | `RELAY_HOST`             | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt      | `127.0.0.1`    |
@@ -216,7 +219,9 @@ aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen 
   `Access-Control-Allow-Methods: GET, POST`, `Access-Control-Allow-Headers: Content-Type, X-Zeitstempel-Auth`,
   `Access-Control-Max-Age: 600`, `Vary: Origin`.
 - Jede Antwort an eine erlaubte Herkunft (auch Fehler) trägt `Access-Control-Allow-Origin: <die Herkunft>`
-  und `Access-Control-Expose-Headers: Retry-After` (sonst kann das Skript der Seite `Retry-After` nicht lesen).
+  und `Access-Control-Expose-Headers: Retry-After, Date` (sonst kann das Skript der Seite `Retry-After` und `Date`
+  nicht lesen; `Date` ist die Uhr des Relays, siehe „Die App als Client“, Schritt 3). Dasselbe gilt für die Antwort
+  auf die Vorabfrage.
   Es gibt keinen Platzhalter `*` und keine Anmeldedaten (`credentials`) im Browseraufruf.
 - Eine **nicht erlaubte Herkunft** bekommt `403 origin-not-allowed` **ohne** `Access-Control-Allow-Origin`; der
   Browser zeigt der Seite dann nur einen Netzwerkfehler (`TypeError`), nicht den Code. Ebenso sieht die Seite bei
@@ -283,7 +288,35 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    Fenster [Senden − 60 s, jetzt + 5 min] (die Obergrenze lässt sich mit `maxSkewMs` enger fassen); die 60 s
    entsprechen `genTimeSlackMs` des Relays und decken die Uhrabweichung zwischen Dienst und App.
 3. Bei `401`: Schlüssel, Kennung und die Uhr der App prüfen (±60 s); ein Wiederholungsversuch mit demselben
-   Kopf wird ebenfalls mit `401` abgelehnt. **Eine weitere Ursache:** Der Kopf trägt die Zeit nur in ganzen
+   Kopf wird ebenfalls mit `401` abgelehnt. **Uhrversatz beheben (genau einmal):** Das Relay gibt `Date` frei
+   (`Access-Control-Expose-Headers`, auch bei `401`). Die App liest den Kopf, bildet
+   `versatz = Date.parse(date) - Date.now()` und signiert **genau einmal** neu mit `nowMs = Date.now() + versatz`;
+   `now` und `minGenTime` der Prüfung bildet sie dann ebenfalls mit der korrigierten Uhr. Schlägt auch dieser
+   Versuch mit `401` fehl, liegt es am Schlüssel oder an der Kennung, nicht an der Uhr: nicht weiter versuchen.
+
+   ```ts
+   import { signRelayRequest } from 'zeitstempel';
+
+   type Send = (header: string) => Promise<Response>;
+
+   /** Sends once; after a 401 corrects the clock by the relay's `Date` and signs and sends exactly once more. */
+   export async function sendWithClockFix(
+     sign: (nowMs: number) => Promise<string>, // z. B. `signRelayRequest(…)`, das `.value` (siehe oben)
+     send: Send,
+   ): Promise<{ res: Response; offsetMs: number }> {
+     const first = await send(await sign(Date.now()));
+     const date = first.headers.get('Date');
+     const relayMs = date === null ? Number.NaN : Date.parse(date);
+     if (first.status !== 401 || Number.isNaN(relayMs)) return { res: first, offsetMs: 0 };
+     const offsetMs = relayMs - Date.now();
+     return { res: await send(await sign(Date.now() + offsetMs)), offsetMs }; // dann: now = new Date(Date.now() + offsetMs)
+   }
+   ```
+
+   `Date` hat nur ganze Sekunden: der Versatz ist auf etwa 1 s genau, das Fenster von ±60 s ist weit genug. Nach der
+   Korrektur ist `ts` ein anderer, die Nachricht also keine Wiederholung. Ein erneutes Signieren **innerhalb
+   derselben Sekunde** mit unveränderter Uhr ergäbe dieselbe Nachricht (Wiederholung, `401`): bei `502`/`504` daher
+   **mindestens 1 s warten** (siehe unten). **Eine weitere Ursache:** Der Kopf trägt die Zeit nur in ganzen
    Sekunden; zwei Anfragen mit demselben Pfad und demselben Körper in derselben Sekunde ergeben dieselbe
    Nachricht und die zweite wird als Wiederholung abgelehnt (`401`). Nach `502`/`504` (die Anfrage wurde
    angenommen) deshalb **mindestens 1 s warten**, bevor man erneut signiert und sendet. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder

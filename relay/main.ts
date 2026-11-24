@@ -2,7 +2,8 @@
 //   PORT                     default 8080
 //   RELAY_ORIGINS            comma-separated browser origins that may call (default: none)
 //   RELAY_ALLOW_PLAIN_HTTP   "1" to use services that only answer over http (default: off)
-//   RELAY_SERVICES           comma-separated service ids to offer (default: all that fit)
+//   RELAY_SERVICES           comma-separated service ids to offer; required (no default: the operator picks
+//                            on purpose, see docs/dienste.md for the terms of use of each service)
 //   RELAY_KEYS_FILE          path of the key file (ids and public keys; no secret, but only the operator may
 //                            write it; never in the repo); required
 //   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
@@ -78,8 +79,8 @@ export function readSettings(env: NodeJS.ProcessEnv) {
 
 /**
  * The services to offer: those the relay can use (https, or http when allowed). Throws before anything
- * listens when RELAY_SERVICES names an id that is not offered, or when nothing is left to offer.
- * The message names ids, never request data.
+ * listens when RELAY_SERVICES is missing or empty (the message names the possible ids), names an id that is
+ * not offered, or when nothing is left to offer. The message names ids, never request data.
  */
 export function chooseServices<T extends { id: string; url: string }>(
   loaded: readonly T[],
@@ -93,7 +94,12 @@ export function chooseServices<T extends { id: string; url: string }>(
       `RELAY_SERVICES nennt Kennung(en), die nicht angeboten werden (unbekannt oder nur http ohne RELAY_ALLOW_PLAIN_HTTP): ${unknown.join(', ')}`,
     );
   }
-  const chosen = only.length > 0 ? offered.filter((s) => only.includes(s.id)) : offered;
+  if (only.length === 0 && loaded.length > 0) {
+    throw new Error(
+      `RELAY_SERVICES fehlt: die Dienste müssen ausdrücklich gewählt werden (mögliche Kennungen: ${loaded.map((s) => s.id).join(', ')}; Bedingungen der Dienste: docs/dienste.md, nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich)`,
+    );
+  }
+  const chosen = offered.filter((s) => only.includes(s.id));
   if (chosen.length === 0) throw new Error('keine Dienste zum Anbieten (services.json leer?)');
   return chosen;
 }
