@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { RELAY_LIMITS } from '../relay/limits.ts';
 import { createMetrics } from '../relay/metrics.ts';
 
 // The documents and templates that belong to GET /metrics: every series the code writes is described, the proxies block the
@@ -35,6 +36,20 @@ describe('docs/relay.md describes /metrics', () => {
     expect(doc).toContain('hat **jede** Anfrage über den Proxy eine Loopback-Gegenstelle');
     expect(doc).toContain('Nicht enthalten');
   });
+  it('names DNS rebinding and the Host rule, the timing of single requests, and the in-flight limit', () => {
+    const doc = flat(relayDoc);
+    expect(doc).toContain('DNS-Rebinding');
+    expect(doc).toContain('`127.0.0.1`, `localhost` oder `[::1]`');
+    expect(doc).toContain('Zeitpunkt einzelner Stempel-Anfragen');
+    expect(doc).toContain('`RELAY_HOST=127.0.0.2` löst die Warnung aus');
+    expect(doc).toContain('`Infinity`');
+    expect(doc).toContain('endet mit der Verbindung des Clients');
+  });
+  it('the cap of refusal codes in the table is the one in the code', () => {
+    expect(relayDoc).toMatch(
+      new RegExp(`\\| \`metricsMaxReasons\`\\s*\\| ${RELAY_LIMITS.metricsMaxReasons}\\s*\\|`),
+    );
+  });
 });
 
 describe('templates', () => {
@@ -67,7 +82,18 @@ describe('docs/betrieb.md: alarm criteria', () => {
     expect(doc).toMatch(/> 0\*\*/);
     expect(doc).toContain('**> 600** (10 Minuten ohne Erfolg)');
     expect(doc).toContain('{reason="busy"}');
-    expect(doc).toContain('ab 30 s Unterschied ist Vorwarnung');
+    // the real rule: only more than 60 s before the request counts; no early warning, the future is another code
+    expect(doc).toContain('mehr als 60 s vor der Anfrage');
+    expect(doc).toContain('keine Vorwarnung');
+    expect(doc).not.toContain('ab 30 s Unterschied ist Vorwarnung');
+    expect(doc).toContain('`upstream-invalid` (Grund `time-in-future`)');
+    // the ratio is sum() over sum(): the two sides carry different labels
+    expect(doc).toContain(
+      'sum(rate(zeitstempel_refused_total{reason="busy"}[5m])) / sum(rate(zeitstempel_stamp_attempts_total[5m]))',
+    );
+    // the alarm "service without success" rests on the attempts (what a caller without a key cannot cause)
+    expect(doc).toContain('increase(zeitstempel_stamp_attempts_total{service=…}[10m]) > 0');
+    expect(doc).not.toMatch(/increase\(zeitstempel_stamp_responses_total/);
     expect(doc).toContain('nie nach außen weiter');
   });
 });

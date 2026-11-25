@@ -14,8 +14,16 @@ import { RELAY_LIMITS } from './limits.ts';
 const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
 /** The statuses the relay sends; any other number is counted as `other`, an answer that never completed as `none`. */
 const STATUSES: ReadonlySet<number> = new Set([
-  200, 204, 400, 401, 403, 404, 405, 413, 415, 429, 500, 502, 503, 504,
+  200, 204, 400, 401, 403, 404, 405, 408, 413, 415, 429, 431, 500, 502, 503, 504,
 ]);
+/**
+ * The answers of a stamp request that was let through to the service (or would be, but for a busy or exhausted budget):
+ * success, a service or relay failure, a busy or rate-limited refusal of an authenticated caller. NOT the refusals at the
+ * door (400, 401, 403, 404, 405, 413, 415): anyone can cause those without a key, so they say nothing about the service.
+ */
+const ATTEMPT_STATUSES: ReadonlySet<number> = new Set([200, 429, 500, 502, 503, 504]);
+/** The `Host` of a request to this machine: what a collector or a person on the machine writes (DNS rebinding sends another). */
+const LOCAL_HOST = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?$/i;
 /** A refusal code as the relay writes it (`not-found`, `upstream-too-old`); anything else is counted as `other`. */
 const REASON_FORM = /^[a-z][a-z0-9-]{0,39}$/;
 
@@ -36,6 +44,10 @@ export interface Metrics {
   observe: (req: IncomingMessage, res: ServerResponse) => void;
   /** Answers `GET /metrics` and returns true, or returns false and does nothing (the relay then answers as for any unknown route). */
   serve: (req: IncomingMessage, res: ServerResponse) => boolean;
+  /** Counts an answer the server wrote itself, outside the handler (400, 408, 431 of `clientError`). Never throws. */
+  countServerAnswer: (status: number) => void;
+  /** Number of per-service entries held in memory (for tests: a made-up service name must create none). */
+  trackedSeries: () => number;
   /** The text of the endpoint for the given counters. */
   render: (stats: RelayStats) => string;
 }
@@ -56,6 +68,7 @@ export function createMetrics(options: {
   const perService = new Map<string, Map<string, number>>(); // service -> status label -> count
   const inflight = new Map<string, number>();
   const lastSuccess = new Map<string, number>(); // service -> mono ms of the last completed 200
+  const attempts = new Map<string, number>(); // service -> answers of requests that reached the door of the service
   let scrapes = 0;
   const bump = (m: Map<string, number>, k: string): void => void m.set(k, (m.get(k) ?? 0) + 1);
 
@@ -76,9 +89,18 @@ export function createMetrics(options: {
           let own = perService.get(service);
           if (own === undefined) perService.set(service, (own = new Map()));
           bump(own, label);
+          if (finished && ATTEMPT_STATUSES.has(res.statusCode)) bump(attempts, service);
           if (finished && res.statusCode === 200) lastSuccess.set(service, options.mono());
         }
       });
+    } catch {
+      // counting must never touch the request
+    }
+  }
+
+  function countServerAnswer(status: number): void {
+    try {
+      bump(responses, statusLabel(status, true));
     } catch {
       // counting must never touch the request
     }
@@ -88,6 +110,10 @@ export function createMetrics(options: {
     // exactly this target and method, no browser (`Origin`: a page must not read it), a peer on this machine
     if (req.method !== 'GET' || req.url !== '/metrics') return false;
     if (req.headers.origin !== undefined) return false;
+    // A page that a name points to this machine (DNS rebinding) is same-origin for the browser and sends no `Origin`: the
+    // name it uses is its own, so only the names of this machine pass (no `Host`, as in HTTP/1.0: not served).
+    const host = req.headers.host;
+    if (typeof host !== 'string' || !LOCAL_HOST.test(host)) return false;
     if (!isLoopbackPeer((options.peerAddress ?? ((r) => r.socket.remoteAddress))(req)))
       return false;
     scrapes += 1;
@@ -230,9 +256,16 @@ export function createMetrics(options: {
       }
     }
     head(
+      'zeitstempel_stamp_attempts_total',
+      'counter',
+      'Answers to stamp requests that were let through to the service (200, 429, 500, 502, 503, 504), not the refusals at the door (400, 401, 403, 404, 405, 413, 415).',
+    );
+    for (const id of ids)
+      out.push(`zeitstempel_stamp_attempts_total{service="${id}"} ${attempts.get(id) ?? 0}`);
+    head(
       'zeitstempel_stamp_inflight',
       'gauge',
-      'Stamp requests in progress per service: waiting for a window or a slot, or at the service.',
+      'Stamp requests per service whose connection is still open: waiting for a window or a slot, or at the service (ends with the connection of the client, not with the call at the service).',
     );
     for (const id of ids)
       out.push(`zeitstempel_stamp_inflight{service="${id}"} ${inflight.get(id) ?? 0}`);
@@ -265,5 +298,8 @@ export function createMetrics(options: {
     return text;
   }
 
-  return { observe, serve, render };
+  const trackedSeries = (): number =>
+    perService.size + inflight.size + lastSuccess.size + attempts.size;
+
+  return { observe, serve, render, countServerAnswer, trackedSeries };
 }

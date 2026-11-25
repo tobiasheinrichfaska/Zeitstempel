@@ -138,7 +138,7 @@ export const RELAY_LIMITS = {
   /** `/metrics` (RELAY_METRICS=1): largest text the endpoint sends; a longer one is cut at a line end and ends with `# truncated`. */
   metricsMaxBytes: 16_384,
   /** `/metrics`: most distinct refusal codes written as a label; the rest is summed under `other`. */
-  metricsMaxReasons: 32,
+  metricsMaxReasons: 64,
 } as const;
 
 /**

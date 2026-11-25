@@ -55,7 +55,13 @@ export function createRelayServer(
     metrics === null
       ? relay.handle
       : (req: IncomingMessage, res: http.ServerResponse): void => {
-          if (metrics.serve(req, res)) return;
+          // A failure while serving /metrics must not escape as an uncaught exception: the usual routes answer instead
+          // (or, when the answer had begun, the connection ends).
+          try {
+            if (metrics.serve(req, res)) return;
+          } catch {
+            if (res.headersSent) return void res.destroy();
+          }
           metrics.observe(req, res);
           relay.handle(req, res);
         };
@@ -75,6 +81,7 @@ export function createRelayServer(
     // end() only finishes once the client has read what was queued before; a client that never reads
     // (pipelined requests it ignores) would keep the socket open for good. So the socket is destroyed at
     // the latest after a second, whatever the client does.
+    metrics?.countServerAnswer(Number.parseInt(status, 10));
     socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
     setTimeout(() => socket.destroy(), CLOSE_GRACE_MS).unref();
   });
