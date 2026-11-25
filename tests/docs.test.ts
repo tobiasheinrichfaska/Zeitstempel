@@ -163,7 +163,7 @@ describe('docs against the code', () => {
   });
   it('relay.md points to the one client (docs/client.md) and keeps no table of the removed one', () => {
     expect(relayDoc).toContain('[`docs/client.md`](client.md)');
-    expect(relayDoc).not.toContain('src/lib/client.ts`)\n');
+    expect(relayDoc).not.toContain('wallNow');
     expect(relayDoc).not.toMatch(/\|\s*`maxServicesTried`/);
   });
   it('dienste.md lists every service of services.json', () => {
