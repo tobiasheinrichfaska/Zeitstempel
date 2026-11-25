@@ -38,6 +38,8 @@ const ext = (id: string, crit: boolean, val: Uint8Array) =>
   crit ? seq(oidT(id), tlv(1, Uint8Array.of(0xff)), octet(val)) : seq(oidT(id), octet(val));
 
 export interface Opts {
+  /** The root and every CA certificate get the key usage keyCertSign AND cRLSign (default: keyCertSign only). */
+  crlSign?: boolean;
   ekuOids?: string[];
   ekuCritical?: boolean;
   noEku?: boolean; // the signer certificate carries no extended key usage extension at all
@@ -246,7 +248,7 @@ export function build(o: Opts = {}) {
               ...(o.rootPathLen === undefined ? [] : [int(o.rootPathLen)]),
             ),
       ),
-      ext('2.5.29.15', true, tlv(3, Uint8Array.of(1, 0x04))),
+      ext('2.5.29.15', true, tlv(3, Uint8Array.of(1, o.crlSign ? 0x06 : 0x04))),
       ...(o.caExts ?? []),
     ],
     Uint8Array.of(1),
@@ -275,7 +277,11 @@ export function build(o: Opts = {}) {
               : seq(),
           ),
         ]),
-    ext('2.5.29.15', true, tlv(3, keyCertSign ? Uint8Array.of(1, 0x04) : Uint8Array.of(7, 0x80))),
+    ext(
+      '2.5.29.15',
+      true,
+      tlv(3, keyCertSign ? Uint8Array.of(1, o.crlSign ? 0x06 : 0x04) : Uint8Array.of(7, 0x80)),
+    ),
     ...extra,
   ];
   const intCert = mkCert(
@@ -516,6 +522,8 @@ export function build(o: Opts = {}) {
     tst,
     tsaCert,
     keys: { ca, tsa },
+    /** The key pair of the intermediate (`intermediate` option); for tests that sign lists with it. */
+    midKeys: mid,
   };
 }
 export { seq, set, oidT, int, octet, tlv, ext };

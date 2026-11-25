@@ -50,7 +50,10 @@ export type Reason =
   | 'bad-eku'
   | 'not-a-ca'
   | 'untrusted-chain'
-  | 'chain-too-long';
+  | 'chain-too-long'
+  // revocation (offline lists given by the caller)
+  | 'bad-crl'
+  | 'revoked';
 
 export interface Failure {
   ok: false;

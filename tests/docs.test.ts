@@ -68,6 +68,8 @@ const REASONS: Record<lib.Reason, true> = {
   'not-a-ca': true,
   'untrusted-chain': true,
   'chain-too-long': true,
+  'bad-crl': true,
+  revoked: true,
 };
 
 describe('docs against the code', () => {

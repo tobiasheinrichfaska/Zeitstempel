@@ -12,6 +12,7 @@ import {
   oid,
   parseDer,
 } from './der.ts';
+import { CRL_LIMITS, parseCrl, revokedAt, type Crl } from './crl.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
 import { MAX_CERTIFICATES, readToken, type ParsedToken, type TstInfo } from './token.ts';
@@ -62,6 +63,17 @@ export interface VerifyOptions {
    * `bad-options`.
    */
   expectedPolicy?: string | readonly string[];
+  /**
+   * Revocation lists (CRLs, DER) the caller has fetched (up to 16, each up to 262144 bytes); nothing is fetched here.
+   * Every list given must be usable: readable, current (`thisUpdate` <= the check time <= `nextUpdate`; the check
+   * time is `at`, else `now`, else `genTime`), signed by a certificate of the chain that was found (a CA, with
+   * `cRLSign` when it has key usage), else `bad-crl`. A certificate of the chain (the signer and the intermediates,
+   * not the anchor) that a list of its issuer names with a revocation time not after `genTime` (or with the reason
+   * `keyCompromise` / `cACompromise`, whatever the time) gives `revoked`. No list for an issuer: as before (nothing
+   * is checked). Delta and indirect CRLs are not supported (`bad-crl`). Not an array, more than 16 entries, an entry
+   * that is no `Uint8Array` or too large: `bad-options`. docs/grenzen.md.
+   */
+  crls?: readonly Uint8Array[];
 }
 
 export interface VerifiedTimestamp {
@@ -235,6 +247,7 @@ interface OptionSnapshot {
   readonly requireCriticalEku: boolean;
   readonly minRsaBits: number;
   readonly expectedPolicy: readonly string[] | undefined;
+  readonly crls: readonly Uint8Array[];
 }
 
 const MAX_EXPECTED_POLICIES = 16;
@@ -266,6 +279,24 @@ function readExpectedPolicy(value: unknown): readonly string[] | undefined {
   return Object.freeze([...(list as string[])]);
 }
 
+/** `crls` as private copies (length checked before each copy, never iterated); a bad value is `bad-options`. */
+function readCrlBytes(value: unknown): readonly Uint8Array[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new ReaderError('bad-options');
+  const count: unknown = (value as unknown[]).length;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+    throw new ReaderError('bad-options');
+  }
+  if (count > CRL_LIMITS.MAX_CRLS) throw new ReaderError('bad-options');
+  const out: Uint8Array[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const copy = copyBytes((value as unknown[])[i], 0, CRL_LIMITS.MAX_CRL_BYTES);
+    if (!copy) throw new ReaderError('bad-options');
+    out.push(copy);
+  }
+  return Object.freeze(out);
+}
+
 /**
  * Reads every option exactly once into a frozen snapshot and checks it: a given option must be usable (no
  * silent skipping of a check because of a bad value). `options` must be a plain object (prototype
@@ -284,6 +315,7 @@ function checkOptions(options: unknown): OptionSnapshot {
     const critical = read('requireCriticalEku');
     const rsaBits = read('minRsaBits');
     const policy = readExpectedPolicy(read('expectedPolicy'));
+    const crls = readCrlBytes(read('crls'));
     const nowMs = now === undefined ? undefined : dateMs(now);
     const atMs = at === undefined ? undefined : dateMs(at);
     const minGenMs = minGen === undefined ? undefined : dateMs(minGen);
@@ -311,6 +343,7 @@ function checkOptions(options: unknown): OptionSnapshot {
       requireCriticalEku: critical ?? true,
       minRsaBits: rsaBits ?? DEFAULT_MIN_RSA_BITS,
       expectedPolicy: policy,
+      crls,
     });
   };
   if (options === undefined) return snapshot(() => undefined);
@@ -481,12 +514,14 @@ async function buildChain(
   pool: readonly Certificate[],
   times: readonly number[],
   minRsaBits: number,
+  accept: (path: readonly Certificate[]) => Promise<ReaderError | null> = async () => null,
 ): Promise<number> {
   type Flawed = { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> };
   type Failure = ReaderError | { current: Certificate; flawed: Flawed[] };
   let checks = 0;
   let exhausted = false; // a usable candidate was left untried because a limit was reached
   let firstFailure: Failure | null = null;
+  let revocationFailure: ReaderError | null = null; // a path that ended at an anchor but was refused by the CRLs
   const remember = (failure: Failure) => {
     firstFailure ??= failure;
   };
@@ -508,7 +543,13 @@ async function buildChain(
     length: number,
     path: readonly Certificate[],
   ): Promise<number | null> => {
-    if (anchors.some((a) => same(a.raw, current.raw))) return length;
+    if (anchors.some((a) => same(a.raw, current.raw))) {
+      const refusal = await accept(path);
+      if (!refusal) return length;
+      // `revoked` is the more telling answer; another path may still be fine (a twin of the revoked issuer)
+      if (!revocationFailure || refusal.reason === 'revoked') revocationFailure = refusal;
+      return null;
+    }
     if (length > MAX_CHAIN) {
       remember(new ReaderError('chain-too-long'));
       return null;
@@ -545,6 +586,7 @@ async function buildChain(
   };
   const length = await walk(signer, 1, [signer]);
   if (length !== null) return length;
+  if (revocationFailure) throw revocationFailure;
   if (exhausted) throw new ReaderError('untrusted-chain'); // the search was cut short: no more exact reason
   const failure = firstFailure as Failure | null;
   if (failure instanceof ReaderError) throw failure;
@@ -561,11 +603,71 @@ async function buildChain(
 }
 
 /**
+ * The judge of the CRLs for one verification: the lists are read and checked for currency once, `accept(path)`
+ * then decides for a finished chain (signer first, anchor last). Every list must be signed by a certificate of
+ * that chain (a CA that may sign lists), else `bad-crl`; a certificate whose issuer's list names it is `revoked`.
+ * Signature checks are cached per (list, certificate) and bounded (`CRL_LIMITS.MAX_CRL_SIGNATURE_CHECKS`, more: the
+ * list counts as unverified, so `bad-crl`).
+ */
+function crlJudge(
+  crls: readonly Crl[],
+  genTime: number,
+  anchors: readonly Certificate[],
+): (path: readonly Certificate[]) => Promise<ReaderError | null> {
+  const cache = new Map<Certificate, Map<number, boolean>>();
+  let checks = 0;
+  const signedBy = async (j: number, cert: Certificate): Promise<boolean> => {
+    const crl = crls[j]!;
+    let known = cache.get(cert);
+    if (!known) cache.set(cert, (known = new Map()));
+    const hit = known.get(j);
+    if (hit !== undefined) return hit;
+    let good = false;
+    // a CRL issuer is a CA (an anchor without basicConstraints counts, as for certificates) that may sign lists
+    const isAnchor = anchors.some((a) => same(a.raw, cert.raw));
+    const isCa = cert.isCa === null && isAnchor ? true : cert.isCa;
+    if (
+      isCa === true &&
+      (cert.keyUsage === null || (cert.keyUsage & 0x02) !== 0) &&
+      sameName(cert.subject, crl.issuer) &&
+      checks < CRL_LIMITS.MAX_CRL_SIGNATURE_CHECKS
+    ) {
+      checks += 1;
+      try {
+        good = await verifyWithKey(cert, crl.signatureOid, null, crl.tbs, crl.signature);
+      } catch {
+        good = false;
+      }
+    }
+    known.set(j, good);
+    return good;
+  };
+  return async (path) => {
+    if (crls.length === 0) return null;
+    const signers: boolean[][] = [];
+    for (let j = 0; j < crls.length; j += 1) {
+      const row: boolean[] = [];
+      for (let k = 0; k < path.length; k += 1) row.push(k >= 1 && (await signedBy(j, path[k]!)));
+      if (!row.some(Boolean)) return new ReaderError('bad-crl'); // signed by no member of this chain
+      signers.push(row);
+    }
+    for (let i = 0; i + 1 < path.length; i += 1) {
+      for (let j = 0; j < crls.length; j += 1) {
+        if (signers[j]![i + 1] && revokedAt(crls[j]!, path[i]!.serial, genTime)) {
+          return new ReaderError('revoked');
+        }
+      }
+    }
+    return null;
+  };
+}
+
+/**
  * Verifies a time stamp token against the SHA-256 hash it must cover:
  * imprint, nonce (when given), the CMS signature, the signing-certificate attribute, the key usage of
  * the signer, the validity of every certificate at the stamped time (and at `at`, when given), and a chain
  * that ends in one of the given trust anchors. The age of the token is checked only with `minGenTime`.
- * Revocation is NOT checked; name constraints are not evaluated (`pathLenConstraint` is) (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
+ * Revocation: only offline lists the caller gives (`crls`), no OCSP, nothing is downloaded; name constraints are not evaluated (`pathLenConstraint` is) (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
  */
 export async function verifyTimestampToken(
   tokenBytes: Uint8Array,
@@ -699,7 +801,20 @@ async function verifyChecked(
 
     // chain to a trust anchor
     const pool = dedupe([...anchors, ...token.certificates]); // anchors first: a cross-signed twin of an anchor must not win
-    const length = await buildChain(signer, anchors, pool, times, opts.minRsaBits);
+    // CRLs: read and checked for currency before the chain search (the chain decides who signed them)
+    const crlTime = opts.at ?? opts.now ?? info.genTime;
+    const crls = opts.crls.map((bytes) => parseCrl(bytes));
+    for (const crl of crls) {
+      if (crl.thisUpdate > crlTime || crlTime > crl.nextUpdate) throw new ReaderError('bad-crl');
+    }
+    const length = await buildChain(
+      signer,
+      anchors,
+      pool,
+      times,
+      opts.minRsaBits,
+      crlJudge(crls, info.genTime, anchors),
+    );
     return ok({
       genTime: new Date(info.genTime).toISOString(),
       accuracyMs: info.accuracyMs,
