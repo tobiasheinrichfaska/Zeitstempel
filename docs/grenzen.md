@@ -125,11 +125,31 @@ Stand: 2026-11-24. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
     `cACompromise`:** `revoked` unabhängig vom Datum, denn das Datum ist der Zeitpunkt, an dem die CA es erfuhr; der Schlüssel
     kann vorher benutzt worden sein, und ein mit ihm rückdatiertes Token ist genau der Fall, gegen den die Prüfung da ist (der Preis:
     ein echtes altes Token wird mit einer solchen Liste abgelehnt; wer das nicht will, übergibt die Liste nicht).
-    Gibt es für einen Aussteller keine Liste, ist das kein Fehler (wie bisher). Der Anker wird nie befragt. Gibt es
+    **Rückdatierung mit gestohlenem Schlüssel (offene Flanke, gemessen: `ok` bei uns, `certificate revoked` bei OpenSSL, F22):**
+    Wer den Schlüssel eines Zeitstempel-Zertifikats hat, stempelt eine beliebig alte `genTime`. Sperrt die CA das Zertifikat danach
+    mit dem Datum von heute und dem Grund `unspecified` (oder ohne Grund, bei einer Kompromittierung nicht selten), bleibt das
+    Token `ok`: nur `keyCompromise`, `cACompromise` oder eine frühere `invalidityDate` in der Liste schützen. Das folgt aus der
+    Annahme „der Dienst sagt die Zeit wahr“ und ist nicht zu beheben, ohne ein echtes altes Token ebenfalls abzulehnen.
+    Gegenmittel: `minGenTime` beim Stempeln (ein rückdatiertes Token ist dann `time-too-old`; bei einem Beleg, den man später prüft, wirkt das
+    nur, wenn die App die Sendezeit selbst kennt, `receivedAtMs` des Belegs ist eine ungeprüfte Angabe), kurze Laufzeiten der
+    Zeitstempel-Zertifikate, mehrere Dienste und rechtzeitiges Neustempeln (Abschnitt „Langzeitaussage“).
+    Gibt es für einen Aussteller keine Liste, ist das kein Fehler (wie bisher). Der Anker wird nie befragt.
+    **Anker und Listen:** Die Kette endet am **ersten** erreichten Anker; nur Zertifikate darunter (Signierer ausgenommen, der
+    nie eine Liste signieren kann) und dieser Anker signieren Listen. Eine Liste, die nur ein Zertifikat **über** dem Ende der Kette
+    signiert, hat dort kein Mitglied und ist `bad-crl`: der Signierer als Anker mit gegebener Liste (auch mit CA-Flag und
+    `cRLSign`), die zwischenliegende CA als Anker mit einer Liste der Wurzel, und die Zwischen-CA **und** die Wurzel beide als Anker
+    mit der Liste der Wurzel. Wer Listen gibt, nimmt den Anker, dessen Liste er hat (in den beiden letzten Fällen geht die Liste der Zwischen-CA);
+    ohne `crls` oder mit `crls: []` ändert sich nichts (`tests/crl-audit11.test.ts`). Gibt es
     mehrere Ketten (Zwillinge des Ausstellers mit gleichem Schlüssel), gilt die erste, die an einem Anker endet und die
     Listen besteht; sind alle gesperrt oder unbrauchbar, kommt `revoked` (vor `bad-crl`). Grenzen: `MAX_CRLS` 16,
     `MAX_CRL_BYTES` 262144, `MAX_REVOKED_ENTRIES` 256 (mehr Einträge sind `bad-crl`, eine große CA-Liste ist also nicht
-    lesbar), `MAX_CRL_SIGNATURE_CHECKS` 64 (darüber hinaus gilt eine Liste als nicht verifiziert, `bad-crl`).
+    lesbar), `MAX_CRL_SIGNATURE_CHECKS` 64 (darüber hinaus gilt eine Liste als nicht verifiziert, `bad-crl`; die Grenze ist an beiden Seiten getestet: 64
+    Prüfungen gehen, bei der 65. kommt nie `ok`).
+    **Echte CA-Listen sind damit kaum nutzbar:** große Listen (mehr als 256 Einträge) und Listen mit SHA-1-Signatur (bei alten
+    CAs noch üblich) sind `bad-crl`, der Aufruf scheitert also geschlossen; `openssl` nimmt SHA-1-Listen an (gemessen). Die Option ist
+    für eigene, kleine Listen gebaut (so getestet), nicht für den Abruf der Listen öffentlicher CAs. Der Zeitleser ist wie bei den
+    Zertifikaten großzügig bei der Kodierung (GeneralizedTime auch vor 2050, UTCTime „50“ ist 1950, `nextUpdate` vor `thisUpdate` wird
+    gelesen und ist dann nie aktuell, also `bad-crl`); das ändert keine Entscheidung.
 
 Punkt 9 ist **strenger als `openssl ts -verify`**, der eine solche Zwischen-CA annimmt; die Regel folgt der
 Praxis der Browser (Verschachtelung der erweiterten Schlüsselverwendung entlang der Kette). Eine Zwischen-CA nur
@@ -215,7 +235,8 @@ Schnelltest (`npm run spike`).
   die Zukunft ab.
 - **Sperrung (Revocation):** Nur **Offline-Sperrlisten (CRL), die der Aufrufer liefert** (Option `crls`, Punkt 16); **kein
   OCSP, kein Abruf**, nichts im Netz. Ohne `crls` (oder ohne Liste für einen Aussteller) wird nichts geprüft: ein später
-  gesperrtes Zertifikat erscheint weiterhin gültig. Auch mit Liste gilt: Sperrinformationen **zum damaligen Zeitpunkt** (Langzeit-Validierung,
+  gesperrtes Zertifikat erscheint weiterhin gültig. Auch mit Liste gilt (Rückdatierung mit gestohlenem Schlüssel und Sperrung ohne
+  `keyCompromise` nach der `genTime`: Punkt 16, bleibt `ok`): Sperrinformationen **zum damaligen Zeitpunkt** (Langzeit-Validierung,
   LTV) liefert das nicht; die Liste ist die von heute (oder vom Prüfzeitpunkt).
 - **Schaltsekunde:** Ein Token mit `genTime` `…60Z` (Sekunde 60, wie eine Schaltsekunde sie hätte) wird abgelehnt
   (`bad-time`), ebenso jede andere Sekunde über 59. Ein solches Token ist mit dieser Bibliothek **unprüfbar**. Das

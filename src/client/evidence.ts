@@ -223,6 +223,11 @@ export interface VerifyEvidenceOptions {
   requireCriticalEku?: boolean;
   minRsaBits?: number;
   expectedPolicy?: string | readonly string[];
+  /**
+   * Revocation lists (DER) that YOU hold, as in `VerifyOptions`: the check is offline and only as good as the lists
+   * given; without them nothing is checked for revocation (`docs/grenzen.md`).
+   */
+  crls?: readonly Uint8Array[];
 }
 
 export interface VerifiedEvidence extends VerifiedTimestamp {
@@ -242,6 +247,7 @@ const OPTION_FIELDS = [
   'requireCriticalEku',
   'minRsaBits',
   'expectedPolicy',
+  'crls',
 ] as const;
 
 /**

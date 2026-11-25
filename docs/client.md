@@ -192,10 +192,11 @@ const r = await verifyEvidence(beleg /* Objekt oder Text */, hash, {
   trust: [ankerPem],
   minGenTime, // wenn der Beleg nicht älter sein darf als …
   expectedPolicy: '1.2.3.4.1', // optional
+  crls: [crlDer], // optional: Sperrlisten (DER), die die App selbst geholt hat; ohne sie keine Sperrprüfung
 });
 ```
 
-Reihenfolge: Optionen (`bad-options`; erlaubt sind `trust` und die Optionen von `VerifyOptions` außer `expectedNonce`) → Form
+Reihenfolge: Optionen (`bad-options`; erlaubt sind `trust` und die Optionen von `VerifyOptions` außer `expectedNonce`, auch `crls`: Sperrlisten, die die App selbst liefert, Einzelheiten und Grenzen in `docs/grenzen.md` Punkt 16; ein Beleg mit `kind: batch` reicht sie ebenso an `verifyBatchedTimestamp` weiter) → Form
 (`bad-evidence`) → der Hash des Belegs gegen den **übergebenen** Hash (`evidence-hash-mismatch`) → das Token
 (`verifyTimestampToken`, bei `kind: batch` `verifyBatchedTimestamp`: alle bekannten Codes, bei einem Beleg für einen anderen Hash im
 Baum `imprint-mismatch`) → Abgleich von `genTime`, `policy`, `signerNotAfter` (`bad-evidence`, wenn eines abweicht). Das Ergebnis trägt
@@ -225,7 +226,7 @@ Redundanz.
 - **Frische ist Pflicht** und hängt an der Uhr der App (und dem `Date` des Relays, begrenzt durch `maxClockOffsetMs`).
 - Der Client sendet nur den Hash (und `mode`), nie Daten; `redirect: 'error'`, keine Cookies; kein Wort davon geht ins Protokoll
   (der Client protokolliert nichts). Keine Zugangsdaten für bezahlte Dienste (`upstream`): der Client kennt sie nicht.
-- Nicht geprüft: Sperrung, die Aussage über Zeit vor dem Stempel, ob der Dienst qualifiziert ist (`docs/grenzen.md`, `docs/dienste.md`).
+- Nicht geprüft: Sperrung (außer in `verifyEvidence` mit selbst gelieferten Sperrlisten über `crls`; `stamp` und das Relay prüfen keine Sperrung, und auch mit Listen bleibt eine Sperrung nach der `genTime` ohne `keyCompromise` ohne Wirkung, `docs/grenzen.md` Punkt 16), die Aussage über Zeit vor dem Stempel, ob der Dienst qualifiziert ist (`docs/grenzen.md`, `docs/dienste.md`).
 
 ## Im Browser getestet
 
