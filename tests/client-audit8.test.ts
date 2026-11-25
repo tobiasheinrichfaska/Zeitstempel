@@ -1,5 +1,6 @@
 import { createRelayClient, CLIENT_LIMITS } from '../src/client/index.ts';
 import type { ClientFailure, Evidence, RelayClientOptions } from '../src/client/index.ts';
+import { fromBase64Url, readToken } from '../src/index.ts';
 import { sha256 } from './helpers.ts';
 import {
   KEY_1,
@@ -143,7 +144,7 @@ describe('F3: a stamp asked for solo is never a collected receipt', () => {
         service: e.service,
         genTime: e.genTime,
         accuracyMs: null,
-        serial: '01',
+        serial: readToken(fromBase64Url(e.token)!).info.serial,
         token: e.token,
         batch: e.batch,
       };

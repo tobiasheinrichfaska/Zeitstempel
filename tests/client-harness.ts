@@ -1,7 +1,7 @@
 import { createPublicKey, verify as nodeVerify, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { toBase64Url } from '../src/index.ts';
+import { readToken, toBase64Url } from '../src/index.ts';
 import type { RelayKey } from '../relay/keys.ts';
 import { loadServices } from '../relay/load.ts';
 import type { RelayOptions } from '../relay/relay.ts';
@@ -182,12 +182,13 @@ export async function startFake(answer: (seen: Seen, n: number) => Scripted): Pr
 
 /** The 200 body of a relay for `hash`, stamped at `genTimeMs`. */
 export function okBody(service: string, hash: Uint8Array, genTimeMs: number) {
+  const token = makeToken(hash, genTimeMs);
   return {
     service,
     genTime: new Date(genTimeMs).toISOString(),
     accuracyMs: null,
-    serial: '01',
-    token: toBase64Url(makeToken(hash, genTimeMs)),
+    serial: readToken(token).info.serial, // the relay sends the serial of the token it verified
+    token: toBase64Url(token),
   };
 }
 

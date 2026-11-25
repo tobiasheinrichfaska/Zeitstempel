@@ -20,7 +20,7 @@
   <body>
     <h1>Zeitstempel – Datenmodell</h1>
     <p class="note">
-      Quelle: <code>src/lib/</code>, <code>src/client/</code>, <code>relay/</code> und <code>services.json</code> (Stand 2026-11-24). Bei jeder
+      Quelle: <code>src/lib/</code>, <code>src/client/</code>, <code>relay/</code> und <code>services.json</code> (Stand 2026-11-25; seit 2026-11-25 nur noch ein Client: <code>zeitstempel/client</code>). Bei jeder
       Änderung in derselben Sitzung abgleichen; <code>tests/docs.test.ts</code> prüft, dass jeder Fehlercode, jede
       Grenze und jede öffentliche Funktion hier steht. Die Datei ist eigenständig (kein Netz, kein Build).
     </p>
@@ -185,6 +185,7 @@
       <tr><th>Funktion</th><th>Signatur</th><th>Zweck</th></tr>
       <tr><td>createRelayClient</td><td>(options: RelayClientOptions) → Result&lt;RelayClient&gt;</td><td>Prüft und kopiert die Optionen (<code>bad-options</code>, <code>bad-key</code>, <code>bad-key-id</code>, <code>bad-pem</code> statt eines Wurfs) und macht den Client. Kein Netzaufruf, noch keine Signatur</td></tr>
       <tr><td>RelayClient.stamp</td><td>(hash: Uint8Array, options?: { mode?: 'normal' | 'solo', signal?: AbortSignal, service?: string }) → Promise&lt;ClientResult&lt;Evidence&gt;&gt;</td><td>Signiert (<code>signRelayRequest</code>, bei jedem Versuch mit neuem <code>jti</code>), sendet, liest die Antwort und prüft das Token gegen <code>trust</code> mit <strong>Pflicht-<code>minGenTime</code></strong> (Sendezeit minus <code>minGenTimeSlackMs</code>); gibt nur nach bestandener Prüfung einen Beleg. Uhrabgleich über <code>Date</code> einmal je Aufruf, <code>429</code>/<code>503 busy</code> mit <code>Retry-After</code>, Failover bei Netzfehler, <code>500</code>, <code>502</code>, <code>503</code> (anderer Code als <code>busy</code>) und <code>504</code>. Wirft nie</td></tr>
+      <tr><td>RelayClient.pausedForMs</td><td>() → number</td><td>Millisekunden, die die Pause nach einem <code>429</code>/<code>503 busy</code> eines früheren Aufrufs noch dauert (0: keine); bis dahin ist <code>stamp</code> sofort <code>paused</code>, ohne zu senden</td></tr>
       <tr><td>readEvidence</td><td>(input: unknown) → Result&lt;Evidence&gt;</td><td>Liest einen Beleg streng (Objekt oder JSON-Text) in eine frische Kopie; <code>bad-evidence</code> mit dem Feld in <code>detail</code>. Wirft nie</td></tr>
       <tr><td>serializeEvidence</td><td>(evidence: Evidence) → Result&lt;string&gt;</td><td>Kanonischer JSON-Text mit fester Feldreihenfolge, ohne Leerraum; liest die Eingabe wie <code>readEvidence</code>. Wirft nie</td></tr>
       <tr><td>verifyEvidence</td><td>(evidence: unknown, hash: Uint8Array, options: VerifyEvidenceOptions) → Promise&lt;Result&lt;VerifiedEvidence&gt;&gt;</td><td>Prüft einen Beleg ohne Relay und ohne Netz: Optionen, Form (<code>bad-evidence</code>), Hash des Belegs gegen den übergebenen (<code>evidence-hash-mismatch</code>), Token mit <code>verifyTimestampToken</code> oder (<code>kind: 'batch'</code>) <code>verifyBatchedTimestamp</code>, dann Abgleich von <code>genTime</code>, <code>policy</code>, <code>signerNotAfter</code>. Wirft nie</td></tr>
@@ -205,6 +206,8 @@
       <tr><td>maxAttempts</td><td>ganze Zahl 1 bis 10, optional</td><td>Höchstens so viele Sendungen je Dienst bei <code>429</code> und <code>503 busy</code> (Vorgabe 3); die eine Uhrkorrektur zählt nicht</td></tr>
       <tr><td>minGenTimeSlackMs</td><td>Zahl 0 bis 3600000, optional</td><td>Abstand unter der Sendezeit für <code>minGenTime</code> (Vorgabe 60000, wie <code>genTimeSlackMs</code> des Relays)</td></tr>
       <tr><td>maxClockOffsetMs</td><td>Zahl 0 bis 86400000, optional</td><td>Größter Uhrversatz, den der <code>Date</code>-Kopf eines <code>401</code> korrigieren darf (Vorgabe 65000); mehr bleibt <code>401</code>, damit ein Relay die Frischeprüfung nicht beliebig verschieben kann</td></tr>
+      <tr><td>monoNow</td><td>() → Zahl, optional</td><td>Monotone Uhr in Millisekunden (Vorgabe <code>performance.now</code>): misst Gesamtfrist und Pause nach <code>429</code>, damit eine verstellte Geräteuhr keine von beiden dehnt; keine endliche Zahl: <code>bad-options</code></td></tr>
+      <tr><td>attemptTimeoutMs</td><td>Zahl 1000 bis 600000, optional</td><td>Frist <strong>einer</strong> Sendung (mit Antwort); läuft sie ab, kommt der nächste Dienst (Failover wie bei einem Netzfehler, Ergebnis am Ende <code>timeout</code>). Vorgabe: keine (nur <code>timeoutMs</code>)</td></tr>
     </table>
     <h3>ClientFailure (Fehlerform von <code>stamp</code>)</h3>
     <table>
@@ -214,8 +217,9 @@
       <tr><td>reason: network-error</td><td></td><td>Kein Dienst hat geantwortet (<code>fetch</code> ist fehlgeschlagen)</td></tr>
       <tr><td>reason: timeout</td><td></td><td><code>timeoutMs</code> ist abgelaufen</td></tr>
       <tr><td>reason: aborted</td><td></td><td>Das <code>signal</code> des Aufrufers hat abgebrochen</td></tr>
+      <tr><td>reason: paused</td><td></td><td>Die Pause nach einem <code>429</code>/<code>503 busy</code>, das einen früheren Aufruf beendet hat, läuft noch (<code>Retry-After</code>, höchstens 3600 s, auf der monotonen Uhr); nichts wurde gesendet; <code>detail</code> nennt die Sekunden</td></tr>
       <tr><td>reason: relay-error</td><td></td><td>Das Relay hat mit einem Fehler geantwortet (<code>status</code>, <code>code</code>); <code>detail</code> ist der <code>reason</code> einer <code>502</code>-Antwort oder die Dienstkennung</td></tr>
-      <tr><td>reason: bad-response</td><td></td><td>Eine <code>200</code>-Antwort, die keine Antwort des Relays ist (kein JSON, falsche Form, andere Dienstkennung, Token nicht base64url, zu groß)</td></tr>
+      <tr><td>reason: bad-response</td><td></td><td>Eine <code>200</code>-Antwort, die keine Antwort des Relays ist (kein JSON, falsche Form, andere Dienstkennung, Token nicht base64url, zu groß, <code>serial</code> der Antwort weicht von der des geprüften Tokens ab)</td></tr>
       <tr><td>status, code</td><td>Zahl, Text; optional</td><td>HTTP-Status und <code>error</code> der letzten Fehlerantwort des Relays (bei <code>relay-error</code>)</td></tr>
     </table>
     <h3>Evidence (Beleg, Fassung 1)</h3>
@@ -251,6 +255,7 @@
       <tr><td>DEFAULT_MAX_CLOCK_OFFSET_MS</td><td>65000</td><td>Vorgabe von <code>maxClockOffsetMs</code></td></tr>
       <tr><td>MAX_SERVICES</td><td>16</td><td>Einträge von <code>services</code></td></tr>
       <tr><td>MAX_TRUST</td><td>64</td><td>Einträge von <code>trust</code></td></tr>
+      <tr><td>MAX_PAUSE_MS</td><td>3600000</td><td>Längste Pause über Aufrufe hinweg nach dem Wort des Relays (<code>Retry-After</code>); eine längere Restzeit (monotone Uhr zurückgesprungen) wird vergessen</td></tr>
     </table>
 
     <h2>4 Fehlercodes</h2>

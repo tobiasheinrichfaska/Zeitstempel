@@ -114,6 +114,7 @@ describe('docs and code agree on the client', () => {
       'network-error': true,
       timeout: true,
       aborted: true,
+      paused: true,
       'relay-error': true,
       'bad-response': true,
     };
@@ -143,6 +144,8 @@ describe('docs and code agree on the client', () => {
       'maxAttempts',
       'minGenTimeSlackMs',
       'maxClockOffsetMs',
+      'monoNow',
+      'attemptTimeoutMs',
     ]) {
       expect(model, name).toContain(`<tr><td>${name}</td>`);
       expect(doc, name).toContain(`\`${name}\``);

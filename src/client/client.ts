@@ -59,6 +59,16 @@ export interface RelayClientOptions {
   maxClockOffsetMs?: number;
   /** Random bytes for the `jti` of each head: `(length) => Uint8Array`. Default `crypto.getRandomValues`. */
   random?: (length: number) => Uint8Array;
+  /**
+   * A **monotonic** clock in milliseconds (default `performance.now`): measures the deadline and the pause after a
+   * `429`, so that a device clock set back or forward stretches neither.
+   */
+  monoNow?: () => number;
+  /**
+   * Deadline of ONE send (answer included), 1000 to 600000 ms; when it runs out the next service is tried (failover,
+   * like a network error). Default: none (only `timeoutMs`).
+   */
+  attemptTimeoutMs?: number;
 }
 
 export interface StampOptions {
@@ -78,6 +88,8 @@ export type ClientReason =
   | 'timeout'
   /** The caller's `signal` aborted. */
   | 'aborted'
+  /** A pause after a `429` (or `503 busy`) of an earlier call is still running: nothing was sent. */
+  | 'paused'
   /** The relay answered with an error: `status` and `code` (its `error` text) say which. */
   | 'relay-error'
   /** A 200 whose body is no relay answer. */
@@ -96,6 +108,8 @@ export type ClientResult<T> = { ok: true; value: T } | ClientFailure;
 
 export interface RelayClient {
   stamp(hash: Uint8Array, options?: StampOptions): Promise<ClientResult<Evidence>>;
+  /** Milliseconds left of the pause after a `429`/`503 busy` that ended an earlier call (0 when none). */
+  pausedForMs(): number;
 }
 
 const KEY_ID = /^[a-z][a-z0-9-]{0,31}$/;
@@ -117,6 +131,8 @@ export const CLIENT_LIMITS = {
   DEFAULT_MAX_CLOCK_OFFSET_MS: 65_000,
   MAX_SERVICES: 16,
   MAX_TRUST: 64,
+  /** Longest pause the client takes at the relay's word (`Retry-After`) across calls. */
+  MAX_PAUSE_MS: 3_600_000,
 } as const;
 
 const OPTION_FIELDS = [
@@ -133,6 +149,8 @@ const OPTION_FIELDS = [
   'minGenTimeSlackMs',
   'maxClockOffsetMs',
   'random',
+  'monoNow',
+  'attemptTimeoutMs',
 ] as const;
 const REQUIRED_FIELDS = ['relayUrl', 'audience', 'keyId', 'privateKey', 'trust', 'services'];
 
@@ -205,7 +223,7 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
       }
       services.push(id);
     }
-    for (const name of ['fetch', 'now', 'random'] as const) {
+    for (const name of ['fetch', 'now', 'random', 'monoNow'] as const) {
       if (name in o && typeof o[name] !== 'function') return fail('bad-options', name);
     }
     const timeoutMs = 'timeoutMs' in o ? o.timeoutMs : CLIENT_LIMITS.DEFAULT_TIMEOUT_MS;
@@ -217,6 +235,10 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
     const maxOffset =
       'maxClockOffsetMs' in o ? o.maxClockOffsetMs : CLIENT_LIMITS.DEFAULT_MAX_CLOCK_OFFSET_MS;
     if (!inRange(maxOffset, 0, 86_400_000, false)) return fail('bad-options', 'maxClockOffsetMs');
+    const attemptTimeoutMs = 'attemptTimeoutMs' in o ? o.attemptTimeoutMs : null;
+    if (attemptTimeoutMs !== null && !inRange(attemptTimeoutMs, 1000, 600_000, false)) {
+      return fail('bad-options', 'attemptTimeoutMs');
+    }
     const fetchFn: FetchLike =
       'fetch' in o
         ? (o.fetch as FetchLike)
@@ -230,6 +252,7 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
       'random' in o
         ? (o.random as (length: number) => Uint8Array)
         : (n: number) => globalThis.crypto.getRandomValues(new Uint8Array(n));
+    const mono = 'monoNow' in o ? (o.monoNow as () => number) : () => performance.now();
     const state = new Session({
       origin,
       audience: o.audience,
@@ -240,12 +263,17 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
       fetchFn,
       clock,
       random,
+      mono,
+      attemptTimeoutMs,
       timeoutMs,
       maxAttempts,
       slack,
       maxOffset,
     });
-    return ok({ stamp: (hash, stampOptions) => state.stamp(hash, stampOptions) });
+    return ok({
+      stamp: (hash, stampOptions) => state.stamp(hash, stampOptions),
+      pausedForMs: () => state.pausedForMs(),
+    });
   } catch {
     return fail('bad-options'); // not reachable by design
   }
@@ -261,6 +289,8 @@ interface Config {
   fetchFn: FetchLike;
   clock: () => number;
   random: (length: number) => Uint8Array;
+  mono: () => number;
+  attemptTimeoutMs: number | null;
   timeoutMs: number;
   maxAttempts: number;
   slack: number;
@@ -292,6 +322,8 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 class Session {
   /** What the relay's `Date` taught about the client's clock; kept for later calls. */
   private offsetMs = 0;
+  /** End of the pause after a `429`/`503 busy` that ended a call, on the monotonic clock. */
+  private blockedUntil = -Infinity;
 
   private readonly c: Config;
 
@@ -303,6 +335,26 @@ class Session {
     const t = this.c.clock();
     if (typeof t !== 'number' || !Number.isFinite(t)) throw new BadClock();
     return Math.floor(t) + offset;
+  }
+
+  private mono(): number {
+    const t = this.c.mono();
+    if (typeof t !== 'number' || !Number.isFinite(t)) throw new BadClock('monoNow');
+    return t;
+  }
+
+  pausedForMs(): number {
+    try {
+      const left = this.blockedUntil - this.mono();
+      // longer than the longest pause ever set: the monotonic clock went back (a wrong injected one): forget it
+      if (left > CLIENT_LIMITS.MAX_PAUSE_MS) {
+        this.blockedUntil = -Infinity;
+        return 0;
+      }
+      return Math.max(0, Math.ceil(left));
+    } catch {
+      return 0;
+    }
   }
 
   async stamp(hashInput: Uint8Array, stampOptions?: StampOptions): Promise<ClientResult<Evidence>> {
@@ -348,7 +400,16 @@ class Session {
     } catch {
       return failure('bad-options', { detail: 'signal' }); // a signal of this realm that misbehaves
     }
-    const startedAt = performance.now();
+    let startedAt: number;
+    try {
+      startedAt = this.mono();
+      const paused = this.pausedForMs();
+      if (paused > 0) {
+        return failure('paused', { detail: `retry in ${Math.ceil(paused / 1000)} s` });
+      }
+    } catch {
+      return failure('bad-options', { detail: 'monoNow' });
+    }
     const timer = setTimeout(() => control.abort(), this.c.timeoutMs);
     try {
       const run = await this.run(hash, mode, order, control.signal, startedAt);
@@ -357,7 +418,9 @@ class Session {
       }
       return run;
     } catch (e) {
-      if (e instanceof BadClock) return failure('bad-options', { detail: 'now' });
+      if (e instanceof BadClock) {
+        return failure('bad-options', { detail: e.message === 'monoNow' ? 'monoNow' : 'now' });
+      }
       return failure(control.signal.aborted ? cause : 'network-error', { detail: 'unexpected' });
     } finally {
       clearTimeout(timer);
@@ -414,6 +477,23 @@ class Session {
             signed.reason,
             signed.detail === undefined ? {} : { detail: signed.detail },
           );
+        // the deadline of this one send (`attemptTimeoutMs`): its end is a failover like a network error
+        const attempt = new AbortController();
+        let attemptTimedOut = false;
+        const onOuter = () => attempt.abort();
+        signal.addEventListener('abort', onOuter, { once: true });
+        const attemptTimer =
+          c.attemptTimeoutMs === null
+            ? undefined
+            : setTimeout(() => {
+                attemptTimedOut = true;
+                attempt.abort();
+              }, c.attemptTimeoutMs);
+        const endAttempt = () => {
+          clearTimeout(attemptTimer);
+          signal.removeEventListener('abort', onOuter);
+        };
+        const timedOutHere = () => attemptTimedOut && !signal.aborted;
         let res: ResponseLike;
         let status: number;
         try {
@@ -421,7 +501,7 @@ class Session {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Zeitstempel-Auth': signed.value },
             body,
-            signal,
+            signal: attempt.signal,
             redirect: 'error',
             credentials: 'omit',
             cache: 'no-store',
@@ -429,16 +509,29 @@ class Session {
           status = res.status;
           if (typeof status !== 'number') throw new TypeError('status');
         } catch {
+          endAttempt();
           if (signal.aborted) return failure('network-error');
-          last = failure('network-error', { detail: service });
+          last = timedOutHere()
+            ? failure('timeout', { detail: service })
+            : failure('network-error', { detail: service });
           break; // the next service
         }
         if (fixPending && status !== 401) this.offsetMs = offset;
         if (status === 200) {
           const verified = await this.finish(res, hash, service, sentMs, offset, mode);
+          endAttempt();
+          if (!verified.ok && timedOutHere()) {
+            last = failure('timeout', { detail: service });
+            break; // the body did not come in time: the next service
+          }
           return verified;
         }
         const error = await readError(res);
+        endAttempt();
+        if (timedOutHere()) {
+          last = failure('timeout', { detail: service });
+          break;
+        }
         const refused = failure('relay-error', {
           status,
           ...(error.code === undefined ? {} : { code: error.code }),
@@ -456,10 +549,14 @@ class Session {
           continue;
         }
         if (status === 429 || (status === 503 && error.code === 'busy')) {
-          if (attempts >= c.maxAttempts) return refused;
-          const wait = retryAfterMs(res, c.timeoutMs);
-          const left = c.timeoutMs - (performance.now() - startedAt);
-          if (wait >= left) return refused; // would not be answered in time anyway
+          const asked = retryAfterMs(res, () => this.now(0));
+          const wait = Math.min(asked, c.timeoutMs);
+          const left = c.timeoutMs - (this.mono() - startedAt);
+          if (attempts >= c.maxAttempts || wait >= left) {
+            // the call ends on the relay's word: no later call sends before the pause is over
+            this.blockedUntil = this.mono() + Math.min(asked, CLIENT_LIMITS.MAX_PAUSE_MS);
+            return refused;
+          }
           await pause(wait, signal);
           continue;
         }
@@ -517,6 +614,10 @@ class Session {
             options,
           );
     if (!verified.ok) return verified;
+    // the relay's own claim of the serial must name this token (a mixed-up answer is not taken)
+    if ('serial' in f && f.serial !== verified.value.serial) {
+      return failure('bad-response', { detail: 'serial' });
+    }
     const evidence = readEvidence({
       v: 1,
       kind,
@@ -550,12 +651,22 @@ async function readError(res: ResponseLike): Promise<{ code?: string; reason?: s
   }
 }
 
-/** `Retry-After` in seconds as milliseconds, at most `capMs`; missing or unreadable: one second. */
-function retryAfterMs(res: ResponseLike, capMs: number): number {
+/**
+ * `Retry-After` as milliseconds: whole seconds, or an HTTP date (RFC 9110) measured against the answer's own `Date`
+ * (else the client's clock), rounded up to whole seconds. Missing, unreadable or a date in the past: one second.
+ */
+function retryAfterMs(res: ResponseLike, clockNow: () => number): number {
   try {
-    const value = res.headers.get('Retry-After');
-    if (value !== null && /^\d{1,6}$/.test(value.trim())) {
-      return Math.min(Number(value.trim()) * 1000, capMs);
+    const raw = res.headers.get('Retry-After');
+    const value = typeof raw === 'string' && raw.length <= 64 ? raw.trim() : '';
+    if (/^\d{1,6}$/.test(value)) return Number(value) * 1000;
+    if (value !== '' && /[a-z]/i.test(value)) {
+      const at = Date.parse(value);
+      const dateHeader = res.headers.get('Date');
+      const relayNow =
+        typeof dateHeader === 'string' && dateHeader.length <= 64 ? Date.parse(dateHeader) : NaN;
+      const base = Number.isFinite(relayNow) ? relayNow : clockNow();
+      if (Number.isFinite(at) && at > base) return Math.ceil((at - base) / 1000) * 1000;
     }
   } catch {
     /* unreadable */
