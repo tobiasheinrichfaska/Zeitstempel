@@ -85,6 +85,7 @@ describe('relay settings', () => {
       only: [],
       authOff: false,
       keysFile: '',
+      audience: '',
       batchMax: 128,
     });
     expect(readSettings({})).toEqual({
@@ -95,6 +96,7 @@ describe('relay settings', () => {
       only: [],
       authOff: false,
       keysFile: '',
+      audience: '',
       batchMax: 128,
     });
     expect(readSettings({ RELAY_AUTH: 'off' }).authOff).toBe(true);

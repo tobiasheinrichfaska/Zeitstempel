@@ -2,12 +2,12 @@ import { generateKeyPairSync, verify } from 'node:crypto';
 import { signRelayRequest, toBase64Url } from '../src/index.ts';
 import * as lib from '../src/index.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
-import { authMessage, makeTestKey } from './auth-helpers.ts';
+import { TEST_AUDIENCE, authMessage, makeTestKey } from './auth-helpers.ts';
 
 const KEY = makeTestKey('app-1');
 const BODY = new TextEncoder().encode('{"hash":"x"}');
 const NOW_MS = Date.parse('2026-11-23T13:10:00.900Z');
-const TS = Math.floor(NOW_MS / 1000);
+const TS = Math.floor(NOW_MS); // `ts` of the head: whole milliseconds
 
 const input = (over: Record<string, unknown> = {}) => ({
   privateKey: KEY.privateKey,
@@ -16,15 +16,24 @@ const input = (over: Record<string, unknown> = {}) => ({
   path: '/v1/stamp/freetsa',
   body: BODY,
   nowMs: NOW_MS,
+  audience: TEST_AUDIENCE,
   ...over,
 });
 
 /** Does node:crypto accept the header's signature for this message under the test key? */
-function accepts(header: string, method: string, path: string, ts: number, body: Uint8Array) {
-  const sig = Buffer.from(header.split('.')[3]!, 'base64url');
+function accepts(
+  header: string,
+  method: string,
+  path: string,
+  ts: number,
+  body: Uint8Array,
+  audience: string = TEST_AUDIENCE,
+) {
+  const parts = header.split('.');
+  const sig = Buffer.from(parts[4]!, 'base64url');
   return verify(
     'sha256',
-    Buffer.from(authMessage(method, path, ts, body)),
+    Buffer.from(authMessage(method, path, ts, body, parts[3]!, audience)),
     { key: KEY.object, dsaEncoding: 'ieee-p1363' },
     sig,
   );
@@ -35,27 +44,90 @@ describe('signRelayRequest', () => {
     expect('deriveVerifier' in lib).toBe(false);
     expect('generateAuthKeyPair' in lib).toBe(false); // making a key pair is a tool, not the library
   });
-  it('makes a v2 header whose signature node:crypto verifies over the specified message', async () => {
+  it('makes a v3 header whose signature node:crypto verifies over the specified message', async () => {
     const r = await signRelayRequest(input());
     if (!r.ok) throw new Error(r.reason);
-    const [version, kid, ts, sig] = r.value.split('.');
-    expect([version, kid, ts]).toEqual(['v2', 'app-1', String(TS)]);
+    const [version, kid, ts, jti, sig] = r.value.split('.');
+    expect([version, kid, ts]).toEqual(['v3', 'app-1', String(TS)]);
+    expect(jti).toMatch(/^[A-Za-z0-9_-]{22}$/); // 16 bytes
+    expect(Buffer.from(jti!, 'base64url')).toHaveLength(16);
+    expect(Buffer.from(jti!, 'base64url').toString('base64url')).toBe(jti); // canonical
     expect(sig).toMatch(/^[A-Za-z0-9_-]{86}$/); // 64 bytes, r || s
     expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY)).toBe(true);
   });
-  it('takes the time from the parameter (seconds, rounded down)', async () => {
+  it('takes the time from the parameter (milliseconds, rounded down)', async () => {
     const later = await signRelayRequest(input({ nowMs: NOW_MS + 1000 }));
     if (!later.ok) throw new Error(later.reason);
-    expect(later.value.split('.')[2]).toBe(String(TS + 1));
-    expect(accepts(later.value, 'POST', '/v1/stamp/freetsa', TS + 1, BODY)).toBe(true);
+    expect(later.value.split('.')[2]).toBe(String(TS + 1000));
+    expect(accepts(later.value, 'POST', '/v1/stamp/freetsa', TS + 1000, BODY)).toBe(true);
+    const frac = await signRelayRequest(input({ nowMs: 1_800_000_000_123.9 }));
+    if (!frac.ok) throw new Error(frac.reason);
+    expect(frac.value.split('.')[2]).toBe('1800000000123');
+  });
+  it('signs the audience: the signature is no good for another audience, and a bad audience is bad-options', async () => {
+    const r = await signRelayRequest(input({ audience: 'https://relay.one' }));
+    if (!r.ok) throw new Error(r.reason);
+    expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY, 'https://relay.one')).toBe(true);
+    expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY, 'https://relay.two')).toBe(
+      false,
+    );
+    expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY, TEST_AUDIENCE)).toBe(false);
+    for (const audience of [
+      '',
+      'a'.repeat(129),
+      'has space',
+      'tab\t',
+      'new\nline',
+      'ümlaut',
+      5,
+      null,
+      undefined,
+    ]) {
+      expect(await signRelayRequest(input({ audience })), String(audience)).toEqual({
+        ok: false,
+        reason: 'bad-options',
+      });
+    }
+    expect((await signRelayRequest(input({ audience: 'a'.repeat(128) }))).ok).toBe(true);
+    expect((await signRelayRequest(input({ audience: '!' }))).ok).toBe(true);
+  });
+  it('makes a fresh random jti per call; a given jti (16 bytes) is used as it is; any other jti is bad-options', async () => {
+    const a = await signRelayRequest(input());
+    const b = await signRelayRequest(input());
+    if (!a.ok || !b.ok) throw new Error('sign');
+    expect(a.value.split('.')[3]).not.toBe(b.value.split('.')[3]); // same everything else
+    const fixed = new Uint8Array(16).fill(7);
+    const c = await signRelayRequest(input({ jti: fixed }));
+    if (!c.ok) throw new Error(c.reason);
+    expect(c.value.split('.')[3]).toBe(Buffer.from(fixed).toString('base64url'));
+    expect(accepts(c.value, 'POST', '/v1/stamp/freetsa', TS, BODY)).toBe(true);
+    for (const jti of [new Uint8Array(15), new Uint8Array(17), 'x'.repeat(22), [1, 2], null]) {
+      expect(await signRelayRequest(input({ jti })), String(jti)).toEqual({
+        ok: false,
+        reason: 'bad-options',
+      });
+    }
+    expect((await signRelayRequest(input({ jti: undefined }))).ok).toBe(true);
+  });
+  it('takes the jti from crypto.getRandomValues (WebCrypto), no node:', async () => {
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues');
+    try {
+      expect((await signRelayRequest(input())).ok).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![0]).toHaveLength(16);
+    } finally {
+      spy.mockRestore();
+    }
   });
   it('takes fractions of milliseconds and the lower bound 1e11, but not seconds', async () => {
     const frac = await signRelayRequest(input({ nowMs: NOW_MS + 0.25 }));
     expect(frac.ok).toBe(true);
     expect((await signRelayRequest(input({ nowMs: 1e11 }))).ok).toBe(true);
-    // the largest accepted time gives a 12 digit `ts`, which the relay's header format still reads
+    // the largest accepted time gives a 15 digit `ts`, the lowest a 12 digit one: the relay's header format reads both
     const top = await signRelayRequest(input({ nowMs: 1e15 - 1 }));
-    expect(top.ok && /^v2\.[a-z0-9-]+\.999999999999\./.test(top.value)).toBe(true);
+    expect(top.ok && /^v3\.[a-z0-9-]+\.999999999999999\./.test(top.value)).toBe(true);
+    const low = await signRelayRequest(input({ nowMs: 1e11 }));
+    expect(low.ok && /^v3\.[a-z0-9-]+\.100000000000\./.test(low.value)).toBe(true);
     expect(await signRelayRequest(input({ nowMs: NOW_MS / 1000 }))).toEqual({
       ok: false,
       reason: 'bad-options',
@@ -69,13 +141,19 @@ describe('signRelayRequest', () => {
     expect(accepts(r.value, 'POST', '/v1/stamp/sectigo', TS, BODY)).toBe(false);
     expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS + 1, BODY)).toBe(false);
     expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, other)).toBe(false);
+    // the jti is signed too: a head with another jti has no valid signature
+    const parts = r.value.split('.');
+    parts[3] = Buffer.alloc(16, 9).toString('base64url');
+    expect(accepts(parts.join('.'), 'POST', '/v1/stamp/freetsa', TS, BODY)).toBe(false);
   });
   it('is signed by the private key only: another key does not verify', async () => {
     const r = await signRelayRequest(input());
     if (!r.ok) throw new Error(r.reason);
     const stranger = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey;
-    const sig = Buffer.from(r.value.split('.')[3]!, 'base64url');
-    const message = Buffer.from(authMessage('POST', '/v1/stamp/freetsa', TS, BODY));
+    const sig = Buffer.from(r.value.split('.')[4]!, 'base64url');
+    const message = Buffer.from(
+      authMessage('POST', '/v1/stamp/freetsa', TS, BODY, r.value.split('.')[3]!),
+    );
     expect(verify('sha256', message, { key: stranger, dsaEncoding: 'ieee-p1363' }, sig)).toBe(
       false,
     );
@@ -117,7 +195,7 @@ describe('signRelayRequest', () => {
       expect(key.extractable).toBe(false);
       const r = await signRelayRequest(input({ privateKey: key }));
       if (!r.ok) throw new Error(r.reason);
-      expect(r.value.split('.').slice(0, 3)).toEqual(['v2', 'app-1', String(TS)]);
+      expect(r.value.split('.').slice(0, 3)).toEqual(['v3', 'app-1', String(TS)]);
       expect(accepts(r.value, 'POST', '/v1/stamp/freetsa', TS, BODY)).toBe(true);
     });
     it('uses the key as it is: nothing is imported or exported, and the result holds only the header', async () => {
@@ -252,7 +330,7 @@ describe('signRelayRequest', () => {
       [{ nowMs: Number.MAX_VALUE }, 'bad-options'], // audit 2, B4: an upper bound too
       [{ nowMs: 1e300 }, 'bad-options'],
       [{ nowMs: 1e17 }, 'bad-options'],
-      [{ nowMs: 1e15 }, 'bad-options'], // ts of 13 digits: the relay's header takes 12
+      [{ nowMs: 1e15 }, 'bad-options'], // ts of 16 digits: the relay's header takes 15 at most
       [{ nowMs: Number.NEGATIVE_INFINITY }, 'bad-options'],
       [{ nowMs: 1e11 - 1 }, 'bad-options'],
     ];

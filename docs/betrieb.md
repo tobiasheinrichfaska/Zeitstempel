@@ -23,8 +23,8 @@ einem Menschen sicherheitsgeprüft (`SECURITY.md`).
 
 Voraussetzungen, vor dem ersten echten Stempel:
 
-- [ ] **Genau eine Instanz** je Schlüsseldatei. Zwei Instanzen verdoppeln die Budgets und lassen einen mitgeschnittenen
-      Kopf zweimal gelten (`relay.md`, „Betrieb hinter einem Reverse-Proxy“). Kein zweites Relay „zur Sicherheit“,
+- [ ] **Genau eine Instanz** je Schlüsseldatei und `RELAY_AUDIENCE`. Zwei Instanzen verdoppeln die Budgets und lassen einen
+      mitgeschnittenen Kopf zweimal gelten (bei gleicher Audience; verschiedene Audiences trennen sie, `relay.md`, „Zugangsschlüssel“) (`relay.md`, „Betrieb hinter einem Reverse-Proxy“). Kein zweites Relay „zur Sicherheit“,
       kein Rolling-Update mit zwei laufenden Instanzen.
 - [ ] **Zeitabgleich mit Slew.** Die Uhr des Rechners wird laufend abgeglichen (chrony oder systemd-timesyncd) und
       **läuft nicht sprunghaft**: nach dem Start nur sanftes Angleichen (bei chrony `makestep` nur für die ersten
@@ -46,7 +46,9 @@ Voraussetzungen, vor dem ersten echten Stempel:
       oder Andere schreiben können: Warnung ernst nehmen, nicht übergehen.
 - [ ] **Überwacher** (systemd oder Docker mit Neustartrichtlinie) startet das Relay auch nach Exit-Code 0 neu
       (`Restart=always`, Docker `--restart=always`). Sonst bleibt das Relay nach `restartAfter` aus.
-- [ ] **Einstellungen:** `RELAY_SERVICES=freetsa`, `RELAY_KEYS_FILE`, `RELAY_ORIGINS` (genau die Herkunft der App),
+- [ ] **Einstellungen:** `RELAY_SERVICES=freetsa`, `RELAY_KEYS_FILE`, `RELAY_AUDIENCE` (der Name dieses Relays im signierten Kopf, üblich seine öffentliche
+      Herkunft; **je Instanz und Umgebung eine eigene**; die App trägt genau diese Zeichenkette bei `signRelayRequest` als `audience` ein),
+      `RELAY_ORIGINS` (genau die Herkunft der App),
       `RELAY_AUTH` nicht gesetzt, `RELAY_ALLOW_PLAIN_HTTP` nicht gesetzt (siehe `deploy/relay.env.example`).
 - [ ] **Beobachtung** der Zähler und Alarmkriterien (unten) eingerichtet.
 - [ ] **Der erste Lauf von Hand gegen FreeTSA** hat geklappt (nächster Abschnitt).
@@ -62,7 +64,7 @@ Anfrage je Dienst und Lauf, zwischen zwei Läufen mindestens eine Minute):
 own verification of the returned token: OK` (MT-02).
 3. Das Relay selbst starten (systemd oder Docker), `GET /health` über den Proxy abrufen (es prüft **keinen** Dienst,
    nur dass das Relay antwortet), dann mit einem Schlüssel der App **einen** Stempel holen
-   (`npm run probe -- --service freetsa --relay https://relay.example`, `RELAY_PRIVATE_KEY` und `RELAY_KEY_ID` nur in der
+   (`npm run probe -- --service freetsa --relay https://relay.example`, `RELAY_PRIVATE_KEY`, `RELAY_KEY_ID` und `RELAY_AUDIENCE` (wie am Relay) nur in der
    Umgebung, nie auf der Kommandozeile; `manual_tests/01_dienste.md`, MT-02 und MT-03).
 4. In der nächsten Zeile `counts` im Protokoll stehen `stamped` ≥ 1 und kein `upstream-invalid`.
 
@@ -194,7 +196,7 @@ sieht Adresse und Zeit jeder Anfrage; das ist Sache des Betreibers, `relay.md`, 
 
 ## Update
 
-1. Vorher beachten: **Relay- und App-Stand gehören zusammen** (Kopfform `v2`, Kennungen der Dienste
+1. Vorher beachten: **Relay- und App-Stand gehören zusammen** (Kopfform `v3` mit `RELAY_AUDIENCE`, Kennungen der Dienste
    in `services.json`, Anker, Regeln der Prüfung). Eine App mit alten Ankern meldet `untrusted-chain`, ein Relay mit
    alten Ankern `upstream-invalid`.
 2. Repository auf den gewünschten Stand bringen (oder Image neu bauen, mit neuem Tag; den alten Tag für den Rückweg behalten).

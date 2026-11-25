@@ -6,6 +6,8 @@
 //                            on purpose, see docs/dienste.md for the terms of use of each service)
 //   RELAY_KEYS_FILE          path of the key file (ids and public keys; no secret, but only the operator may
 //                            write it; never in the repo); required
+//   RELAY_AUDIENCE           the name of this relay inside the signed head (printable ASCII without a space, 1 to 128
+//                            characters, e.g. its public origin); required with RELAY_KEYS_FILE, differs per instance
 //   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
 //   RELAY_HOST               address to listen on (default: 127.0.0.1, behind a reverse proxy on the same
 //                            machine; a container or another machine needs RELAY_HOST=0.0.0.0 on purpose;
@@ -78,6 +80,12 @@ export function readSettings(env: NodeJS.ProcessEnv) {
   if (authOff && (env.RELAY_KEYS_FILE ?? '') !== '') {
     throw new Error('RELAY_AUTH=off und RELAY_KEYS_FILE schließen sich aus');
   }
+  const audience = env.RELAY_AUDIENCE ?? '';
+  if (audience !== '' && !/^[\x21-\x7e]{1,128}$/.test(audience)) {
+    throw new Error(
+      'RELAY_AUDIENCE: ungültig (druckbares ASCII ohne Leerzeichen, 1 bis 128 Zeichen erwartet)',
+    );
+  }
   const hostEnv = (env.RELAY_HOST ?? '').trim();
   if (authOff && hostEnv !== '' && !LOOPBACK_HOSTS.includes(hostEnv)) {
     throw new Error('RELAY_AUTH=off erlaubt nur eine Loopback-Adresse in RELAY_HOST');
@@ -142,6 +150,7 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     only,
     authOff,
     keysFile: env.RELAY_KEYS_FILE ?? '',
+    audience,
   };
 }
 
@@ -263,6 +272,11 @@ export function readConfig(
       'RELAY_KEYS_FILE fehlt (ohne Schlüsseldatei startet das Relay nicht; nur für die lokale Entwicklung: RELAY_AUTH=off)',
     );
   }
+  if (settings.audience === '') {
+    throw new Error(
+      'RELAY_AUDIENCE fehlt (mit einer Schlüsseldatei braucht das Relay seinen Namen für den signierten Kopf, z. B. seine öffentliche Herkunft; nur für die lokale Entwicklung: RELAY_AUTH=off)',
+    );
+  }
   const keys = readKeys(settings.keysFile, knownServices);
   const warning = checkPermissions(settings.keysFile);
   const warnings = warning === null ? [] : [warning];
@@ -348,6 +362,7 @@ export function buildRelayOptions(
     random: deps.random,
     now: deps.now,
     keys,
+    ...(keys === 'off' ? {} : { audience: settings.audience }),
     upstreamAuth,
     ...(settings.batchMs === undefined
       ? {}

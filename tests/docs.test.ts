@@ -5,7 +5,7 @@ import * as lib from '../src/index.ts';
 import { DER_LIMITS } from '../src/lib/der.ts';
 import { BATCH_LIMITS } from '../src/lib/batch.ts';
 import { VERIFY_LIMITS } from '../src/lib/verify.ts';
-import { RELAY_LIMITS } from '../relay/limits.ts';
+import { AUTH_START_SLACK_MS, RELAY_LIMITS } from '../relay/limits.ts';
 
 const read = (name: string) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
 const model = read('data-model.html');
@@ -313,7 +313,8 @@ describe('owner decisions: roots as anchors, RELAY_SERVICES required, clock skew
     expect(doc).toContain('nowMs = Date.now() + versatz');
     expect(doc).toContain('genau einmal');
     expect(doc).toContain('liegt es am Schlüssel oder an der Kennung, nicht an der Uhr');
-    expect(doc).toContain('mindestens 1 s warten');
+    expect(doc).toContain('nicht** zu warten, bevor man erneut signiert');
+    expect(doc).not.toContain('mindestens 1 s warten');
     expect(relayDoc).toContain('stampWithClockFix');
   });
 });
@@ -563,7 +564,7 @@ describe('key types, solo stamps and the key file read again are written down wh
   });
   it('relay.md: one relay instance per key file, and the proxy limit per address stays far below the key budget', () => {
     const doc = flat(relayDoc);
-    expect(doc).toContain('**Genau eine Relay-Instanz je Schlüsseldatei.**');
+    expect(doc).toContain('**Genau eine Relay-Instanz je Schlüsseldatei und Audience.**');
     expect(doc).toContain('nicht den Host');
     expect(doc).toContain(
       '**Das Limit je Adresse muss deutlich unter dem Budget eines Schlüssels liegen.**',
@@ -730,13 +731,15 @@ describe('key files stay out of the repository', () => {
     expect(relayDoc).toContain('kein Geheimnis');
     expect(relayDoc).toContain('Unversehrtheit');
     expect(relayDoc).toContain('nicht schreibbar');
-    expect(relayDoc).toContain('v2.<kid>.<ts>.<sig>');
+    expect(relayDoc).toContain('v3.<kid>.<ts>.<jti>.<sig>');
+    expect(relayDoc).not.toContain('v2.<kid>.<ts>.<sig>');
     expect(relayDoc).toContain('bewusst nicht');
     expect(relayDoc).not.toContain('gleichwertige Geheimnisse');
     expect(relayDoc).not.toContain('0600 setzen');
   });
-  it('relay.md names the replay cache by message digest, the longest Retry-After and the uncounted 400/415', () => {
-    expect(relayDoc).toContain('Digest der signierten Nachricht');
+  it('relay.md names the replay cache by key id and jti, the longest Retry-After and the uncounted 400/415', () => {
+    expect(relayDoc).toContain('Gemerkt wird das Paar (Kennung, `jti`)');
+    expect(relayDoc).not.toContain('Digest der signierten Nachricht');
     expect(relayDoc).toContain('(r, n − s)');
     expect(relayDoc).toContain('längste');
     expect(relayDoc).toContain('Anfragen, die nicht zählen');
@@ -756,9 +759,31 @@ describe('key files stay out of the repository', () => {
     expect(read('grenzen.md')).toContain('ohne Nachkommastellen');
     expect(model).toContain('keine Nachkommastellen');
   });
+  it('version 3 of the head is written down: audience, jti, milliseconds, the start slack, the replay key; no v2 or digest left', () => {
+    for (const text of [
+      'RELAY_AUDIENCE',
+      'Audience',
+      '`jti`',
+      'Millisekunden',
+      'AUTH_START_SLACK_MS',
+      'zeitstempel-auth-v3',
+    ]) {
+      expect(relayDoc, text).toContain(text);
+    }
+    expect(relayDoc).not.toContain('zeitstempel-auth-v2');
+    expect(relayDoc).not.toContain('Unix-Sekunden, dezimal');
+    expect(AUTH_START_SLACK_MS).toBe(1000);
+    expect(readFileSync(new URL('../README.md', import.meta.url), 'utf8')).toMatch(/audience: '/);
+    expect(readFileSync(new URL('../docs/betrieb.md', import.meta.url), 'utf8')).toContain(
+      'RELAY_AUDIENCE',
+    );
+    expect(model).toContain('<code>jti</code>');
+  });
   it('data-model.html describes signRelayRequest with a private key and no deriveVerifier', () => {
     expect(model).toContain('privateKey');
-    expect(model).toContain('v2.');
+    expect(model).toContain('v3.');
+    expect(model).not.toContain('v2.&lt;kid&gt;');
+    expect(model).toContain('audience');
     expect(model).not.toContain('deriveVerifier');
   });
 });

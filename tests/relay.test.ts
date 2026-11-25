@@ -13,7 +13,7 @@ import {
 import type { RelayKey } from '../relay/keys.ts';
 import { loadServices } from '../relay/load.ts';
 import { keyFilePermissionWarning, listenOn, readConfig } from '../relay/main.ts';
-import { RELAY_LIMITS } from '../relay/limits.ts';
+import { AUTH_START_SLACK_MS, RELAY_LIMITS } from '../relay/limits.ts';
 import type { RelayOptions } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import {
@@ -23,8 +23,11 @@ import {
   type Upstream,
 } from '../relay/upstream.ts';
 import {
+  TEST_AUDIENCE,
   makeTestKey,
   nodeAuthHeader,
+  nodeAuthHeaderMs,
+  newJti,
   nodeSignature,
   authMessage,
   twinSignature,
@@ -116,23 +119,19 @@ async function start(
     now: () => clock.now,
     monotonicNow: fastMonotonic(), // the minimum distance has its own tests (single-spacing.test.ts)
     keys: over.keys ?? KEYS,
+    audience: TEST_AUDIENCE,
     ...(over.verifySignature === undefined ? {} : { verifySignature: over.verifySignature }),
     ...(over.authReplayEntries === undefined ? {} : { authReplayEntries: over.authReplayEntries }),
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as AddressInfo).port;
-  let n = 0;
   return {
+    // `o.ts` in whole seconds; without it the head is made for the relay's clock of the moment (each call has its own jti,
+    // so equal requests are no replays).
     sign: (path, body, o = {}) =>
-      nodeAuthHeader(
-        o.key ?? KEY_A,
-        o.kid ?? 'app-a',
-        'POST',
-        path,
-        // Every call gets its own second inside the window (not before the start second), so equal requests are no replays.
-        o.ts ?? Math.floor(clock.now / 1000) + ((n++ % 59) - 1),
-        body,
-      ),
+      o.ts === undefined
+        ? nodeAuthHeaderMs(o.key ?? KEY_A, o.kid ?? 'app-a', 'POST', path, clock.now, body)
+        : nodeAuthHeader(o.key ?? KEY_A, o.kid ?? 'app-a', 'POST', path, o.ts, body),
     base: `http://127.0.0.1:${port}`,
     close: () => new Promise((r) => (server.closeAllConnections(), server.close(() => r()))),
     calls,
@@ -357,6 +356,7 @@ describe('relay: the time of the token must lie around the request (Befund 1)', 
       path,
       body: new TextEncoder().encode(text),
       nowMs: h.clock.now,
+      audience: TEST_AUDIENCE,
     });
     if (!signed.ok) throw new Error(signed.reason);
     const res = await fetch(h.base + path, {
@@ -597,7 +597,11 @@ describe('relay: start configuration', () => {
     },
   );
   it('hands the permission warning to the start (no key data in it)', () => {
-    const env = { RELAY_KEYS_FILE: '/etc/z/keys.json', RELAY_SERVICES: 'freetsa' };
+    const env = {
+      RELAY_KEYS_FILE: '/etc/z/keys.json',
+      RELAY_AUDIENCE: TEST_AUDIENCE,
+      RELAY_SERVICES: 'freetsa',
+    };
     const warned = readConfig(
       env,
       () => SERVICES,
@@ -634,7 +638,7 @@ describe('relay: start configuration', () => {
       ),
     ).toThrow(/Loopback/);
     const keyed = readConfig(
-      { RELAY_KEYS_FILE: '/k.json', RELAY_SERVICES: 'freetsa' },
+      { RELAY_KEYS_FILE: '/k.json', RELAY_AUDIENCE: TEST_AUDIENCE, RELAY_SERVICES: 'freetsa' },
       () => SERVICES,
       () => KEYS,
       () => null,
@@ -1440,6 +1444,7 @@ describe('relay: authentication', () => {
       path: PATH,
       body: new TextEncoder().encode(BODY),
       nowMs: NOW,
+      audience: TEST_AUDIENCE,
     });
     if (!signed.ok) throw new Error('sign');
     expect(signed.value).not.toContain(toBase64Url(KEY_A.privateKey));
@@ -1456,7 +1461,7 @@ describe('relay: authentication', () => {
       secondsNow(),
       new TextEncoder().encode(BODY),
     );
-    expect(header).toMatch(/^v2\.app-a\.\d+\.[A-Za-z0-9_-]{86}$/);
+    expect(header).toMatch(/^v3\.app-a\.\d{13}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{86}$/);
     expect((await withHeader(header)).status).toBe(200);
   });
   it('refuses the version 1 header (HMAC), also when it is well formed', async () => {
@@ -1496,10 +1501,10 @@ describe('relay: authentication', () => {
     // Flip one bit of the decoded signature and encode it again: the form stays valid, so only the
     // verification of the signature itself can refuse it.
     const parts = good.split('.');
-    const sig = Buffer.from(parts[3]!, 'base64url');
+    const sig = Buffer.from(parts[4]!, 'base64url');
     sig[10] = sig[10]! ^ 0x01;
-    const forged = [...parts.slice(0, 3), sig.toString('base64url')].join('.');
-    expect(forged).toMatch(/^v2\.app-a\.\d+\.[A-Za-z0-9_-]{86}$/);
+    const forged = [...parts.slice(0, 4), sig.toString('base64url')].join('.');
+    expect(forged).toMatch(/^v3\.app-a\.\d+\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{86}$/);
     expect(forged).not.toBe(good);
     await unauthorized(await withHeader(forged));
   });
@@ -1684,13 +1689,14 @@ describe('relay: authentication', () => {
     expect((await go(0, three[3]!)).status).toBe(429); // key d has not stamped at all
     await m.close();
   });
-  it('refuses the twin signature (r, n - s) of an accepted request as a replay', async () => {
+  it('refuses the twin signature (r, n - s) of an accepted request as a replay (same jti)', async () => {
     const body = bytesOf(BODY);
-    const t = secondsNow();
-    const message = authMessage('POST', PATH, t, body);
+    const t = secondsNow() * 1000;
+    const jti = newJti();
+    const message = authMessage('POST', PATH, t, body, jti);
     const sig = nodeSignature(KEY_A, message);
     const twin = twinSignature(sig);
-    // the twin is a valid signature of the very same message: that is why the cache must not use signatures
+    // the twin is a valid signature of the very same message: the cache keys on (kid, jti), not on signatures
     expect(twin.equals(sig)).toBe(false);
     expect(
       verify(
@@ -1700,7 +1706,7 @@ describe('relay: authentication', () => {
         twin,
       ),
     ).toBe(true);
-    const header = (b: Buffer) => `v2.app-a.${t}.${b.toString('base64url')}`;
+    const header = (b: Buffer) => `v3.app-a.${t}.${jti}.${b.toString('base64url')}`;
     expect((await withHeader(header(sig))).status).toBe(200);
     h.calls.length = 0;
     await unauthorized(await withHeader(header(twin)));
@@ -1708,12 +1714,180 @@ describe('relay: authentication', () => {
   });
   it('refuses the original signature after its twin was accepted', async () => {
     const body = bytesOf(BODY);
-    const t = secondsNow() - 1;
-    const sig = nodeSignature(KEY_A, authMessage('POST', PATH, t, body));
-    const header = (b: Buffer) => `v2.app-a.${t}.${b.toString('base64url')}`;
+    const t = secondsNow() * 1000;
+    const jti = newJti();
+    const sig = nodeSignature(KEY_A, authMessage('POST', PATH, t, body, jti));
+    const header = (b: Buffer) => `v3.app-a.${t}.${jti}.${b.toString('base64url')}`;
     expect((await withHeader(header(twinSignature(sig)))).status).toBe(200);
     h.calls.length = 0;
     await unauthorized(await withHeader(header(sig)));
+  });
+  describe('version 3: audience, jti, milliseconds', () => {
+    const body = () => bytesOf(BODY);
+    const signAt = (
+      tsMs: number,
+      over: { jti?: string; audience?: string; kid?: string; key?: TestKey } = {},
+    ) =>
+      nodeAuthHeaderMs(over.key ?? KEY_A, over.kid ?? 'app-a', 'POST', PATH, tsMs, body(), {
+        ...(over.jti === undefined ? {} : { jti: over.jti }),
+        ...(over.audience === undefined ? {} : { audience: over.audience }),
+      });
+    it('B3: the same key, hash and second with two different jti are two requests (both 200); the same jti is a replay', async () => {
+      const a = signAt(NOW);
+      const b = signAt(NOW);
+      expect(a.split('.')[3]).not.toBe(b.split('.')[3]);
+      expect((await withHeader(a)).status).toBe(200);
+      expect((await withHeader(b)).status).toBe(200);
+      h.calls.length = 0;
+      await unauthorized(await withHeader(a));
+      await unauthorized(await withHeader(b));
+    });
+    it('a head of the library with a fresh jti per call: two calls in the same millisecond both pass', async () => {
+      const make = async () => {
+        const r = await signRelayRequest({
+          privateKey: KEY_A.privateKey,
+          keyId: 'app-a',
+          method: 'POST',
+          path: PATH,
+          body: body(),
+          nowMs: NOW,
+          audience: TEST_AUDIENCE,
+        });
+        if (!r.ok) throw new Error(r.reason);
+        return r.value;
+      };
+      expect((await withHeader(await make())).status).toBe(200);
+      expect((await withHeader(await make())).status).toBe(200);
+    });
+    it('a replay is refused also with the twin signature (same jti), and a jti is no replay under another key id', async () => {
+      const jti = newJti();
+      expect((await withHeader(signAt(NOW, { jti }))).status).toBe(200);
+      h.calls.length = 0;
+      await unauthorized(await withHeader(signAt(NOW, { jti }))); // fresh ECDSA signature, same jti
+      // the same jti of the other key: its own entry (the cache keys on key id and jti)
+      expect((await withHeader(signAt(NOW, { jti, kid: 'app-b', key: KEY_B }))).status).toBe(200);
+    });
+    it('refuses a head made for another audience, with the same answer as any other 401', async () => {
+      for (const audience of [
+        'https://relay.other',
+        TEST_AUDIENCE + '/',
+        TEST_AUDIENCE.toUpperCase(),
+        'x',
+      ]) {
+        await unauthorized(await withHeader(signAt(NOW, { audience })));
+      }
+      expect((await withHeader(signAt(NOW))).status).toBe(200); // the right audience passes
+    });
+    it('refuses a jti of the wrong form, also when it is signed correctly: length, characters, not canonical', async () => {
+      const good = newJti();
+      const canonical = Buffer.alloc(16, 1).toString('base64url'); // ends in "E": 4 spare bits are zero
+      expect(canonical).toHaveLength(22);
+      const nonCanonical = canonical.slice(0, 21) + 'R'; // same 16 bytes, other spelling
+      expect(Buffer.from(nonCanonical, 'base64url').equals(Buffer.alloc(16, 1))).toBe(true);
+      const bad = [
+        good.slice(0, 21),
+        good + 'A',
+        '',
+        good.slice(0, 21) + '+',
+        good.slice(0, 21) + '=',
+        good.slice(0, 21) + '.',
+        good.slice(0, 21) + ' ',
+        nonCanonical,
+      ];
+      for (const jti of bad) await unauthorized(await withHeader(signAt(NOW, { jti })));
+      expect((await withHeader(signAt(NOW, { jti: canonical }))).status).toBe(200);
+    });
+    it('refuses a jti that was changed after signing (it is signed)', async () => {
+      const parts = signAt(NOW).split('.');
+      parts[3] = newJti();
+      await unauthorized(await withHeader(parts.join('.')));
+    });
+    it('refuses the version 2 head (seconds, no jti), and a v3 head with a ts in seconds, with leading zeros or too long', async () => {
+      const v2 = `v2.app-a.${secondsNow()}.${nodeSignature(KEY_A, 'x').toString('base64url')}`;
+      await unauthorized(await withHeader(v2));
+      const sig = nodeSignature(KEY_A, 'x').toString('base64url');
+      const jti = newJti();
+      for (const ts of [String(secondsNow()), `0${NOW}`, `${NOW}0000`, '1e12', `${NOW}.5`, '-1']) {
+        await unauthorized(await withHeader(`v3.app-a.${ts}.${jti}.${sig}`));
+      }
+      await unauthorized(await withHeader(`v3.app-a.${NOW}.${sig}`)); // the old four-part shape
+    });
+    it('refuses another spelling of an otherwise valid head: version prefix v2, a leading zero in ts, a short ts', async () => {
+      const good = signAt(NOW);
+      const [, kid, ts, jti, sig] = good.split('.');
+      // the signature is valid for the v3 message: only the form of the head can refuse these
+      await unauthorized(await withHeader(['v2', kid, ts, jti, sig].join('.')));
+      await unauthorized(await withHeader(['v4', kid, ts, jti, sig].join('.')));
+      await unauthorized(await withHeader(['v3', kid, `0${ts}`, jti, sig].join('.')));
+      const short = nodeAuthHeaderMs(KEY_A, 'app-a', 'POST', PATH, secondsNow(), body());
+      await unauthorized(await withHeader(short)); // 10 digits: seconds
+      expect((await withHeader(good)).status).toBe(200); // the original was not harmed
+    });
+    it('the window is plus and minus 60 s on the relay clock, to the millisecond', async () => {
+      h.clock.now = NOW + 120_000; // far enough after the start for the past edge
+      const t = h.clock.now;
+      const w = RELAY_LIMITS.authWindowSeconds * 1000;
+      expect(w).toBe(60_000);
+      await unauthorized(await withHeader(signAt(t - w - 1)));
+      await unauthorized(await withHeader(signAt(t + w + 1)));
+      await unauthorized(await withHeader(signAt(t - 1_000_000)));
+      await unauthorized(await withHeader(signAt(t + 1_000_000)));
+      expect((await withHeader(signAt(t - w))).status).toBe(200);
+      expect((await withHeader(signAt(t + w))).status).toBe(200);
+      expect((await withHeader(signAt(t))).status).toBe(200);
+    });
+    it('the start rule in milliseconds: one slack before the start counts, one millisecond more does not', async () => {
+      const first = await start({ clockStart: NOW });
+      const go = (ts: number) =>
+        post(first, PATH, BODY, 'application/json', {
+          'X-Zeitstempel-Auth': nodeAuthHeaderMs(KEY_A, 'app-a', 'POST', PATH, ts, body()),
+        });
+      expect((await go(NOW - AUTH_START_SLACK_MS - 1)).status).toBe(401);
+      expect((await go(NOW - AUTH_START_SLACK_MS)).status).toBe(200);
+      first.clock.now += 5_000;
+      // the start stays the lowest reading seen (NOW): still refused later
+      expect((await go(NOW - AUTH_START_SLACK_MS - 1)).status).toBe(401);
+      // a head from the future end of the window, signed before a restart, dies with the window: the cache is gone, but not the rule
+      await first.close();
+    });
+    it('an unknown key id and a wrong signature give the same answer as a replay of a v3 head (no hint)', async () => {
+      const jti = newJti();
+      expect((await withHeader(signAt(NOW, { jti }))).status).toBe(200);
+      const answers = [
+        await withHeader(signAt(NOW, { kid: 'nobody' })),
+        await withHeader(signAt(NOW, { audience: 'https://relay.other' })),
+        await withHeader(signAt(NOW, { jti })), // replay
+        await withHeader(signAt(NOW, { jti: 'short' })),
+        await withHeader(`v2.app-a.${secondsNow()}.${'A'.repeat(86)}`),
+      ];
+      const texts = await Promise.all(answers.map((r) => r.text()));
+      for (const r of answers) expect(r.status).toBe(401);
+      expect(new Set(texts)).toEqual(new Set(['{"error":"unauthorized"}']));
+      expect(new Set(answers.map((r) => r.headers.get('content-length'))).size).toBe(1);
+    });
+    it('the replay entry of a head lives as long as its window plus the request timeout, then it frees itself', async () => {
+      const small = await start({ authReplayEntries: 2 });
+      const t = small.clock.now;
+      // a share of 0.5: one entry per key, so the two entries belong to two keys
+      const go = (ts: number, b = false) =>
+        post(small, PATH, BODY, 'application/json', {
+          'X-Zeitstempel-Auth': b
+            ? nodeAuthHeaderMs(KEY_B, 'app-b', 'POST', PATH, ts, body())
+            : nodeAuthHeaderMs(KEY_A, 'app-a', 'POST', PATH, ts, body()),
+        });
+      const keep = RELAY_LIMITS.authWindowSeconds * 1000 + RELAY_LIMITS.requestTimeoutMs;
+      expect((await go(t)).status).toBe(200);
+      expect((await go(t + 1, true)).status).toBe(200);
+      // the cache is full (2): a third waits, without costing budget, until the oldest entry (t + keep) is gone
+      const full = await go(t + 2);
+      expect(full.status).toBe(429);
+      expect(full.headers.get('retry-after')).toBe(String(Math.ceil(keep / 1000)));
+      small.clock.now += keep; // `until >= now`: still there
+      expect((await go(small.clock.now)).status).toBe(429);
+      small.clock.now += 1;
+      expect((await go(small.clock.now)).status).toBe(200);
+      await small.close();
+    });
   });
   it('dies on a replay before the budget: 401, the budget and the stamp count stay, whatever Content-Type or body check would follow', async () => {
     const m = await start({ services: MANY });
@@ -2176,9 +2350,9 @@ describe('relay: authentication', () => {
     const body = bytesOf(BODY);
     const t = secondsNow();
     const good = nodeAuthHeader(KEY_A, 'app-a', 'POST', PATH, t, body);
-    const sig = good.split('.')[3]!;
-    await unauthorized(await withHeader(`v2.nobody.${t}.${sig}`));
-    await unauthorized(await withHeader(`v2.app-b.${t}.${sig}`));
+    const [, , ts, jti, sig] = good.split('.');
+    await unauthorized(await withHeader(`v3.nobody.${ts}.${jti}.${sig}`));
+    await unauthorized(await withHeader(`v3.app-b.${ts}.${jti}.${sig}`));
     expect((await withHeader(good)).status).toBe(200); // the original was not harmed by the tries
   });
   it('answers 401 without a header for a known service, 404 for an unknown one (public things only)', async () => {
@@ -2203,13 +2377,13 @@ describe('relay: authentication', () => {
     expect(again.status).toBe(401);
     expect(await again.json()).toEqual({ error: 'unauthorized' });
     expect(second.calls).toHaveLength(0);
-    // one second before the start is still fine, two are not
-    const edge = (ts: number) =>
+    // to the millisecond: the slack before the start (`AUTH_START_SLACK_MS`) is fine, one ms more is refused
+    const edge = (tsMs: number) =>
       post(second, PATH, BODY, 'application/json', {
-        'X-Zeitstempel-Auth': second.sign(PATH, body, { ts }),
+        'X-Zeitstempel-Auth': nodeAuthHeaderMs(KEY_A, 'app-a', 'POST', PATH, tsMs, body),
       });
-    expect((await edge(secondsNow() - 2)).status).toBe(401);
-    expect((await edge(secondsNow() - 1)).status).toBe(200);
+    expect((await edge(NOW - AUTH_START_SLACK_MS - 1)).status).toBe(401);
+    expect((await edge(NOW - AUTH_START_SLACK_MS)).status).toBe(200);
     await first.close();
     await second.close();
   });
@@ -2269,9 +2443,36 @@ describe('relay: authentication', () => {
     let end = head;
     while (lines[end]?.startsWith('|')) end += 1; // the table ends at the first line that is no row
     const table = lines.slice(head, end).join('\n');
-    for (const name of ['PORT', 'RELAY_ORIGINS', 'RELAY_KEYS_FILE', 'RELAY_AUTH', 'RELAY_HOST']) {
+    for (const name of [
+      'PORT',
+      'RELAY_ORIGINS',
+      'RELAY_KEYS_FILE',
+      'RELAY_AUDIENCE',
+      'RELAY_AUTH',
+      'RELAY_HOST',
+    ]) {
       expect(table, name).toContain('`' + name + '`');
     }
+  });
+  it('does not start with keys and no audience (or an invalid one); with keys off an audience is not needed', () => {
+    const base = {
+      services: SERVICES,
+      origins: [ORIGIN],
+      allowPlainHttp: false,
+      upstream: networkUpstream,
+      random: () => FREETSA_NONCE,
+      now: () => NOW,
+    };
+    expect(() => createRelayServer({ ...base, keys: KEYS })).toThrow(/audience/);
+    for (const audience of ['', 'has space', 'a'.repeat(129), 'ümlaut', 'tab\t']) {
+      expect(() => createRelayServer({ ...base, keys: KEYS, audience }), audience).toThrow(
+        /audience/,
+      );
+    }
+    expect(() =>
+      createRelayServer({ ...base, keys: KEYS, audience: 'a'.repeat(128) }),
+    ).not.toThrow();
+    expect(() => createRelayServer({ ...base, keys: 'off' })).not.toThrow();
   });
   it('is off only when expressly started without keys', async () => {
     const open = await start({ keys: 'off' });

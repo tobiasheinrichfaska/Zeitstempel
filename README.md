@@ -63,7 +63,7 @@ Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime`
 im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `response.value.info` dagegen eine Zahl
 (Millisekunden seit 1970).
 
-Über das Relay (Browser): die Anfrage wird mit dem privaten Schlüssel der App signiert; das Token prüft die App selbst.
+Über das Relay (Browser): die Anfrage wird mit dem privaten Schlüssel der App signiert (Kopf `v3.<kid>.<ts>.<jti>.<sig>`, mit Zeit in Millisekunden, einem Zufalls-`jti` je Anfrage und dem Namen des Relays); das Token prüft die App selbst.
 
 ```ts
 import { fromBase64Url, signRelayRequest, toBase64Url } from 'zeitstempel';
@@ -82,6 +82,7 @@ const auth = await signRelayRequest({
   path,
   body,
   nowMs: sentMs, // Millisekunden, nicht Sekunden
+  audience: 'https://relay.example', // genau die RELAY_AUDIENCE des Relays (der Betreiber nennt sie); je Aufruf ein neues `jti`
 });
 if (!auth.ok) throw new Error(auth.reason);
 const res = await fetch(relayUrl + path, {

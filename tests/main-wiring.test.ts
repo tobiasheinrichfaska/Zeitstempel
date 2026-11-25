@@ -13,7 +13,7 @@ import { loadServices } from '../relay/load.ts';
 import type { RelayService } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import type { Upstream } from '../relay/upstream.ts';
-import { makeTestKey, nodeAuthHeader, type TestKey } from './auth-helpers.ts';
+import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs, type TestKey } from './auth-helpers.ts';
 import { sha256 } from './helpers.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
@@ -69,6 +69,7 @@ describe('buildRelayOptions: every setting reaches the relay', () => {
   const env = {
     RELAY_SERVICES: 'paid-relay',
     RELAY_KEYS_FILE: '/x/keys.json',
+    RELAY_AUDIENCE: TEST_AUDIENCE,
     RELAY_UPSTREAM_AUTH_PAID_RELAY: 'relay-user:relay-pass',
     RELAY_BATCH_MS: '30000',
   };
@@ -113,12 +114,12 @@ describe('buildRelayOptions: every setting reaches the relay', () => {
         body: text,
         headers: {
           'Content-Type': 'application/json',
-          'X-Zeitstempel-Auth': nodeAuthHeader(
+          'X-Zeitstempel-Auth': nodeAuthHeaderMs(
             key,
             key.id,
             'POST',
             path,
-            Math.floor(clock.now / 1000) + (n++ % 20),
+            clock.now + (n++ % 20) * 1000,
             new TextEncoder().encode(text),
           ),
         },
@@ -245,6 +246,7 @@ async function startMain(extra: Record<string, string> = {}): Promise<Proc> {
       PORT: String(port),
       RELAY_SERVICES: 'freetsa',
       RELAY_KEYS_FILE: keysPath,
+      RELAY_AUDIENCE: TEST_AUDIENCE,
       ...extra,
     },
   });
@@ -287,12 +289,12 @@ async function startMain(extra: Record<string, string> = {}): Promise<Proc> {
       body: text,
       headers: {
         'Content-Type': 'application/json',
-        'X-Zeitstempel-Auth': nodeAuthHeader(
+        'X-Zeitstempel-Auth': nodeAuthHeaderMs(
           key,
           key.id,
           'POST',
           path,
-          Math.floor(Date.now() / 1000),
+          Date.now(),
           new TextEncoder().encode(text),
         ),
       },
@@ -377,6 +379,7 @@ describe('relay/main.ts as a process', () => {
       RELAY_ORIGINS: 'https://app.example',
       RELAY_SERVICES: 'freetsa',
       RELAY_KEYS_FILE: '/x/k.json',
+      RELAY_AUDIENCE: TEST_AUDIENCE,
     };
     const cfg = readConfig(
       base,

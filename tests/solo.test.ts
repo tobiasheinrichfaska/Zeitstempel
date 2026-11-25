@@ -12,7 +12,7 @@ import { RELAY_LIMITS } from '../relay/limits.ts';
 import type { RelayOptions } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import type { Upstream } from '../relay/upstream.ts';
-import { makeTestKey, nodeAuthHeader, type TestKey } from './auth-helpers.ts';
+import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs, type TestKey } from './auth-helpers.ts';
 import { sha256 } from './helpers.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
@@ -120,6 +120,7 @@ async function start(
     random: (n) => new Uint8Array(randomBytes(n)),
     now: () => Date.now() + clock.offset,
     keys: over.keys ?? KEYS,
+    audience: TEST_AUDIENCE,
     ...(batch === null ? {} : { batch }),
     ...(over.maxWaitMs === undefined ? {} : { maxWaitMs: over.maxWaitMs }),
     ...(over.budgetWindowMs === undefined ? {} : { budgetWindowMs: over.budgetWindowMs }),
@@ -133,12 +134,12 @@ async function start(
     const text = o.raw ?? JSON.stringify(o.body ?? { hash: toBase64Url(hash) });
     const head =
       o.head ??
-      nodeAuthHeader(
+      nodeAuthHeaderMs(
         key,
         key.id,
         'POST',
         path,
-        Math.floor((Date.now() + clock.offset) / 1000),
+        Date.now() + clock.offset,
         new TextEncoder().encode(o.signedRaw ?? text),
       );
     return fetch(base + path, {
@@ -653,12 +654,12 @@ describe('key file read again: new keys count, removed keys stop, an invalid fil
   it('setKeys keeps the replay cache: an admitted request cannot be sent again after a reload', async () => {
     h = await start({ keys: [asRelayKey(KEY_A, false)], batch: null });
     const text = JSON.stringify({ hash: toBase64Url(sha256('r')) });
-    const head = nodeAuthHeader(
+    const head = nodeAuthHeaderMs(
       KEY_A,
       KEY_A.id,
       'POST',
       '/v1/stamp/freetsa',
-      Math.floor(Date.now() / 1000),
+      Date.now(),
       new TextEncoder().encode(text),
     );
     expect((await h.stamp(sha256('r'), { raw: text, head })).status).toBe(200);

@@ -140,3 +140,11 @@ export const RELAY_LIMITS = {
  * would wait the whole limit and then be refused without a stamp. Also the most by which a wait can exceed the limit: the time of the call itself counts (a loop that stood still is `503 busy`).
  */
 export const WAIT_TOLERANCE_MS = 50;
+
+/**
+ * Authentication: how far before the relay's start (the lowest clock reading it has seen, `startMs`) the `ts` of a head may
+ * lie and still count. The app signs a moment before the relay reads its clock (network, queue), so a head made at the very
+ * moment of the start, or right after the relay's clock was set back, is older than the reading by a few milliseconds; one
+ * second covers that. Older heads are refused (the replay cache is empty after a start, so they could be replayed once more).
+ */
+export const AUTH_START_SLACK_MS = 1000;

@@ -12,16 +12,19 @@ import { fail, ok, type Result } from './result.ts';
 const KEY_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const METHOD = /^[A-Z]{1,16}$/;
 const PATH = /^\/[\x21-\x7e]*$/; // visible ASCII only
-const PREFIX = 'zeitstempel-auth-v2';
+const AUDIENCE = /^[\x21-\x7e]{1,128}$/; // printable ASCII without a space, 1 to 128 characters
+const PREFIX = 'zeitstempel-auth-v3';
 /** A P-256 PKCS#8 key is about 138 bytes; more than this is no key (`bad-key`). */
 const MAX_PRIVATE_KEY_BYTES = 256;
 /** The relay takes at most 512 bytes of body; a larger one is not signed (`bad-options`). */
 const MAX_BODY_BYTES = 512;
+/** The `jti` is 16 bytes (22 characters in base64url). */
+const JTI_BYTES = 16;
 /** `nowMs` below this is taken for seconds (or garbage): 1e11 ms is 1973, 1e11 s is the year 5138. */
 const MIN_NOW_MS = 1e11;
 /**
- * `nowMs` from this on is refused: 1e15 ms is the year 33658, and below it `ts` (seconds) has at most 12 digits, the most the
- * relay's header format takes (`[0-9]{1,12}`). A larger value (`Number.MAX_VALUE`, 1e17) would give a head the relay always
+ * `nowMs` from this on is refused: 1e15 ms is the year 33658, and below it `ts` (milliseconds) has at most 15 digits, the most the
+ * relay's header format takes (`[1-9][0-9]{11,14}`, 12 digits from 1e11). A larger value (`Number.MAX_VALUE`, 1e17) would give a head the relay always
  * refuses, so it is `bad-options` here, not a silent `ok`.
  */
 const MAX_NOW_MS = 1e15;
@@ -47,16 +50,28 @@ export interface SignRelayRequestInput {
    * seconds), so a value in seconds is refused (`bad-options`) instead of signing a time in 1970.
    */
   nowMs: number;
+  /**
+   * The audience: the name of the relay this head is meant for, exactly as the relay's `RELAY_AUDIENCE` says (for example its
+   * public origin `https://relay.example`): printable ASCII without a space, 1 to 128 characters, else `bad-options`. It is
+   * signed, so a head caught on its way to one relay is worthless at another with the same key file.
+   */
+  audience: string;
+  /**
+   * The head's own identifier: 16 bytes (`Uint8Array`). Absent: random from `crypto.getRandomValues`, which is what an app
+   * wants. A parameter for tests only: the relay refuses a second head with the same `jti` of the same key (replay).
+   */
+  jti?: Uint8Array | undefined;
 }
 
 /**
- * The value of the `X-Zeitstempel-Auth` header: `v2.<keyId>.<ts>.<sig>` with `ts` in Unix seconds and
- * `sig = base64url(ECDSA-P256-SHA256 (r || s, 64 bytes) over "zeitstempel-auth-v2\n" + method + "\n" +
- * path + "\n" + ts + "\n" + hex(SHA-256(body)))`. Never throws, also not for hostile Proxies as input, `privateKey` or
+ * The value of the `X-Zeitstempel-Auth` header: `v3.<keyId>.<ts>.<jti>.<sig>` with `ts` in Unix milliseconds (whole
+ * number), `jti` = base64url of 16 random bytes (22 characters) and
+ * `sig = base64url(ECDSA-P256-SHA256 (r || s, 64 bytes) over "zeitstempel-auth-v3\n" + method + "\n" +
+ * path + "\n" + audience + "\n" + ts + "\n" + jti + "\n" + hex(SHA-256(body)))`. Never throws, also not for hostile Proxies as input, `privateKey` or
  * `body` (code `bad-options`/`bad-key`); each is read once, never iterated, and `privateKey` (at most 256 bytes) and
  * `body` (at most 512) are copied first. A `Uint8Array` of another realm is refused: pass `new Uint8Array(x)`.
  * Bytes are imported as a non-extractable key and are never returned or kept; a `CryptoKey` is used as it is
- * (checked with the built-in getters: a Proxy or a look-alike is no `CryptoKey`, `bad-key`). ECDSA is randomised: two calls give two different signatures.
+ * (checked with the built-in getters: a Proxy or a look-alike is no `CryptoKey`, `bad-key`). ECDSA is randomised, and so is the `jti`: two calls give two different heads.
  */
 export async function signRelayRequest(input: SignRelayRequestInput): Promise<Result<string>> {
   try {
@@ -126,12 +141,12 @@ async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
   let fields: SignRelayRequestInput;
   try {
     // Every property exactly once: a getter that answers differently the second time changes nothing.
-    const { privateKey, keyId, method, path, body, nowMs } = input;
-    fields = { privateKey, keyId, method, path, body, nowMs };
+    const { privateKey, keyId, method, path, body, nowMs, audience, jti } = input;
+    fields = { privateKey, keyId, method, path, body, nowMs, audience, jti };
   } catch {
     return fail('bad-options'); // a throwing getter or Proxy trap on the input
   }
-  const { keyId, method, path, nowMs } = fields;
+  const { keyId, method, path, nowMs, audience } = fields;
   // a real CryptoKey is used as it is; anything else must be PKCS#8 bytes (copied before any use)
   const given = fields.privateKey;
   const readyKey = usableCryptoKey(given);
@@ -149,6 +164,12 @@ async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
     nowMs >= MAX_NOW_MS
   ) {
     return fail('bad-options'); // also a time in seconds, and one the relay's header could not carry
+  }
+  if (typeof audience !== 'string' || !AUDIENCE.test(audience)) return fail('bad-options');
+  let jtiBytes: Uint8Array | null = null;
+  if (fields.jti !== undefined) {
+    jtiBytes = copyOf(fields.jti, JTI_BYTES, JTI_BYTES);
+    if (jtiBytes === null) return fail('bad-options');
   }
   const subtle = globalThis.crypto?.subtle;
   if (typeof subtle?.importKey !== 'function') return fail('unsupported-signature'); // e.g. plain http
@@ -168,14 +189,16 @@ async function sign(input: SignRelayRequestInput): Promise<Result<string>> {
       return fail('bad-key'); // not PKCS#8, or not an ECDSA P-256 key
     }
   }
-  const ts = Math.floor(nowMs / 1000);
+  const ts = Math.floor(nowMs);
   try {
+    jtiBytes ??= globalThis.crypto.getRandomValues(new Uint8Array(JTI_BYTES));
+    const jti = toBase64Url(jtiBytes);
     const digest = new Uint8Array(await subtle.digest('SHA-256', body as BufferSource));
-    const message = `${PREFIX}\n${method}\n${path}\n${ts}\n${toHex(digest)}`;
+    const message = `${PREFIX}\n${method}\n${path}\n${audience}\n${ts}\n${jti}\n${toHex(digest)}`;
     const signature = new Uint8Array(
       await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(message)),
     );
-    return ok(`v2.${keyId}.${ts}.${toBase64Url(signature)}`);
+    return ok(`v3.${keyId}.${ts}.${jti}.${toBase64Url(signature)}`);
   } catch {
     return fail('unsupported-signature');
   }

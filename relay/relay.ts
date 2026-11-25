@@ -24,7 +24,7 @@ import {
 } from './credentials.ts';
 import { isAuthHeaderName } from '../src/lib/services.ts';
 import { publicKeyObject, type RelayKey } from './keys.ts';
-import { RELAY_LIMITS, WAIT_TOLERANCE_MS } from './limits.ts';
+import { AUTH_START_SLACK_MS, RELAY_LIMITS, WAIT_TOLERANCE_MS } from './limits.ts';
 import { UpstreamError, type Upstream } from './upstream.ts';
 
 /** A service together with its trust anchors (PEM text), as the relay needs it. */
@@ -48,6 +48,11 @@ export interface RelayOptions {
    * (local development only; there is no default, so it cannot be forgotten).
    */
   keys: readonly RelayKey[] | 'off';
+  /**
+   * The name of this relay as the signed head must carry it (`RELAY_AUDIENCE`): printable ASCII without a space, 1 to 128
+   * characters. Required when `keys` is a list (a relay with keys and no audience does not start); not used with `'off'`.
+   */
+  audience?: string;
   /** Size of the replay cache (default `RELAY_LIMITS.authReplayEntries`); a parameter for tests. */
   authReplayEntries?: number;
   /** The ECDSA check (default `node:crypto` verify); a parameter so a test can count the verifications. */
@@ -85,7 +90,10 @@ export interface RelayOptions {
 /** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
 interface Auth {
   kid: string;
+  /** Unix milliseconds, as signed. */
   ts: number;
+  /** The head's own identifier as written (22 characters, canonical base64url of 16 bytes). */
+  jti: string;
   signature: Uint8Array;
 }
 
@@ -115,8 +123,10 @@ export interface RelayStats {
 const JSON_TYPE = 'application/json';
 /** Response headers a browser page may read: Retry-After (429) and Date (the relay's clock, for a 401 from clock skew). */
 const EXPOSED_HEADERS = 'Retry-After, Date';
-const AUTH_FORM = /^v2\.([a-z][a-z0-9-]{0,31})\.(0|[1-9][0-9]{0,11})\.([A-Za-z0-9_-]{86})$/;
-const AUTH_PREFIX = 'zeitstempel-auth-v2';
+const AUTH_FORM =
+  /^v3\.([a-z][a-z0-9-]{0,31})\.([1-9][0-9]{11,14})\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{86})$/;
+const AUTH_PREFIX = 'zeitstempel-auth-v3';
+const AUDIENCE_FORM = /^[\x21-\x7e]{1,128}$/;
 /** The member sets of a JSON body (sorted, joined by a comma): `hash`, plus `mode` and `upstream` when given. */
 const BODY_KEYS = ['hash', 'hash,mode', 'hash,upstream', 'hash,mode,upstream'];
 const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
@@ -251,8 +261,12 @@ export function createRelay(options: RelayOptions): Relay {
   let servicesOfKid = initial.services; // key id -> the only services it may use (absent: all)
   let perMinuteOfKid = initial.perMinute; // key id -> own limit per minute (absent: `perMinutePerKey`)
   const authRequired = options.keys !== 'off';
+  const audience = options.audience ?? '';
+  if (authRequired && !AUDIENCE_FORM.test(audience)) {
+    throw new Error('relay: audience missing or invalid'); // no content
+  }
   const doVerify = options.verifySignature ?? verifySignatureNode;
-  // Heads signed before this process started are refused (the replay cache is empty after a restart,
+  // Heads signed (their `ts`, milliseconds) before this process started are refused (the replay cache is empty after a restart,
   // so an old head could otherwise be replayed once more within its window).
   // Only ever lowered (on every request, see parseAuth), never recomputed upwards: a start clock that ran
   // ahead and is corrected later drops it once to the first corrected time.
@@ -264,9 +278,9 @@ export function createRelay(options: RelayOptions): Relay {
   const dummyKey: KeyObject | null = authRequired
     ? generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey
     : null;
-  // A signed request is remembered by the digest of its signed message (with the key id), NOT by the
-  // signature: ECDSA is malleable (for a valid (r, s) the pair (r, n - s) is valid for the same message),
-  // so a cache on signatures would let the twin pass as new. Value: the time (ms) until which a replay
+  // A signed request is remembered by its key id and its `jti` (16 random bytes the app makes per request, signed with
+  // the rest), NOT by the signature: ECDSA is malleable (for a valid (r, s) the pair (r, n - s) is valid for the same
+  // message), so a cache on signatures would let the twin pass as new; the twin carries the same `jti`. Value: the time (ms) until which a replay
   // could still pass the window, and the key id it belongs to.
   const replay = new Map<string, { until: number; kid: string }>();
   const replayMax = options.authReplayEntries ?? RELAY_LIMITS.authReplayEntries;
@@ -285,7 +299,7 @@ export function createRelay(options: RelayOptions): Relay {
   // A replay can arrive with its head at the edge of the window and its body up to the request
   // timeout later: an entry must outlive `ts + window` by that much.
   const keepMs = windowMs + RELAY_LIMITS.requestTimeoutMs;
-  const inWindow = (ts: number): boolean => Math.abs(options.now() - ts * 1000) <= windowMs;
+  const inWindow = (ts: number): boolean => Math.abs(options.now() - ts) <= windowMs;
 
   function countOnce(kind: string): void {
     stats.refused[kind] = (stats.refused[kind] ?? 0) + 1;
@@ -410,18 +424,21 @@ export function createRelay(options: RelayOptions): Relay {
     if (typeof value !== 'string') return null;
     const m = AUTH_FORM.exec(value);
     if (!m) return null;
-    const signature = fromBase64Url(m[3]!);
+    const signature = fromBase64Url(m[4]!);
     if (!signature || signature.length !== 64) return null;
+    // The `jti` is the cache key: only the one canonical spelling of 16 bytes counts (22 characters leave 4 spare bits).
+    const jtiBytes = fromBase64Url(m[3]!);
+    if (!jtiBytes || jtiBytes.length !== 16 || toBase64Url(jtiBytes) !== m[3]) return null;
     const ts = Number(m[2]);
     if (!inWindow(ts)) return null;
     // Signed before this process started (`startMs` is the lowest clock value seen so far).
-    if (ts * 1000 < startMs - 1000) return null;
-    return { kid: m[1]!, ts, signature };
+    if (ts < startMs - AUTH_START_SLACK_MS) return null;
+    return { kid: m[1]!, ts, jti: m[3]!, signature };
   }
 
   /**
    * Checks the ECDSA signature over method, path, time and body (same work for an unknown id: it is
-   * checked against the dummy key). Returns the cache id of the signed message, or null when refused.
+   * checked against the dummy key). Returns the cache id (key id and `jti`), or null when refused.
    */
   function checkSignature(
     auth: Auth,
@@ -430,7 +447,7 @@ export function createRelay(options: RelayOptions): Relay {
     body: Uint8Array,
   ): string | null {
     const key = keyById.get(auth.kid);
-    const message = `${AUTH_PREFIX}\n${method}\n${path}\n${auth.ts}\n${createHash('sha256').update(body).digest('hex')}`;
+    const message = `${AUTH_PREFIX}\n${method}\n${path}\n${audience}\n${auth.ts}\n${auth.jti}\n${createHash('sha256').update(body).digest('hex')}`;
     let valid: boolean;
     try {
       valid = doVerify(
@@ -455,7 +472,7 @@ export function createRelay(options: RelayOptions): Relay {
       stats.keyExpired = (stats.keyExpired ?? 0) + 1;
       return null;
     }
-    return `${auth.kid}:${createHash('sha256').update(message).digest('hex')}`;
+    return `${auth.kid}:${auth.jti}`;
   }
 
   /** Read only: has a request with this signed message been admitted before (and not yet expired)? */
@@ -496,7 +513,7 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** Writes a request down; only after `seen` said no and `cacheWait` said null, in the same step. */
   function remember(id: string, auth: Auth): void {
-    replay.set(id, { until: auth.ts * 1000 + keepMs, kid: auth.kid });
+    replay.set(id, { until: auth.ts + keepMs, kid: auth.kid });
   }
 
   /** The client went away while its body was coming: nobody is left to answer. */

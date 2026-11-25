@@ -12,7 +12,7 @@ import { RELAY_LIMITS } from '../relay/limits.ts';
 import type { RelayOptions } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import type { Upstream } from '../relay/upstream.ts';
-import { makeTestKey, nodeAuthHeader, type TestKey } from './auth-helpers.ts';
+import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs, type TestKey } from './auth-helpers.ts';
 import { sha256 } from './helpers.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
@@ -214,6 +214,7 @@ async function start(keys: RelayKey[], batch: RelayOptions['batch'] = undefined)
     random: (n) => new Uint8Array(randomBytes(n)),
     now: () => clock.ms ?? Date.now() + clock.offset,
     keys,
+    audience: TEST_AUDIENCE,
     verifySignature: ((...args: Parameters<typeof verify>) => {
       verifications.n += 1;
       return verify(...args);
@@ -228,15 +229,7 @@ async function start(keys: RelayKey[], batch: RelayOptions['batch'] = undefined)
     const text = o.raw ?? JSON.stringify({ hash: toBase64Url(sha256(`v3-${n}`)) });
     const now = clock.ms ?? Date.now() + clock.offset;
     const head =
-      o.head ??
-      nodeAuthHeader(
-        key,
-        key.id,
-        'POST',
-        path,
-        Math.floor(now / 1000),
-        new TextEncoder().encode(text),
-      );
+      o.head ?? nodeAuthHeaderMs(key, key.id, 'POST', path, now, new TextEncoder().encode(text));
     return fetch(base + path, {
       method: 'POST',
       body: text,
@@ -297,12 +290,12 @@ describe('a revoked key is refused like an unknown one', () => {
 
   it('counts a revoked key only for a valid signature (a guessed id with a wrong signature is no use of the key)', async () => {
     h = await start([rk(B, { revoked: true })]);
-    const forged = nodeAuthHeader(
+    const forged = nodeAuthHeaderMs(
       unknownKey,
       'app-b',
       'POST',
       '/v1/stamp/freetsa',
-      Math.floor(Date.now() / 1000),
+      Date.now(),
       new TextEncoder().encode(JSON.stringify({ hash: toBase64Url(sha256('v3-20')) })),
     );
     expect((await h.send(B, 20, { head: forged })).status).toBe(401);
@@ -382,12 +375,12 @@ describe('services of a key', () => {
     expect(await denied.json()).toEqual({ error: 'service-not-allowed' });
     // the same signed request again: still 403 (no replay entry was written), and no budget is spent
     const text = JSON.stringify({ hash: toBase64Url(sha256('v3-71')) });
-    const head = nodeAuthHeader(
+    const head = nodeAuthHeaderMs(
       A,
       A.id,
       'POST',
       '/v1/stamp/freetsa',
-      Math.floor(Date.now() / 1000),
+      Date.now(),
       new TextEncoder().encode(text),
     );
     for (let i = 0; i < 3; i++) {

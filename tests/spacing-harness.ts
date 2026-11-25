@@ -6,7 +6,7 @@ import { loadServices } from '../relay/load.ts';
 import type { RelayOptions } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import type { Upstream } from '../relay/upstream.ts';
-import { makeTestKey, nodeAuthHeader, type TestKey } from './auth-helpers.ts';
+import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs, type TestKey } from './auth-helpers.ts';
 import { sha256 } from './helpers.ts';
 export { sha256 };
 import { build, int, seq } from './token-builder.ts';
@@ -148,6 +148,7 @@ export async function start(
     now: () => Date.now() + clock.offset,
     monotonicNow: monoNow,
     keys: over.keys ?? KEYS,
+    audience: TEST_AUDIENCE,
     ...(batch === null ? {} : { batch }),
     ...(over.upstreamIdentities === undefined
       ? {}
@@ -164,12 +165,12 @@ export async function start(
     const text = o.raw ?? JSON.stringify(o.body ?? { hash: toBase64Url(hash) });
     const head =
       o.head ??
-      nodeAuthHeader(
+      nodeAuthHeaderMs(
         key,
         key.id,
         'POST',
         path,
-        Math.floor((Date.now() + clock.offset) / 1000),
+        Date.now() + clock.offset,
         new TextEncoder().encode(o.signedRaw ?? text),
       );
     return fetch(base + path, {
