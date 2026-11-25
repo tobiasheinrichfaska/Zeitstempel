@@ -80,6 +80,10 @@ describe('docs against the code', () => {
       'createRelayClient',
       'parseRelayAnswer',
       'parseServiceList',
+      'parseRelayList',
+      'isRelayAddress',
+      'relayOrigin',
+      'relayUsable',
     ];
     for (const name of documented) {
       expect(typeof (lib as Record<string, unknown>)[name], name).toBe('function');

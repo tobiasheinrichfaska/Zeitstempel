@@ -20,3 +20,10 @@ export type {
   RelayClientOptions,
   RelayStamp,
 } from './client.ts';
+export {
+  MAX_RELAY_ADDRESS_CHARS,
+  isRelayAddress,
+  parseRelayList,
+  relayOrigin,
+  relayUsable,
+} from './relayAddress.ts';

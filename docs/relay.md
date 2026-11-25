@@ -96,6 +96,13 @@ const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime,
 4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes und Hash aufbewahren; geprüft wird später
    mit denselben Mitteln, ohne das Relay.
 
+Adressen des Relays (`src/lib/relayAddress.ts`, rein, nichts wirft): `parseRelayList(text)` liest eine Liste
+aus Kommas (z. B. eine Build-Variable) und behält nur gültige Adressen, getrimmt und ohne Doppelte;
+`isRelayAddress(wert)` prüft eine Adresse (leer = aus; `https`, `http` nur für `localhost` und `127.0.0.1`;
+keine Anmeldedaten, keine Leerzeichen, höchstens 200 Zeichen); `relayOrigin(adresse)` liefert die Herkunft
+(für eine Content-Security-Policy `connect-src`) oder `null`; `relayUsable(einstellung, erlaubt)` ist wahr,
+wenn die Einstellung nicht leer ist und genau eine erlaubte Adresse.
+
 Fehlercodes des Clients: `relay-unreachable`, `relay-timeout`, `relay-refused`, `relay-bad-response`,
 `relay-rate-limited`, `no-trusted-service`, `bad-hash` und die Codes der Prüfung (`imprint-mismatch`,
 `signature-invalid`, `untrusted-chain` …), unverändert durchgereicht.
