@@ -16,6 +16,17 @@ export interface RelayKey {
    * collecting operation. Absent or false: type 1 (normal).
    */
   solo?: boolean;
+  /**
+   * `"revoked": true` (file version 3): the key stays in the file but is refused like an unknown one (401, the same work,
+   * counted globally as `keyRevoked`). Absent or false: the key counts.
+   */
+  revoked?: boolean;
+  /** `notAfter` (file version 3, Unix seconds): from this moment on the key is refused like a revoked one (counted as `keyExpired`). */
+  notAfter?: number;
+  /** `services` (file version 3): the only service ids this key may stamp with (else `403 service-not-allowed`). Absent: all. */
+  services?: string[];
+  /** `perMinute` (file version 3): the key's own limit per minute instead of `perMinutePerKey` (1 to `perMinutePerKey`). */
+  perMinute?: number;
 }
 
 /** What a key file holds: the keys and the optional restart time (Unix seconds, `restartAfter`). */
@@ -29,6 +40,12 @@ export const RESTART_AFTER_MIN = 1_000_000_000;
 export const RESTART_AFTER_MAX = 99_999_999_999;
 
 const KEY_ID = /^[a-z][a-z0-9-]{0,31}$/;
+/** The pattern of a service id (as in `services.json`). */
+const SERVICE_ID = /^[a-z][a-z0-9-]{0,31}$/;
+/** `services` of an entry: at most this many ids. */
+export const MAX_KEY_SERVICES = 16;
+const ENTRY_V2 = ['id', 'publicKey', 'solo'];
+const ENTRY_V3 = ['notAfter', 'perMinute', 'revoked', 'services'];
 export const MAX_KEYS = 64;
 // DER prefix of a SubjectPublicKeyInfo for id-ecPublicKey / prime256v1 followed by the 65-byte point
 const SPKI_P256 = Uint8Array.from(
@@ -49,13 +66,19 @@ export function publicKeyObject(point: Uint8Array): KeyObject | null {
 }
 
 /**
- * Strict reader of the key file: `{"version": 2, "keys": [{"id", "publicKey", "solo"?}], "restartAfter"?}` with 1
- * to 64 keys, ids of the form `[a-z][a-z0-9-]{0,31}`, public keys as unpadded base64url of an uncompressed
- * point (65 bytes) that lies on the curve P-256, no duplicate id, no duplicate key, no other fields. `solo` is
- * a boolean (nothing else), `restartAfter` an integer of Unix seconds. The failure carries a rule name and,
- * for an entry, its index in `keys`, never content.
+ * Strict reader of the key file: `{"version": 2 or 3, "keys": [{"id", "publicKey", "solo"?, ...}], "restartAfter"?}`
+ * with 0 to 64 keys (an expressly empty list is valid: nobody may stamp), ids of the form `[a-z][a-z0-9-]{0,31}`,
+ * public keys as unpadded base64url of an uncompressed point (65 bytes) that lies on the curve P-256, no duplicate id,
+ * no duplicate key, no other fields. `solo` is a boolean (nothing else), `restartAfter` an integer of Unix seconds.
+ * Version 3 only, per entry: `revoked` (boolean), `notAfter` (integer, Unix seconds), `services` (1 to 16 distinct
+ * service ids; with `knownServices` each must be one of them) and `perMinute` (integer, 1 to `perMinutePerKey`); in a
+ * version 2 file these fields are a read error. The failure carries a rule name and, for an entry, its index in
+ * `keys`, never content.
  */
-export function readKeyFileFull(data: unknown): Result<KeyFile> {
+export function readKeyFileFull(
+  data: unknown,
+  knownServices?: ReadonlySet<string>,
+): Result<KeyFile> {
   // `index`: the position of the entry in `keys` (never its content)
   const bad = (rule: string, index?: number) =>
     fail('bad-key-file', index === undefined ? rule : `${rule} in keys[${index}]`);
@@ -63,9 +86,10 @@ export function readKeyFileFull(data: unknown): Result<KeyFile> {
   const top = data as Record<string, unknown>;
   const names = Object.keys(top).sort().join();
   if (names !== 'keys,version' && names !== 'keys,restartAfter,version') return bad('fields');
-  if (top.version !== 2) return bad('version');
+  if (top.version !== 2 && top.version !== 3) return bad('version');
+  const v3 = top.version === 3;
   let restartAfter: number | undefined;
-  if ('restartAfter' in top) {
+  if (Object.hasOwn(top, 'restartAfter')) {
     const r = top.restartAfter;
     if (
       typeof r !== 'number' ||
@@ -77,7 +101,7 @@ export function readKeyFileFull(data: unknown): Result<KeyFile> {
     }
     restartAfter = r;
   }
-  if (!Array.isArray(top.keys) || top.keys.length < 1 || top.keys.length > MAX_KEYS) {
+  if (!Array.isArray(top.keys) || top.keys.length > MAX_KEYS) {
     return bad('key-count');
   }
   const keys: RelayKey[] = [];
@@ -87,12 +111,54 @@ export function readKeyFileFull(data: unknown): Result<KeyFile> {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
       return bad('entry', index);
     const e = entry as Record<string, unknown>;
-    const fields = Object.keys(e).sort().join();
-    if (fields !== 'id,publicKey' && fields !== 'id,publicKey,solo')
+    const present = Object.keys(e);
+    if (!present.includes('id') || !present.includes('publicKey'))
       return bad('entry-fields', index);
+    const extra = present.filter((f) => f !== 'id' && f !== 'publicKey');
+    if (extra.some((f) => !ENTRY_V2.includes(f) && !ENTRY_V3.includes(f)))
+      return bad('entry-fields', index);
+    if (!v3 && extra.some((f) => ENTRY_V3.includes(f))) return bad('v3-field-in-v2-file', index);
     if (typeof e.id !== 'string' || !KEY_ID.test(e.id)) return bad('id', index);
     if (typeof e.publicKey !== 'string') return bad('public-key', index);
-    if ('solo' in e && typeof e.solo !== 'boolean') return bad('solo', index);
+    if (Object.hasOwn(e, 'solo') && typeof e.solo !== 'boolean') return bad('solo', index);
+    if (Object.hasOwn(e, 'revoked') && typeof e.revoked !== 'boolean') return bad('revoked', index);
+    if (Object.hasOwn(e, 'notAfter')) {
+      const n = e.notAfter;
+      if (
+        typeof n !== 'number' ||
+        !Number.isInteger(n) ||
+        n < RESTART_AFTER_MIN ||
+        n > RESTART_AFTER_MAX
+      ) {
+        return bad('not-after', index);
+      }
+    }
+    if (Object.hasOwn(e, 'perMinute')) {
+      const n = e.perMinute;
+      if (
+        typeof n !== 'number' ||
+        !Number.isInteger(n) ||
+        n < 1 ||
+        n > RELAY_LIMITS.perMinutePerKey
+      ) {
+        return bad('per-minute', index);
+      }
+    }
+    let services: string[] | undefined;
+    if (Object.hasOwn(e, 'services')) {
+      const list = e.services;
+      if (!Array.isArray(list) || list.length < 1 || list.length > MAX_KEY_SERVICES)
+        return bad('services', index);
+      const seen = new Set<string>();
+      for (const id of list as unknown[]) {
+        if (typeof id !== 'string' || !SERVICE_ID.test(id) || seen.has(id))
+          return bad('services', index);
+        if (knownServices !== undefined && !knownServices.has(id))
+          return bad('services-unknown', index);
+        seen.add(id);
+      }
+      services = [...seen];
+    }
     const point = fromBase64Url(e.publicKey);
     if (!point || point.length !== 65) return bad('public-key', index);
     if (publicKeyObject(point) === null) return bad('public-key-point', index);
@@ -101,14 +167,25 @@ export function readKeyFileFull(data: unknown): Result<KeyFile> {
     if (points.has(hex)) return bad('duplicate-key', index);
     ids.add(e.id);
     points.add(hex);
-    keys.push({ id: e.id, publicKey: point, ...(e.solo === true ? { solo: true } : {}) });
+    keys.push({
+      id: e.id,
+      publicKey: point,
+      ...(e.solo === true ? { solo: true } : {}),
+      ...(e.revoked === true ? { revoked: true } : {}),
+      ...(typeof e.notAfter === 'number' ? { notAfter: e.notAfter } : {}),
+      ...(services === undefined ? {} : { services }),
+      ...(typeof e.perMinute === 'number' ? { perMinute: e.perMinute } : {}),
+    });
   }
   return ok({ keys, ...(restartAfter === undefined ? {} : { restartAfter }) });
 }
 
 /** The keys of a key file (see `readKeyFileFull`; `restartAfter` is checked but not returned). */
-export function readKeyFile(data: unknown): Result<RelayKey[]> {
-  const full = readKeyFileFull(data);
+export function readKeyFile(
+  data: unknown,
+  knownServices?: ReadonlySet<string>,
+): Result<RelayKey[]> {
+  const full = readKeyFileFull(data, knownServices);
   return full.ok ? ok(full.value.keys) : full;
 }
 
@@ -174,6 +251,7 @@ export function keyFilePermissionWarning(
 export function loadKeyFile(
   path: string,
   read: (path: string) => string = readKeyFileText,
+  knownServices?: ReadonlySet<string>,
 ): KeyFile {
   // never a cause on the error: the message of a JSON error can quote a piece of the file
   let data: unknown;
@@ -189,7 +267,7 @@ export function loadKeyFile(
     );
   }
   if (problem !== null) throw new Error(`${path}: Schlüsseldatei nicht lesbar oder kein JSON`);
-  const file = readKeyFileFull(data);
+  const file = readKeyFileFull(data, knownServices);
   if (!file.ok)
     throw new Error(`${path}: ungültige Schlüsseldatei (${file.reason}: ${file.detail})`);
   return file.value;
@@ -199,6 +277,7 @@ export function loadKeyFile(
 export function loadKeys(
   path: string,
   read: (path: string) => string = readKeyFileText,
+  knownServices?: ReadonlySet<string>,
 ): RelayKey[] {
-  return loadKeyFile(path, read).keys;
+  return loadKeyFile(path, read, knownServices).keys;
 }

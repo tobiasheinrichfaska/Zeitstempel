@@ -314,6 +314,7 @@ async function partB(engine, browser, launcher) {
       random: (n) => new Uint8Array(randomBytes(n)),
       now: () => Date.now(),
       keys: relayKeys,
+      audience: 'https://relay.browser-check', // the browser signs this name (AUD below)
       ...extra,
     });
     const { server: rs1 } = createRelayServer(mkOptions({ batch: { windowMs: 300, max: 100 } }));
@@ -347,7 +348,17 @@ async function partB(engine, browser, launcher) {
         const sha = async (s) =>
           new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)));
         const pk = (n) => Uint8Array.from(keys[n].pk);
-        const signed = async (key, keyId, path, bodyText, nowMs = Date.now(), method = 'POST') => {
+        const AUD = 'https://relay.browser-check'; // the relay's RELAY_AUDIENCE (mkOptions below)
+        const signed = async (
+          key,
+          keyId,
+          path,
+          bodyText,
+          nowMs = Date.now(),
+          method = 'POST',
+          overrideAud = null,
+          jti = null,
+        ) => {
           const r = await zs.signRelayRequest({
             privateKey: key,
             keyId,
@@ -355,6 +366,8 @@ async function partB(engine, browser, launcher) {
             path,
             body: enc.encode(bodyText),
             nowMs,
+            audience: overrideAud ?? AUD,
+            ...(jti ? { jti } : {}),
           });
           if (!r.ok) throw new Error('sign ' + r.reason);
           return r.value;
@@ -407,7 +420,6 @@ async function partB(engine, browser, launcher) {
           v ? (v.ok ? (v.value.signer ?? '') : v.reason) : 'no token',
         );
         // CryptoKey non-extractable
-        await new Promise((x) => setTimeout(x, 1100));
         const ck = window.K.c.privateKey;
         r = await stamp(B2, ck, 'app-c', await sha('a-2'));
         j = await jsonOf(r);
@@ -430,7 +442,26 @@ async function partB(engine, browser, launcher) {
         const parts = good.split('.');
         const flip = (s) => s.slice(0, 5) + (s[5] === 'A' ? 'B' : 'A') + s.slice(6);
         const cases = {
-          'flipped signature char': [parts[0], parts[1], parts[2], flip(parts[3])].join('.'),
+          'flipped signature char': [parts[0], parts[1], parts[2], parts[3], flip(parts[4])].join(
+            '.',
+          ),
+          'other audience': await signed(
+            pk('a'),
+            'app-a',
+            path,
+            body,
+            Date.now(),
+            'POST',
+            'https://relay.elsewhere',
+          ),
+          'jti changed after signing': [
+            parts[0],
+            parts[1],
+            parts[2],
+            zs.toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+            parts[4],
+          ].join('.'),
+          'version 2 head (seconds, no jti)': `v2.app-a.${Math.floor(Date.now() / 1000)}.${parts[4]}`,
           'other key (d, unknown to relay) under kid app-a': await signed(
             pk('d'),
             'app-a',
@@ -473,8 +504,7 @@ async function partB(engine, browser, launcher) {
             `${retry.status} ${(await jsonOf(retry))?.error ?? ''}`,
           );
         }
-        // replay of the same head
-        await new Promise((x) => setTimeout(x, 1100));
+        // replay of the same head (the jti makes every head its own request: no waiting for another second)
         const rbody = JSON.stringify({ hash: zs.toBase64Url(await sha('a-replay')) });
         const rh = await signed(pk('a'), 'app-a', path, rbody);
         const r1 = await post(B2, 'freetsa', rbody, rh);
@@ -483,6 +513,38 @@ async function partB(engine, browser, launcher) {
           'a5 same head twice: 2nd refused',
           r1.status === 200 && r2.status === 401,
           `${r1.status} ${r2.status}`,
+        );
+        // same key, same body, same millisecond, two jti: two requests, neither is refused as a replay (B3)
+        const tNow = Date.now();
+        const sameBody = JSON.stringify({ hash: zs.toBase64Url(await sha('a-two-jti')) });
+        const t1 = await post(
+          B2,
+          'freetsa',
+          sameBody,
+          await signed(pk('a'), 'app-a', path, sameBody, tNow),
+        );
+        const t2 = await post(
+          B2,
+          'freetsa',
+          sameBody,
+          await signed(pk('a'), 'app-a', path, sameBody, tNow),
+        );
+        add(
+          'a5b same key, body and millisecond with two jti: neither is 401',
+          t1.status !== 401 && t2.status !== 401,
+          `${t1.status} ${t2.status}`,
+        );
+        // the jti is 16 random bytes, 22 characters, new for every head
+        const j1 = (await signed(pk('a'), 'app-a', path, sameBody, tNow)).split('.');
+        const j2 = (await signed(pk('a'), 'app-a', path, sameBody, tNow)).split('.');
+        add(
+          'a5c head is v3.<kid>.<ts ms>.<jti 22>.<sig 86>, jti differs per call',
+          j1[0] === 'v3' &&
+            /^[0-9]{13}$/.test(j1[2]) &&
+            j1[3].length === 22 &&
+            j1[4].length === 86 &&
+            j1[3] !== j2[3],
+          j1.slice(0, 4).join('.'),
         );
 
         // (b) CORS
@@ -519,6 +581,7 @@ async function partB(engine, browser, launcher) {
           path: rawPath,
           body: raw,
           nowMs: Date.now(),
+          audience: AUD,
         });
         const rr2 = await fetch(B2 + rawPath, {
           method: 'POST',
@@ -759,6 +822,7 @@ async function partB(engine, browser, launcher) {
           path: '/v1/stamp/freetsa',
           body: enc.encode(bodyText),
           nowMs: Date.now(),
+          audience: 'https://relay.browser-check',
         });
         return fetch(B2 + '/v1/stamp/freetsa', {
           method: 'POST',
@@ -798,6 +862,7 @@ async function partB(engine, browser, launcher) {
               path: '/v1/stamp/freetsa',
               body: new Uint8Array(32),
               nowMs: Date.now(),
+              audience: 'https://relay.browser-check',
             });
             return { secure: isSecureContext, subtle: typeof crypto.subtle, r };
           },

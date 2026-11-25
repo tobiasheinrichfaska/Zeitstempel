@@ -9,6 +9,8 @@ export type Reason =
   | 'bad-key-id'
   | 'bad-key-file'
   | 'bad-batch'
+  | 'bad-evidence'
+  | 'evidence-hash-mismatch'
   // DER / structure
   | 'too-large'
   | 'malformed'
@@ -48,15 +50,7 @@ export type Reason =
   | 'bad-eku'
   | 'not-a-ca'
   | 'untrusted-chain'
-  | 'chain-too-long'
-  // relay client
-  | 'relay-unreachable'
-  | 'relay-timeout'
-  | 'relay-refused'
-  | 'relay-bad-response'
-  | 'relay-rate-limited'
-  | 'relay-unauthorized'
-  | 'no-trusted-service';
+  | 'chain-too-long';
 
 export interface Failure {
   ok: false;

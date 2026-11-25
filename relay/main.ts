@@ -6,6 +6,8 @@
 //                            on purpose, see docs/dienste.md for the terms of use of each service)
 //   RELAY_KEYS_FILE          path of the key file (ids and public keys; no secret, but only the operator may
 //                            write it; never in the repo); required
+//   RELAY_AUDIENCE           the name of this relay inside the signed head (printable ASCII without a space, 1 to 128
+//                            characters, e.g. its public origin); required with RELAY_KEYS_FILE, differs per instance
 //   RELAY_AUTH               "off" starts without keys (local development only); nothing else is valid
 //   RELAY_HOST               address to listen on (default: 127.0.0.1, behind a reverse proxy on the same
 //                            machine; a container or another machine needs RELAY_HOST=0.0.0.0 on purpose;
@@ -18,6 +20,8 @@
 //   RELAY_MAX_WAIT_MS        the longest a request waits, 1000 to 60000 (default 30000); then 503 busy. Both
 //                            operations: the minimum distance to the previous call of the service (single
 //                            operation too); collecting operation: also a free slot of the service
+//   RELAY_KEY_SHARE          share of a service's budget per minute that ONE key may use at one service, whole percent
+//                            10 to 100 (default 100 = off; an empty value is invalid); then 429 key-share (docs/relay.md)
 //   RELAY_UPSTREAM_AUTH_<ID>  credentials of a paid service that the relay holds itself (<ID>: the service id in capitals,
 //                            '-' as '_'); `user:password` for basic, the token for bearer and header; mandatory for a
 //                            chosen service with `auth.source` "relay", optional for "either", refused for the others
@@ -28,7 +32,7 @@ import type { Server } from 'node:http';
 import { loadServices } from './load.ts';
 import type { ServiceAuth } from '../src/index.ts';
 import { credentialsFromText, type UpstreamCredentials } from './credentials.ts';
-import { keyFilePermissionWarning, loadKeys, type RelayKey } from './keys.ts';
+import { keyFilePermissionWarning, loadKeyFile, loadKeys, type RelayKey } from './keys.ts';
 import { createKeyWatcher } from './keywatch.ts';
 import type { RelayOptions, RelayService } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
@@ -77,6 +81,12 @@ export function readSettings(env: NodeJS.ProcessEnv) {
   const authOff = env.RELAY_AUTH === 'off';
   if (authOff && (env.RELAY_KEYS_FILE ?? '') !== '') {
     throw new Error('RELAY_AUTH=off und RELAY_KEYS_FILE schließen sich aus');
+  }
+  const audience = env.RELAY_AUDIENCE ?? '';
+  if (audience !== '' && !/^[\x21-\x7e]{1,128}$/.test(audience)) {
+    throw new Error(
+      'RELAY_AUDIENCE: ungültig (druckbares ASCII ohne Leerzeichen, 1 bis 128 Zeichen erwartet)',
+    );
   }
   const hostEnv = (env.RELAY_HOST ?? '').trim();
   if (authOff && hostEnv !== '' && !LOOPBACK_HOSTS.includes(hostEnv)) {
@@ -130,6 +140,17 @@ export function readSettings(env: NodeJS.ProcessEnv) {
       );
     }
   }
+  // The share of one key at a service's budget: strictly read; not set means 100 (off), an empty value is invalid.
+  const keyShareRaw = env.RELAY_KEY_SHARE;
+  let keyShare: number = RELAY_LIMITS.keyShareMax;
+  if (keyShareRaw !== undefined) {
+    keyShare = /^[0-9]{1,3}$/.test(keyShareRaw) ? Number(keyShareRaw) : NaN;
+    if (!(keyShare >= RELAY_LIMITS.keyShareMin && keyShare <= RELAY_LIMITS.keyShareMax)) {
+      throw new Error(
+        `RELAY_KEY_SHARE: ungültig (ganze Zahl von ${RELAY_LIMITS.keyShareMin} bis ${RELAY_LIMITS.keyShareMax} Prozent erwartet; ${RELAY_LIMITS.keyShareMax} schaltet die Grenze aus)`,
+      );
+    }
+  }
   return {
     origins,
     port,
@@ -138,10 +159,12 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     batchMs,
     batchMax,
     maxWaitMs,
+    keyShare,
     allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
     only,
     authOff,
     keysFile: env.RELAY_KEYS_FILE ?? '',
+    audience,
   };
 }
 
@@ -221,15 +244,23 @@ export function readUpstreamAuth(
   return out;
 }
 
+/** Written at the start with an empty key list, and at a reload that leaves none. */
+export const EMPTY_KEYS_WARNING =
+  'Die Schlüsseldatei enthält keinen Schlüssel ("keys": []): das Relay weist jeden Aufruf mit 401 ab (kein Schlüssel = niemand darf)';
+
 /** Settings, the services to offer and the keys (or `'off'`), or a throw that names the problem. */
 export function readConfig(
   env: NodeJS.ProcessEnv,
   load: () => RelayService[] = loadServices,
-  readKeys: (path: string) => RelayKey[] = loadKeys,
+  readKeys: (path: string, knownServices: ReadonlySet<string>) => RelayKey[] = (path, known) =>
+    loadKeys(path, undefined, known),
   checkPermissions: (path: string) => string | null = keyFilePermissionWarning,
 ) {
   const settings = readSettings(env);
-  const services = chooseServices(load(), settings.only, settings.allowPlainHttp);
+  const all = load();
+  // every service of services.json (also the ones this relay does not offer): the ids a key's `services` may name
+  const knownServices: ReadonlySet<string> = new Set(all.map((s) => s.id));
+  const services = chooseServices(all, settings.only, settings.allowPlainHttp);
   // A window shorter than the interval a service asks for would call it more often than it wants.
   if (settings.batchMs !== undefined) {
     const tooShort = services.filter((s) => s.minIntervalMs > settings.batchMs!);
@@ -246,6 +277,7 @@ export function readConfig(
       services,
       upstreamAuth,
       keys: 'off' as const,
+      knownServices,
       warnings: [`auth off, loopback only (${settings.host})`],
     };
   }
@@ -254,9 +286,17 @@ export function readConfig(
       'RELAY_KEYS_FILE fehlt (ohne Schlüsseldatei startet das Relay nicht; nur für die lokale Entwicklung: RELAY_AUTH=off)',
     );
   }
-  const keys = readKeys(settings.keysFile);
+  if (settings.audience === '') {
+    throw new Error(
+      'RELAY_AUDIENCE fehlt (mit einer Schlüsseldatei braucht das Relay seinen Namen für den signierten Kopf, z. B. seine öffentliche Herkunft; nur für die lokale Entwicklung: RELAY_AUTH=off)',
+    );
+  }
+  const keys = readKeys(settings.keysFile, knownServices);
   const warning = checkPermissions(settings.keysFile);
-  return { settings, services, upstreamAuth, keys, warnings: warning === null ? [] : [warning] };
+  const warnings = warning === null ? [] : [warning];
+  // An expressly empty list is valid (nobody may stamp), but a start with it is almost always a mistake: say so clearly.
+  if (keys.length === 0) warnings.push(EMPTY_KEYS_WARNING);
+  return { settings, services, upstreamAuth, keys, knownServices, warnings };
 }
 
 /** The start line: port, services and whether requests are authenticated. No key data. */
@@ -336,11 +376,13 @@ export function buildRelayOptions(
     random: deps.random,
     now: deps.now,
     keys,
+    ...(keys === 'off' ? {} : { audience: settings.audience }),
     upstreamAuth,
     ...(settings.batchMs === undefined
       ? {}
       : { batch: { windowMs: settings.batchMs, max: settings.batchMax } }),
     ...(settings.maxWaitMs === undefined ? {} : { maxWaitMs: settings.maxWaitMs }),
+    ...(settings.keyShare >= RELAY_LIMITS.keyShareMax ? {} : { keyShare: settings.keyShare }),
   };
 }
 
@@ -422,12 +464,21 @@ function main(): void {
   };
   // The key file is read again while the relay runs (new keys count, removed ones stop at once); a
   // `restartAfter` in it ends the process once cleanly, a supervisor starts it again. The relay only reads the file.
+  let firstApply = true;
   const watcher =
     keys === 'off'
       ? null
       : createKeyWatcher({
           path: settings.keysFile,
-          apply: (list) => relay.setKeys(list),
+          load: (path) => loadKeyFile(path, undefined, config.knownServices),
+          apply: (list) => {
+            relay.setKeys(list);
+            // the first look only confirms what the start read (and warned about)
+            if (list.length === 0 && !firstApply) {
+              console.error(JSON.stringify({ event: 'warning', message: EMPTY_KEYS_WARNING }));
+            }
+            firstApply = false;
+          },
           now: () => Date.now(),
           startMs,
           onRestart: () => {

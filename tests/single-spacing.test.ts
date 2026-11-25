@@ -153,12 +153,12 @@ describe('single operation: the minimum distance between two calls to one servic
     expect((await h.stamp(sha256('first'), { key: KEY_A })).status).toBe(200);
     // the second waits; while it waits the wall clock of the relay runs 59 s ahead (head 59 s old: inside the window)
     const secondHash = sha256('second');
-    const head = (await import('./auth-helpers.ts')).nodeAuthHeader(
+    const head = (await import('./auth-helpers.ts')).nodeAuthHeaderMs(
       KEY_B,
       KEY_B.id,
       'POST',
       '/v1/stamp/freetsa',
-      Math.floor(Date.now() / 1000),
+      Date.now(),
       new TextEncoder().encode(JSON.stringify({ hash: toBase64Url(secondHash) })),
     );
     const second = h.stamp(secondHash, { key: KEY_B, head });

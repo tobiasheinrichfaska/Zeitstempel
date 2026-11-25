@@ -1,10 +1,13 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { verify } from 'node:crypto';
 import { fromBase64Url, signRelayRequest, toBase64Url } from '../src/index.ts';
 import { loadKeys, publicKeyObject, readKeyFile } from '../relay/keys.ts';
-import { readConfig, startEvent } from '../relay/main.ts';
+import { buildRelayOptions, readConfig, startEvent } from '../relay/main.ts';
 import { loadServices } from '../relay/load.ts';
-import { authMessage, makeTestKey } from './auth-helpers.ts';
+import { TEST_AUDIENCE, authMessage, makeTestKey } from './auth-helpers.ts';
 
 const SERVICES = loadServices();
 const pub = () => toBase64Url(makeTestKey('x').publicKey);
@@ -55,7 +58,7 @@ describe('relay key file reader', () => {
       ['extra field', file([{ id: 'a', publicKey: p, note: 'x' }])],
       ['extra top-level field', file([{ id: 'a', publicKey: p }], { more: 1 })],
       ['version 1 (HMAC file)', file([{ id: 'a', publicKey: p }], { version: 1 })],
-      ['no keys', file([])],
+      ['no key list', { version: 2 }],
       ['keys not an array', file([], { keys: {} })],
       ['not an object', []],
       ['null', null],
@@ -82,7 +85,7 @@ describe('relay key file reader', () => {
     const dup = file([keyOf('a'), keyOf('b'), keyOf('a')]);
     expect(readKeyFile(dup)).toMatchObject({ ok: false, detail: 'duplicate-id in keys[2]' });
     // a rule of the whole file has no index
-    expect(readKeyFile(file([]))).toMatchObject({ ok: false, detail: 'key-count' });
+    expect(readKeyFile(file([], { keys: {} }))).toMatchObject({ ok: false, detail: 'key-count' });
     expect(() => loadKeys('/x/keys.json', () => JSON.stringify(third))).toThrow(
       /\(bad-key-file: id in keys\[2\]\)/,
     );
@@ -106,7 +109,11 @@ describe('relay key file reader', () => {
     } catch (e) {
       expect((e as Error).message).not.toContain(secretish);
     }
-    expect(() => loadKeys('/x/keys.json', () => JSON.stringify(file([])))).toThrow(/bad-key-file/);
+    // an expressly empty list is valid (it blocks everybody, docs/relay.md); a missing list is not
+    expect(loadKeys('/x/keys.json', () => JSON.stringify(file([])))).toEqual([]);
+    expect(() => loadKeys('/x/keys.json', () => JSON.stringify({ version: 2 }))).toThrow(
+      /bad-key-file/,
+    );
     expect(loadKeys('/x/keys.json', () => JSON.stringify(file([keyOf('a')])))).toHaveLength(1);
   });
 });
@@ -124,11 +131,44 @@ describe('relay start: authentication', () => {
   it('reads the key file when one is named', () => {
     const read = (): string => JSON.stringify(file([keyOf('a')]));
     const config = readConfig(
-      { ...env, RELAY_KEYS_FILE: '/x/k.json' },
+      { ...env, RELAY_KEYS_FILE: '/x/k.json', RELAY_AUDIENCE: 'https://relay.example' },
       () => SERVICES,
       (p) => loadKeys(p, read),
     );
     expect(config.keys).toHaveLength(1);
+    expect(config.settings.audience).toBe('https://relay.example');
+  });
+  it('refuses to start with a key file and no RELAY_AUDIENCE (German line), and refuses an invalid one', () => {
+    const read = (): string => JSON.stringify(file([keyOf('a')]));
+    const go = (extra: Record<string, string>) =>
+      readConfig(
+        { ...env, RELAY_KEYS_FILE: '/x/k.json', ...extra },
+        () => SERVICES,
+        (p) => loadKeys(p, read),
+      );
+    expect(() => go({})).toThrow(/RELAY_AUDIENCE fehlt/);
+    expect(() => go({ RELAY_AUDIENCE: '' })).toThrow(/RELAY_AUDIENCE fehlt/);
+    for (const bad of ['has space', 'a'.repeat(129), 'ümlaut', 'tab\t']) {
+      expect(() => go({ RELAY_AUDIENCE: bad }), bad).toThrow(/RELAY_AUDIENCE: ungültig/);
+    }
+    expect(go({ RELAY_AUDIENCE: 'a'.repeat(128) }).keys).toHaveLength(1);
+    expect(go({ RELAY_AUDIENCE: '!' }).keys).toHaveLength(1);
+  });
+  it('RELAY_AUTH=off needs no RELAY_AUDIENCE, and buildRelayOptions hands it to the relay only with keys', () => {
+    const off = readConfig({ ...env, RELAY_AUTH: 'off' }, () => SERVICES);
+    const deps = {
+      upstream: async () => ({}) as never,
+      random: () => new Uint8Array(1),
+      now: () => 0,
+    };
+    expect('audience' in buildRelayOptions(off, deps)).toBe(false);
+    const read = (): string => JSON.stringify(file([keyOf('a')]));
+    const on = readConfig(
+      { ...env, RELAY_KEYS_FILE: '/x/k.json', RELAY_AUDIENCE: 'https://relay.example' },
+      () => SERVICES,
+      (p) => loadKeys(p, read),
+    );
+    expect(buildRelayOptions(on, deps).audience).toBe('https://relay.example');
   });
   it('refuses to start with RELAY_AUTH=off and a key file at the same time', () => {
     expect(() =>
@@ -157,6 +197,30 @@ describe('relay start: authentication', () => {
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('config-error');
     expect(r.stderr).toContain('RELAY_KEYS_FILE');
+  });
+  it('the process ends with exit code 1 and the German line RELAY_AUDIENCE fehlt with a key file and no audience', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zs-aud-'));
+    try {
+      const path = join(dir, 'relay-keys.json');
+      writeFileSync(path, JSON.stringify(file([keyOf('a')])), { mode: 0o600 });
+      const r = spawnSync(process.execPath, ['relay/main.ts'], {
+        cwd: new URL('..', import.meta.url),
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '',
+          RELAY_ORIGINS: 'https://app.example',
+          RELAY_SERVICES: 'freetsa',
+          RELAY_KEYS_FILE: path,
+        },
+        timeout: 15_000,
+      });
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toContain('config-error');
+      expect(r.stderr).toContain('RELAY_AUDIENCE fehlt');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   it('the process ends with exit code 1 and a config-error naming the ids when RELAY_SERVICES is missing', () => {
     const root = new URL('..', import.meta.url);
@@ -203,11 +267,19 @@ describe('scripts/make-key.ts', () => {
       path: '/v1/stamp/freetsa',
       body: new Uint8Array(3),
       nowMs: 1_700_000_000_000,
+      audience: TEST_AUDIENCE,
     });
     expect(signed.ok).toBe(true);
     const key = publicKeyObject(fromBase64Url(entry.publicKey)!)!;
-    const message = authMessage('POST', '/v1/stamp/freetsa', 1_700_000_000, new Uint8Array(3));
-    const sig = Buffer.from((signed as { value: string }).value.split('.')[3]!, 'base64url');
+    const parts = (signed as { value: string }).value.split('.');
+    const message = authMessage(
+      'POST',
+      '/v1/stamp/freetsa',
+      1_700_000_000_000,
+      new Uint8Array(3),
+      parts[3]!,
+    );
+    const sig = Buffer.from(parts[4]!, 'base64url');
     expect(verify('sha256', Buffer.from(message), { key, dsaEncoding: 'ieee-p1363' }, sig)).toBe(
       true,
     );

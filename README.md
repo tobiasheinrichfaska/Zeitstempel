@@ -9,13 +9,13 @@ Node 24 getestet; im Browser nur in **Headless-Chromium 157** geprüft, am 2026-
 
 ## Bausteine
 
-| Baustein                                      | Was er tut                                                                                                                                                                                                                                                                                                 |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Bibliothek** (`src/`)                       | Anfrage bauen, Antwort strikt lesen, Token prüfen (Abdruck, Nonce, Signatur, Zertifikatskette gegen übergebene Anker). Läuft in Browser und Node, ohne Netzzugriff, ohne Abhängigkeiten.                                                                                                                   |
-| **Dienstliste** (`services.json`, `anchors/`) | Vier freie Dienste als Daten, mit Vertrauensankern, Bedingungen und Messung (`docs/dienste.md`). Ein qualifizierter Dienst ist eine Vorlage ohne Zugangsdaten.                                                                                                                                             |
-| **Relay-Client** (`src/lib/client.ts`)        | `createRelayClient`: fragt das Relay (`fetch` und monotone Uhr werden übergeben), signiert mit dem Schlüssel der App, prüft Token und Beleg des Sammelbetriebs selbst, hält die Pause nach 429 ein. Siehe `docs/relay.md`.                                                                                 |
-| **Relay** (`relay/`)                          | Kleiner Server, der nur Hashes an feste Dienste weiterreicht, weil Browser die Dienste wegen CORS nicht direkt erreichen. Jede Anfrage ist mit ECDSA P-256 signiert (Kopf `X-Zeitstempel-Auth`, in der App mit `signRelayRequest` berechnet; das Relay kennt nur öffentliche Schlüssel). Nicht ausgerollt. |
-| **Werkzeuge** (`scripts/`)                    | `npm run spike` (eine Anfrage je Dienst, Prüfung doppelt), `npm run probe` (eine Anfrage über das Relay), `scripts/make-key.ts` (neues Schlüsselpaar für das Relay, nur auf dem Terminal).                                                                                                                 |
+| Baustein                                         | Was er tut                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Bibliothek** (`src/`)                          | Anfrage bauen, Antwort strikt lesen, Token prüfen (Abdruck, Nonce, Signatur, Zertifikatskette gegen übergebene Anker). Läuft in Browser und Node, ohne Netzzugriff, ohne Abhängigkeiten.                                                                                                                   |
+| **Dienstliste** (`services.json`, `anchors/`)    | Vier freie Dienste als Daten, mit Vertrauensankern, Bedingungen und Messung (`docs/dienste.md`). Ein qualifizierter Dienst ist eine Vorlage ohne Zugangsdaten.                                                                                                                                             |
+| **Client** (`zeitstempel/client`, `src/client/`) | `createRelayClient`: der einzige Client des Relays (seit 2026-11-25): signiert (Anmeldung v3), prüft Token und Beleg des Sammelbetriebs selbst mit Pflicht-`minGenTime`, gibt einen Beleg (`evidence` v1). Siehe `docs/client.md`.                                                                         |
+| **Relay** (`relay/`)                             | Kleiner Server, der nur Hashes an feste Dienste weiterreicht, weil Browser die Dienste wegen CORS nicht direkt erreichen. Jede Anfrage ist mit ECDSA P-256 signiert (Kopf `X-Zeitstempel-Auth`, in der App mit `signRelayRequest` berechnet; das Relay kennt nur öffentliche Schlüssel). Nicht ausgerollt. |
+| **Werkzeuge** (`scripts/`)                       | `npm run spike` (eine Anfrage je Dienst, Prüfung doppelt), `npm run probe` (eine Anfrage über das Relay), `scripts/make-key.ts` (neues Schlüsselpaar für das Relay, nur auf dem Terminal).                                                                                                                 |
 
 ## Benutzen
 
@@ -64,7 +64,7 @@ Das Token muss `Uint8Array` sein: Text statt Bytes ergibt `malformed`. `genTime`
 im Ergebnis der Prüfung (und in der Antwort des Relays) ein ISO-Text, in `response.value.info` dagegen eine Zahl
 (Millisekunden seit 1970).
 
-Über das Relay (Browser): die Anfrage wird mit dem privaten Schlüssel der App signiert; das Token prüft die App selbst.
+Über das Relay (Browser): die Anfrage wird mit dem privaten Schlüssel der App signiert (Kopf `v3.<kid>.<ts>.<jti>.<sig>`, mit Zeit in Millisekunden, einem Zufalls-`jti` je Anfrage und dem Namen des Relays); das Token prüft die App selbst.
 
 ```ts
 import { fromBase64Url, signRelayRequest, toBase64Url } from 'zeitstempel';
@@ -83,6 +83,7 @@ const auth = await signRelayRequest({
   path,
   body,
   nowMs: sentMs, // Millisekunden, nicht Sekunden
+  audience: 'https://relay.example', // genau die RELAY_AUDIENCE des Relays (der Betreiber nennt sie); je Aufruf ein neues `jti`
 });
 if (!auth.ok) throw new Error(auth.reason);
 const res = await fetch(relayUrl + path, {
@@ -95,26 +96,11 @@ const token = fromBase64Url((await res.json()).token); // 200 { service, genTime
 // { now: new Date(), minGenTime: new Date(sentMs - 60_000) }, sonst ist die Frische nicht geprüft
 ```
 
-Kürzer mit dem Client der Bibliothek (signiert, korrigiert die Uhr nach einem 401 einmal, prüft Token und Beleg):
-
-```ts
-import { createRelayClient, fromBase64Url } from 'zeitstempel';
-
-const client = createRelayClient({
-  relay: relayUrl,
-  fetch: (url, init) => fetch(url, init),
-  now: () => performance.now(),
-  wallNow: () => Date.now(),
-  trusted: new Map([['freetsa', [freetsaRootPem]]]),
-  auth: { privateKey: fromBase64Url(privateKeyText.trim())!, keyId: 'app-1' },
-  timeoutMs: 80_000,
-});
-const r = await client.stamp(sha256); // oder client.stamp(sha256, { mode: 'solo' })
-// r.value.token und, im Sammelbetrieb, r.value.batch zusammen aufbewahren
-```
+Kürzer mit dem Client `zeitstempel/client` (signiert, korrigiert die Uhr nach einem 401 einmal, prüft Token und Beleg): siehe
+„Client (`zeitstempel/client`)“ unten.
 
 Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt, oder ein nicht extrahierbarer `CryptoKey`) gehört in die App. `make-key` druckt ihn als
-base64url-Text auf das Terminal (im Beispiel oben macht `fromBase64Url` daraus die Bytes). In einer Web-App ist er für die
+base64url-Text auf das Terminal (`fromBase64Url` macht daraus die Bytes). In einer Web-App ist er für die
 Besucher der Seite lesbar. Das Relay und die Werkzeuge (`relay/`, `scripts/`) sind **nicht im Paket** (nur Bibliothek,
 Dienstliste und Anker): dafür das Repository klonen. Einzelheiten und „Lokal testen“ in [`docs/relay.md`](docs/relay.md).
 
@@ -165,6 +151,35 @@ dokumentiert). Bytes aus einem anderen Realm (iframe, Worker) bitte als `new Uin
 [`docs/data-model.html`](docs/data-model.html) (Funktionen, Strukturen, Fehlercodes),
 [`docs/grenzen.md`](docs/grenzen.md) (was nicht geprüft wird), [`docs/dienste.md`](docs/dienste.md)
 (Dienste, Messung, Bedingungen) und [`docs/relay.md`](docs/relay.md).
+
+## Client (`zeitstempel/client`)
+
+Für Apps, die ein Relay benutzen, gibt es einen fertigen Client als zweiten Einstiegspunkt (der Haupteinstieg bleibt frei von
+`fetch`): Er signiert, sendet, wiederholt bei `429`, gleicht die Uhr nach einem `401` einmal über `Date` ab, wechselt bei `502`/`504`
+und Netzfehlern den Dienst, **prüft das Token selbst** (mit Pflicht-`minGenTime`) und gibt nur dann einen Beleg (`evidence` v1)
+zurück. Der Beleg lässt sich später ohne das Relay prüfen.
+
+```ts
+import { createRelayClient, serializeEvidence, verifyEvidence } from 'zeitstempel/client';
+
+const client = createRelayClient({
+  relayUrl: 'https://relay.example',
+  audience: 'https://relay.example', // die RELAY_AUDIENCE des Relays
+  keyId: 'app-1',
+  privateKey, // PKCS#8-Bytes oder CryptoKey
+  trust: [ankerPem], // PEM-Texte der Vertrauensanker
+  services: ['freetsa', 'sectigo'], // Reihenfolge der Vorliebe, der zweite ist der Failover
+});
+if (!client.ok) throw new Error(client.reason);
+
+const stamped = await client.value.stamp(hash); // hash: SHA-256, 32 Byte
+if (!stamped.ok) throw new Error(stamped.reason); // kein Beleg
+const text = serializeEvidence(stamped.value); // kanonischer JSON-Text zum Aufbewahren
+// später, ohne Relay: await verifyEvidence(text.value, hash, { trust: [ankerPem] })
+```
+
+Optionen, Fehlerbehandlung, Fristen, Belegformat und Sicherheit (ein Schlüssel im Browserspeicher ist für die Nutzer lesbar):
+[`docs/client.md`](docs/client.md). Noch nicht im Browser getestet.
 
 ## Installieren
 

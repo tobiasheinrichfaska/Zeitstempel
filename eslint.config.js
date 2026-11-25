@@ -33,6 +33,14 @@ export default defineConfig([
     },
   },
   {
+    // The client is the one part of src/ that talks to a network (the relay, through `fetch`); everything else of the
+    // core's rules holds: nothing from node:, no Buffer, no process.
+    files: ['src/client/**/*.ts'],
+    rules: {
+      'no-restricted-globals': ['error', 'process', 'Buffer', 'require'],
+    },
+  },
+  {
     files: ['tests/**/*.ts'],
     rules: { '@typescript-eslint/no-explicit-any': 'off' },
   },

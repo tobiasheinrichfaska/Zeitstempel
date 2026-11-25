@@ -9,7 +9,7 @@ import { createRelay, type RelayOptions } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import { UpstreamError, type Upstream } from '../relay/upstream.ts';
 import { BATCH_LIMITS } from '../src/lib/batch.ts';
-import { makeTestKey, nodeAuthHeader } from './auth-helpers.ts';
+import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs } from './auth-helpers.ts';
 import { sha256 } from './helpers.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
@@ -86,6 +86,7 @@ async function start(
     random: over.random ?? ((n) => new Uint8Array(randomBytes(n))),
     now: () => clock.now,
     keys: KEYS,
+    audience: TEST_AUDIENCE,
     ...(batch === null ? {} : { batch }),
     ...(over.budgetWindowMs === undefined ? {} : { budgetWindowMs: over.budgetWindowMs }),
     ...(over.maxWaitMs === undefined ? {} : { maxWaitMs: over.maxWaitMs }),
@@ -105,12 +106,12 @@ async function start(
       const path = `/v1/stamp/${id}`;
       const text = JSON.stringify({ hash: toBase64Url(hash) });
       const key = o.key ?? KEY_A;
-      const head = nodeAuthHeader(
+      const head = nodeAuthHeaderMs(
         key,
         key.id,
         'POST',
         path,
-        Math.floor(clock.now / 1000) + (n++ % 30),
+        clock.now + (n++ % 30) * 1000,
         new TextEncoder().encode(text),
       );
       return fetch(base + path, {
