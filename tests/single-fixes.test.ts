@@ -236,6 +236,31 @@ describe('M27: the full waiting queue is 503 busy with Retry-After from the time
   }, 20_000);
 });
 
+describe('M28: the late 503 busy carries Retry-After from the time still booked (virtual monotonic clock)', () => {
+  let h: Harness;
+  afterEach(() => h.close());
+
+  it('Retry-After is the end of the booked chain in seconds, rounded up (not a fixed value)', async () => {
+    h = await start({ batch: null, minIntervalMs: 1000, maxWaitMs: 1000, virtualMono: true });
+    const a = h.stamp(sha256('m28-a'), { key: KEY_A }); // called at once: T0
+    await until(() => h.calls.length === 1);
+    const b = h.stamp(sha256('m28-b'), { key: KEY_A }); // booked for T0 + 1000, within the limit
+    await sleep(20);
+    h.advance(1000);
+    const c = h.stamp(sha256('m28-c'), { key: KEY_A }); // booked for T0 + 2000 (1000 + 1000 limit); the chain ends at T0 + 3000
+    await sleep(20);
+    h.advance(100); // the loop stood still: b's timer fires at T0 + 1100, past its limit (T0 + 1000 + slack)
+    const rb = await b;
+    expect(rb.status).toBe(503);
+    expect(await rb.json()).toEqual({ error: 'busy' });
+    // b is not the last of the chain (no time is given back): 3000 - 1100 = 1900 ms, rounded up to 2 s
+    expect(rb.headers.get('retry-after')).toBe('2');
+    expect((await a).status).toBe(200);
+    h.advance(5000); // let c finish (it is late too)
+    await c;
+  }, 20_000);
+});
+
 describe('F2: an identity is dropped on the monotonic clock, and not before its distance is over', () => {
   let h: Harness;
   afterEach(() => h.close());

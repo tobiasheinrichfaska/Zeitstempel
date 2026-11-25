@@ -24,12 +24,11 @@ import { buildTimestampRequest, readTimestampResponse, verifyTimestampToken } fr
 // sha256: Uint8Array mit 32 Byte. nonce: 1 bis 16 Zufallsbytes, aufheben (für die Prüfung nötig).
 const nonce = crypto.getRandomValues(new Uint8Array(8));
 const request = buildTimestampRequest(sha256, nonce); // DER-Bytes für den Dienst (oder das Relay macht das)
+const sentMs = Date.now(); // vor dem Senden merken (Grundlage der Frischeprüfung `minGenTime`)
 // request per HTTP POST an die Adresse des Dienstes senden (Content-Type: application/timestamp-query);
 // der Körper der Antwort ist answerBytes (ein Uint8Array). Browser erreichen die Dienste meist nicht (CORS): Relay.
 const response = readTimestampResponse(answerBytes); // { ok, value: { status, token, info } }
 if (!response.ok) throw new Error(response.reason);
-const sentMs = Date.now(); // vor dem Senden merken
-// ... Anfrage senden, Antwort lesen (readTimestampResponse) ...
 const verified = await verifyTimestampToken(response.value.token, sha256, [anchorPem], {
   expectedNonce: nonce,
   now: new Date(), // ohne `now` wird nicht gegen die Zukunft geprüft

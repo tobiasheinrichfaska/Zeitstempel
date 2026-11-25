@@ -231,6 +231,9 @@ describe('the audit fixes are written down where a reader looks (Befunde 1-12)',
     expect(doc).toContain('nicht gegen einen echten Proxy getestet');
     expect(doc).toContain('Einzelbetrieb mindestens 47 s');
     expect(doc).toContain('proxy_read_timeout 130s;');
+    expect(doc).toContain('location /v1/stamp/ {');
+    expect(doc).toContain('keepalive 8;');
+    expect(doc).toContain('tragen keine CORS-Köpfe');
     expect(doc).toContain('response_header_timeout 130s');
     expect(doc).toContain('112 s beziehungsweise 122 s');
     expect(doc).toContain('Sammelbetrieb FreeTSA 57 s');

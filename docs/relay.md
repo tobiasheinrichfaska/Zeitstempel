@@ -632,7 +632,10 @@ Länge, falscher Typ oder falsche Größe eines Feldes, unbekanntes Feld), ist *
   in dieser Minute höchstens neun Aufrufe sieht). Und nach einem Stillstand des Relays kann der Dienst kurz mehr Aufrufe je
   Minute sehen als das Budget erlaubt (Beispiel: Abstand 25 s, Budget 2: drei Aufrufe in 50 s); nur der Abstand bleibt dabei
   hart gewahrt. Entscheidung des Eigentümers: die Mengenzähler des Einzelbetriebs auf die monotone Uhr und an den Aufruf
-  binden. Derzeit nicht umgesetzt.
+  binden. Derzeit nicht umgesetzt. Auch ein Sprung der Wanduhr **nach vorn** (nicht nur ein Stillstand) gibt dort Plätze des
+  Mengenbudgets zurück: Beispiel Abstand 7 s, Budget 8 je Minute: ein Sprung lässt neun Aufrufe in einer gleitenden Minute
+  zu; der Abstand bleibt in jedem Fall gewahrt. Bei den Abständen der mitgelieferten Dienste (5 s, 15 s) ohne Wirkung, weil
+  der Abstand allein schon auf 12 beziehungsweise 4 Aufrufe je Minute begrenzt.
 
 ## Schlüsselarten und Solo-Stempel
 
@@ -1181,8 +1184,18 @@ Was jede Einrichtung leisten muss:
 **nginx** (Beispiel, nicht getestet):
 
 ```nginx
-limit_req_zone  $binary_remote_addr zone=zs_rate:10m rate=5r/m;
+# Der Preflight (OPTIONS) bekommt einen leeren Schlüssel: nginx begrenzt ihn nicht.
+map $request_method $zs_key {
+    OPTIONS  "";
+    default  $binary_remote_addr;
+}
+limit_req_zone  $zs_key zone=zs_rate:10m rate=5r/m;
 limit_conn_zone $binary_remote_addr zone=zs_conn:10m;
+
+upstream zeitstempel_relay {
+    server 127.0.0.1:8080;
+    keepalive 8;                            # ohne diesen Block hält nginx keine Verbindung zum Relay offen
+}
 
 server {
     listen 443 ssl;
@@ -1193,15 +1206,30 @@ server {
     client_header_timeout  6s;
     client_body_timeout    6s;
 
+    # Alles außer dem Stempel: ohne Ratenlimit (Preflight, /health, /v1/services); die Verbindungsgrenze bleibt.
     location / {
+        limit_conn zs_conn 10;
+        limit_conn_status 429;
+
+        proxy_pass http://zeitstempel_relay;   # ohne Pfad hinter der Adresse: der Pfad bleibt unverändert
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";     # nur zusammen mit keepalive im upstream-Block wirksam
+        proxy_set_header Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    10s;
+        proxy_redirect off;
+    }
+
+    # Nur der Stempel wird je Adresse gedrosselt; der Preflight (OPTIONS) zählt nicht mit (leerer Schlüssel oben).
+    location /v1/stamp/ {
         limit_req  zone=zs_rate burst=3 nodelay;   # je Adresse 5 je Minute (siehe unten), nie das ganze Schlüsselbudget
         limit_conn zs_conn 10;
         limit_req_status  429;
         limit_conn_status 429;
 
-        proxy_pass http://127.0.0.1:8080;   # ohne Pfad hinter der Adresse: der Pfad bleibt unverändert
+        proxy_pass http://zeitstempel_relay;
         proxy_http_version 1.1;
-        proxy_set_header Connection "";     # Verbindungen zum Relay offen halten
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_connect_timeout 5s;
         proxy_send_timeout    20s;
@@ -1214,6 +1242,13 @@ server {
 }
 ```
 
+Hinweise zum Beispiel: `limit_req` steht nur in der `location` des Stempels, damit der Preflight (`OPTIONS`), `/health` und
+`/v1/services` nicht in dasselbe Budget fallen (sonst ist es nach Preflight, Dienstliste und erstem Stempel schon fast
+verbraucht). Wer den Preflight dennoch im selben Block begrenzen will, setzt für ihn ein eigenes, höheres Limit.
+**Antworten von nginx selbst** (`429` vom Ratenlimit, `413`, `408`, `502`/`504`) tragen keine CORS-Köpfe: der Browser meldet
+dann einen Netzwerkfehler, ohne Status und ohne `Retry-After`; die App kann das nicht von einem Ausfall unterscheiden und
+sollte nach einer Pause einmal wiederholen. Nur die Antworten des Relays tragen `Access-Control-*` und `Retry-After`.
+
 **Caddy** (Beispiel, nicht getestet). Caddy kann ohne Zusatzmodul **kein** Ratenlimit je Adresse; das Modul (zum Beispiel
 `caddy-ratelimit`) muss hinzugebaut werden, sonst fehlt der wichtigste Teil. Die Zeilen dazu hängen von dessen Fassung
 ab und stehen deshalb hier nur als Gerüst:
@@ -1222,6 +1257,7 @@ ab und stehen deshalb hier nur als Gerüst:
 relay.example {
     # rate_limit { zone je_adresse { key {remote_host}  events 5  window 1m } }   # Zusatzmodul nötig
     reverse_proxy 127.0.0.1:8080 {
+        # Caddy hält Verbindungen zum Relay von sich aus offen (keepalive ist vorgegeben); nichts zu setzen.
         transport http {
             dial_timeout            5s
             response_header_timeout 130s   # Obergrenze für die Vorgabe (30 s Wartegrenze): Einzelbetrieb mindestens 47 s,
@@ -1232,7 +1268,9 @@ relay.example {
 }
 ```
 
-`reverse_proxy` gibt Pfad und Köpfe (`Origin`, `X-Zeitstempel-Auth`) von sich aus unverändert weiter.
+`reverse_proxy` gibt Pfad und Köpfe (`Origin`, `X-Zeitstempel-Auth`) von sich aus unverändert weiter. Das Ratenlimit (Zusatzmodul)
+gehört auch hier nur auf den Pfad `/v1/stamp/*` (Matcher `@stamp path /v1/stamp/*`), nicht auf Preflight, `/health` und
+`/v1/services`; Antworten von Caddy selbst tragen ebenfalls keine CORS-Köpfe.
 
 **Hinweise für den Betrieb:**
 
