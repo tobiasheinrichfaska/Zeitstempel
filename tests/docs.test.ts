@@ -30,6 +30,8 @@ const REASONS: Record<lib.Reason, true> = {
   'bad-key-id': true,
   'bad-key-file': true,
   'bad-batch': true,
+  'bad-evidence': true,
+  'evidence-hash-mismatch': true,
   'too-large': true,
   malformed: true,
   'indefinite-length': true,
@@ -929,6 +931,52 @@ describe('key file version 3 (revoked, empty list, notAfter, services, perMinute
       '<code>keyExpired</code>',
       '<code>serviceDenied</code>',
       'v3-field-in-v2-file',
+    ]) {
+      expect(model, word).toContain(word);
+    }
+  });
+});
+
+describe('RELAY_KEY_SHARE (share of one key at a service budget) is written down and tied to the code', () => {
+  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const betriebDoc = read('betrieb.md');
+  const flatText = (t: string) => t.replace(/\s+/g, ' ');
+  it('relay.md: the setting, the code, the counter and the limits', () => {
+    expect(relayDoc).toMatch(/\|\s*`RELAY_KEY_SHARE`\s*\|/);
+    expect(relayDoc).toMatch(/\|\s*429\s*\|\s*`key-share`/);
+    expect(source).toContain("error: 'key-share'");
+    expect(relayDoc).toMatch(/\|\s*`shareDenied`\s*\|/);
+    expect(source).toContain('stats.shareDenied');
+    for (const [name, value] of [
+      ['keyShareMin', RELAY_LIMITS.keyShareMin],
+      ['keyShareMax', RELAY_LIMITS.keyShareMax],
+    ] as const) {
+      expect(relayDoc, name).toMatch(new RegExp(String.raw`\|\s*\`${name}\`\s*\|\s*${value}\s*\|`));
+    }
+    const doc = flatText(relayDoc);
+    for (const word of [
+      'Anteil je Schlüssel am Dienstbudget',
+      'max(1, floor(Dienstbudget * Prozent / 100))',
+      '**Hashes in einem Fenster teilen sich einen Platz:**',
+      '(entschieden: nur Solo)',
+      '**auf der Wanduhr**',
+      'Die Abweisung verbraucht nichts',
+      '`RELAY_KEY_SHARE=50`',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+    expect(doc).not.toContain('Das Relay verteilt das Budget eines Dienstes nicht fair');
+  });
+  it('betrieb.md, relay.env.example and data-model.html name it', () => {
+    expect(flatText(betriebDoc)).toContain('`RELAY_KEY_SHARE=50`');
+    expect(betriebDoc).toContain('`shareDenied`');
+    expect(readFileSync(new URL('../deploy/relay.env.example', import.meta.url), 'utf8')).toContain(
+      '# RELAY_KEY_SHARE=50',
+    );
+    for (const word of [
+      '<code>RELAY_KEY_SHARE</code>',
+      '<code>key-share</code> (429)',
+      '<code>shareDenied</code>',
     ]) {
       expect(model, word).toContain(word);
     }

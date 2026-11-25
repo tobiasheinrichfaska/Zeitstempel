@@ -150,6 +150,18 @@ describe('env template', () => {
     expect(Number(set.RELAY_MAX_WAIT_MS)).toBeGreaterThanOrEqual(RELAY_LIMITS.maxWaitMinMs);
     expect(Number(set.RELAY_MAX_WAIT_MS)).toBeLessThanOrEqual(RELAY_LIMITS.maxWaitMaxMs);
   });
+  it('RELAY_KEY_SHARE is documented but not active (default 100 = off), and its example value is a valid one', () => {
+    expect(
+      Object.keys(Object.fromEntries(active(envFile).map((l) => l.split('=')))).includes(
+        'RELAY_KEY_SHARE',
+      ),
+    ).toBe(false);
+    const example = /^# RELAY_KEY_SHARE=(\d+)$/m.exec(envFile);
+    expect(example).not.toBeNull();
+    expect(Number(example![1])).toBeGreaterThanOrEqual(RELAY_LIMITS.keyShareMin);
+    expect(Number(example![1])).toBeLessThanOrEqual(RELAY_LIMITS.keyShareMax);
+    expect(betrieb).toContain('RELAY_KEY_SHARE=50');
+  });
   it('holds no secret', () => {
     expect(envFile).not.toMatch(/BEGIN [A-Z ]*PRIVATE/);
     expect(envFile).not.toMatch(/^\s*RELAY_UPSTREAM_AUTH_\w*=[^#\s]/m);

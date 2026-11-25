@@ -20,6 +20,8 @@
 //   RELAY_MAX_WAIT_MS        the longest a request waits, 1000 to 60000 (default 30000); then 503 busy. Both
 //                            operations: the minimum distance to the previous call of the service (single
 //                            operation too); collecting operation: also a free slot of the service
+//   RELAY_KEY_SHARE          share of a service's budget per minute that ONE key may use at one service, whole percent
+//                            10 to 100 (default 100 = off; an empty value is invalid); then 429 key-share (docs/relay.md)
 //   RELAY_UPSTREAM_AUTH_<ID>  credentials of a paid service that the relay holds itself (<ID>: the service id in capitals,
 //                            '-' as '_'); `user:password` for basic, the token for bearer and header; mandatory for a
 //                            chosen service with `auth.source` "relay", optional for "either", refused for the others
@@ -138,6 +140,17 @@ export function readSettings(env: NodeJS.ProcessEnv) {
       );
     }
   }
+  // The share of one key at a service's budget: strictly read; not set means 100 (off), an empty value is invalid.
+  const keyShareRaw = env.RELAY_KEY_SHARE;
+  let keyShare: number = RELAY_LIMITS.keyShareMax;
+  if (keyShareRaw !== undefined) {
+    keyShare = /^[0-9]{1,3}$/.test(keyShareRaw) ? Number(keyShareRaw) : NaN;
+    if (!(keyShare >= RELAY_LIMITS.keyShareMin && keyShare <= RELAY_LIMITS.keyShareMax)) {
+      throw new Error(
+        `RELAY_KEY_SHARE: ungültig (ganze Zahl von ${RELAY_LIMITS.keyShareMin} bis ${RELAY_LIMITS.keyShareMax} Prozent erwartet; ${RELAY_LIMITS.keyShareMax} schaltet die Grenze aus)`,
+      );
+    }
+  }
   return {
     origins,
     port,
@@ -146,6 +159,7 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     batchMs,
     batchMax,
     maxWaitMs,
+    keyShare,
     allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
     only,
     authOff,
@@ -368,6 +382,7 @@ export function buildRelayOptions(
       ? {}
       : { batch: { windowMs: settings.batchMs, max: settings.batchMax } }),
     ...(settings.maxWaitMs === undefined ? {} : { maxWaitMs: settings.maxWaitMs }),
+    ...(settings.keyShare >= RELAY_LIMITS.keyShareMax ? {} : { keyShare: settings.keyShare }),
   };
 }
 

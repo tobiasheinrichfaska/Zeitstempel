@@ -109,6 +109,8 @@ export async function start(
     /** The service takes a bearer token from the client: each token is an identity (its own lane). */
     bearer?: boolean;
     upstreamIdentities?: number;
+    /** `RELAY_KEY_SHARE` (whole percent). */
+    keyShare?: number;
     /** The monotonic clock of the relay is virtual (`vmono`, moved by `advance` only); the real timers still run. */
     virtualMono?: boolean;
   } = {},
@@ -153,6 +155,7 @@ export async function start(
     ...(over.upstreamIdentities === undefined
       ? {}
       : { upstreamIdentities: over.upstreamIdentities }),
+    ...(over.keyShare === undefined ? {} : { keyShare: over.keyShare }),
     ...(over.maxWaitMs === undefined ? {} : { maxWaitMs: over.maxWaitMs }),
     ...(over.budgetWindowMs === undefined ? {} : { budgetWindowMs: over.budgetWindowMs }),
   };

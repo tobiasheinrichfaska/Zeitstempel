@@ -148,6 +148,35 @@ dokumentiert). Bytes aus einem anderen Realm (iframe, Worker) bitte als `new Uin
 [`docs/grenzen.md`](docs/grenzen.md) (was nicht geprüft wird), [`docs/dienste.md`](docs/dienste.md)
 (Dienste, Messung, Bedingungen) und [`docs/relay.md`](docs/relay.md).
 
+## Client (`zeitstempel/client`)
+
+Für Apps, die ein Relay benutzen, gibt es einen fertigen Client als zweiten Einstiegspunkt (der Haupteinstieg bleibt frei von
+`fetch`): Er signiert, sendet, wiederholt bei `429`, gleicht die Uhr nach einem `401` einmal über `Date` ab, wechselt bei `502`/`504`
+und Netzfehlern den Dienst, **prüft das Token selbst** (mit Pflicht-`minGenTime`) und gibt nur dann einen Beleg (`evidence` v1)
+zurück. Der Beleg lässt sich später ohne das Relay prüfen.
+
+```ts
+import { createRelayClient, serializeEvidence, verifyEvidence } from 'zeitstempel/client';
+
+const client = createRelayClient({
+  relayUrl: 'https://relay.example',
+  audience: 'https://relay.example', // die RELAY_AUDIENCE des Relays
+  keyId: 'app-1',
+  privateKey, // PKCS#8-Bytes oder CryptoKey
+  trust: [ankerPem], // PEM-Texte der Vertrauensanker
+  services: ['freetsa', 'sectigo'], // Reihenfolge der Vorliebe, der zweite ist der Failover
+});
+if (!client.ok) throw new Error(client.reason);
+
+const stamped = await client.value.stamp(hash); // hash: SHA-256, 32 Byte
+if (!stamped.ok) throw new Error(stamped.reason); // kein Beleg
+const text = serializeEvidence(stamped.value); // kanonischer JSON-Text zum Aufbewahren
+// später, ohne Relay: await verifyEvidence(text.value, hash, { trust: [ankerPem] })
+```
+
+Optionen, Fehlerbehandlung, Fristen, Belegformat und Sicherheit (ein Schlüssel im Browserspeicher ist für die Nutzer lesbar):
+[`docs/client.md`](docs/client.md). Noch nicht im Browser getestet.
+
 ## Installieren
 
 Nicht auf npm. Es gibt noch **keinen Git-Tag**; sobald einer existiert, wird die Bibliothek so eingebunden (Tag

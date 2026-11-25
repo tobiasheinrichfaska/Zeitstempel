@@ -50,6 +50,10 @@ Voraussetzungen, vor dem ersten echten Stempel:
       Herkunft; **je Instanz und Umgebung eine eigene**; die App trägt genau diese Zeichenkette bei `signRelayRequest` als `audience` ein),
       `RELAY_ORIGINS` (genau die Herkunft der App),
       `RELAY_AUTH` nicht gesetzt, `RELAY_ALLOW_PLAIN_HTTP` nicht gesetzt (siehe `deploy/relay.env.example`).
+- [ ] **Mehrere Nutzergruppen?** Dann `RELAY_KEY_SHARE=50` setzen (Vorgabe 100 = aus): ein Schlüssel belegt höchstens die
+      Hälfte der 12 Plätze je Minute bei FreeTSA, ein zweiter bekommt immer welche, sonst kann ein einziger gültiger Schlüssel
+      den Dienst für alle anderen aussperren (`relay.md`, „Anteil je Schlüssel am Dienstbudget“). Mit einer einzigen
+      Nutzergruppe weglassen.
 - [ ] **Beobachtung** der Zähler und Alarmkriterien (unten) eingerichtet.
 - [ ] **Der erste Lauf von Hand gegen FreeTSA** hat geklappt (nächster Abschnitt).
 
@@ -91,16 +95,17 @@ Alle fünf Minuten schreibt das Relay eine Zeile `{"event":"counts",…}` ins Pr
 zeitstempel-relay`; Docker: `docker logs`). Es sind **nur Summen**; Zähler erscheinen erst, wenn sie zum ersten Mal
 zählen. Die Fehlerarten stehen unter `refused`. Bedeutung: `relay.md`, „Zähler“ und „Budgets und Zähler“.
 
-| Zähler                                 | Normalwert             | Alarmkriterium                                                                                                                                                                                                         |
-| -------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refused.upstream-invalid`             | fehlt (0)              | **Jeder Anstieg.** Der Dienst liefert Token, die das Relay nicht annimmt: neue Zertifikatskette, veraltete Anker in `anchors/`, Uhr, ein Betrug auf der Strecke oder eine Schaltsekunde. Warnung, nicht nur eine Zahl  |
-| `refused.upstream-too-old`             | fehlt (0)              | **Jeder Anstieg:** rückdatierte Token (`genTime` außerhalb ±60 s)                                                                                                                                                      |
-| `keyReloadFailed`                      | fehlt (0)              | **Jeder Anstieg:** die Schlüsseldatei ist ungültig, halb geschrieben oder verschwunden; der alte Satz bleibt aktiv, ein neuer oder entfernter Schlüssel wirkt **nicht**. Datei sofort prüfen                           |
-| `keyRevoked`, `keyExpired`             | fehlt (0)              | Anstieg: ein gesperrter oder abgelaufener Schlüssel wird noch benutzt (nur Anfragen mit gültiger Signatur): Missbrauch eines ausgelesenen Schlüssels, oder eine App, die noch nicht umgestellt ist (`notAfter` prüfen) |
-| `keyFileWritable`                      | fehlt (0)              | **Jeder Anstieg:** die Datei ist für Gruppe oder Andere schreibbar. Rechte korrigieren, die Datei auf fremde Einträge prüfen                                                                                           |
-| `refused.unauthorized`                 | klein                  | Dauerhaft hoch oder sprunghaft: Raten von Schlüsseln, falsche Uhr der App (±60 s, die Antwort trägt `Date`), ein Angriff auf die Anmeldung                                                                             |
-| `refused.rate-limited`, `refused.busy` | selten                 | Dauerhaft: das Dienstbudget (FreeTSA: 12 je Minute für alle Besucher) reicht nicht oder ein Besucher füllt es; Proxy-Limit und App prüfen                                                                              |
-| `stamped`                              | steigt mit der Nutzung | Bleibt 0 trotz Nutzung, oder `refused.upstream-failed` steigt: der Dienst ist nicht erreichbar                                                                                                                         |
+| Zähler                                 | Normalwert             | Alarmkriterium                                                                                                                                                                                                               |
+| -------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refused.upstream-invalid`             | fehlt (0)              | **Jeder Anstieg.** Der Dienst liefert Token, die das Relay nicht annimmt: neue Zertifikatskette, veraltete Anker in `anchors/`, Uhr, ein Betrug auf der Strecke oder eine Schaltsekunde. Warnung, nicht nur eine Zahl        |
+| `refused.upstream-too-old`             | fehlt (0)              | **Jeder Anstieg:** rückdatierte Token (`genTime` außerhalb ±60 s)                                                                                                                                                            |
+| `keyReloadFailed`                      | fehlt (0)              | **Jeder Anstieg:** die Schlüsseldatei ist ungültig, halb geschrieben oder verschwunden; der alte Satz bleibt aktiv, ein neuer oder entfernter Schlüssel wirkt **nicht**. Datei sofort prüfen                                 |
+| `keyRevoked`, `keyExpired`             | fehlt (0)              | Anstieg: ein gesperrter oder abgelaufener Schlüssel wird noch benutzt (nur Anfragen mit gültiger Signatur): Missbrauch eines ausgelesenen Schlüssels, oder eine App, die noch nicht umgestellt ist (`notAfter` prüfen)       |
+| `keyFileWritable`                      | fehlt (0)              | **Jeder Anstieg:** die Datei ist für Gruppe oder Andere schreibbar. Rechte korrigieren, die Datei auf fremde Einträge prüfen                                                                                                 |
+| `refused.unauthorized`                 | klein                  | Dauerhaft hoch oder sprunghaft: Raten von Schlüsseln, falsche Uhr der App (±60 s, die Antwort trägt `Date`), ein Angriff auf die Anmeldung                                                                                   |
+| `refused.rate-limited`, `refused.busy` | selten                 | Dauerhaft: das Dienstbudget (FreeTSA: 12 je Minute für alle Besucher) reicht nicht oder ein Besucher füllt es; Proxy-Limit und App prüfen                                                                                    |
+| `shareDenied`                          | fehlt (0) oder selten  | Anstieg mit `RELAY_KEY_SHARE`: eine Kennung stößt an ihren Anteil am Dienstbudget (`429 key-share`); eine App ist zu eifrig oder ein Schlüssel wird missbraucht (nur Summe, nie je Schlüssel); Anteil, Budget und App prüfen |
+| `stamped`                              | steigt mit der Nutzung | Bleibt 0 trotz Nutzung, oder `refused.upstream-failed` steigt: der Dienst ist nicht erreichbar                                                                                                                               |
 
 Zusätzlich von außen: `GET /health` (über den Proxy) alle 30 bis 60 s. **`/health` prüft keinen Dienst**: es meldet
 „gesund“, auch wenn FreeTSA ausfällt. Wer das wissen will, wertet `stamped` und `refused.upstream-failed` aus oder holt

@@ -20,7 +20,7 @@
   <body>
     <h1>Zeitstempel – Datenmodell</h1>
     <p class="note">
-      Quelle: <code>src/lib/</code>, <code>relay/</code> und <code>services.json</code> (Stand 2026-11-24). Bei jeder
+      Quelle: <code>src/lib/</code>, <code>src/client/</code>, <code>relay/</code> und <code>services.json</code> (Stand 2026-11-24). Bei jeder
       Änderung in derselben Sitzung abgleichen; <code>tests/docs.test.ts</code> prüft, dass jeder Fehlercode, jede
       Grenze und jede öffentliche Funktion hier steht. Die Datei ist eigenständig (kein Netz, kein Build).
     </p>
@@ -170,6 +170,84 @@
       <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen. Strenge Leser (<code>fromBase64</code>, <code>fromBase64Url</code>) geben <code>null</code> bei ungültiger Eingabe und bei allem außer Text; <code>equalBytes</code> gibt <code>false</code>, wenn ein Argument kein <code>Uint8Array</code> ist; die Schreiber (<code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code>) werfen bei allem außer <code>Uint8Array</code> einen <code>TypeError</code> (ein Text oder Array würde sonst still als Bytes kodiert). Ein <code>Uint8Array</code> aus einem anderen Realm (iframe, Worker, <code>vm</code>) zählt nicht als eines: als <code>new Uint8Array(x)</code> übergeben</td></tr>
     </table>
 
+    <h2>3a Client (Paketexport <code>zeitstempel/client</code>, <code>src/client/</code>)</h2>
+    <p class="note">
+      Der zweite Einstiegspunkt des Pakets; der Haupteinstieg <code>zeitstempel</code> kennt ihn nicht (er benutzt kein <code>fetch</code>). Browser und Node, nur
+      Standard-APIs (kein <code>node:</code>, kein <code>Buffer</code>, kein <code>process</code>); der einzige Netzaufruf ist der an das Relay, über das
+      <code>fetch</code> der Umgebung oder das übergebene. Die Funktionen werfen nie. Einzelheiten und Beispiele: <code>docs/client.md</code>.
+    </p>
+    <table>
+      <tr><th>Funktion</th><th>Signatur</th><th>Zweck</th></tr>
+      <tr><td>createRelayClient</td><td>(options: RelayClientOptions) → Result&lt;RelayClient&gt;</td><td>Prüft und kopiert die Optionen (<code>bad-options</code>, <code>bad-key</code>, <code>bad-key-id</code>, <code>bad-pem</code> statt eines Wurfs) und macht den Client. Kein Netzaufruf, noch keine Signatur</td></tr>
+      <tr><td>RelayClient.stamp</td><td>(hash: Uint8Array, options?: { mode?: 'normal' | 'solo', signal?: AbortSignal, service?: string }) → Promise&lt;ClientResult&lt;Evidence&gt;&gt;</td><td>Signiert (<code>signRelayRequest</code>, bei jedem Versuch mit neuem <code>jti</code>), sendet, liest die Antwort und prüft das Token gegen <code>trust</code> mit <strong>Pflicht-<code>minGenTime</code></strong> (Sendezeit minus <code>minGenTimeSlackMs</code>); gibt nur nach bestandener Prüfung einen Beleg. Uhrabgleich über <code>Date</code> einmal je Aufruf, <code>429</code>/<code>503 busy</code> mit <code>Retry-After</code>, Failover bei Netzfehler, <code>500</code>, <code>502</code>, <code>503</code> (anderer Code als <code>busy</code>) und <code>504</code>. Wirft nie</td></tr>
+      <tr><td>readEvidence</td><td>(input: unknown) → Result&lt;Evidence&gt;</td><td>Liest einen Beleg streng (Objekt oder JSON-Text) in eine frische Kopie; <code>bad-evidence</code> mit dem Feld in <code>detail</code>. Wirft nie</td></tr>
+      <tr><td>serializeEvidence</td><td>(evidence: Evidence) → Result&lt;string&gt;</td><td>Kanonischer JSON-Text mit fester Feldreihenfolge, ohne Leerraum; liest die Eingabe wie <code>readEvidence</code>. Wirft nie</td></tr>
+      <tr><td>verifyEvidence</td><td>(evidence: unknown, hash: Uint8Array, options: VerifyEvidenceOptions) → Promise&lt;Result&lt;VerifiedEvidence&gt;&gt;</td><td>Prüft einen Beleg ohne Relay und ohne Netz: Optionen, Form (<code>bad-evidence</code>), Hash des Belegs gegen den übergebenen (<code>evidence-hash-mismatch</code>), Token mit <code>verifyTimestampToken</code> oder (<code>kind: 'batch'</code>) <code>verifyBatchedTimestamp</code>, dann Abgleich von <code>genTime</code>, <code>policy</code>, <code>signerNotAfter</code>. Wirft nie</td></tr>
+    </table>
+    <h3>RelayClientOptions</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>relayUrl</td><td>Text, Pflicht</td><td>Ursprung des Relays (<code>https://relay.example</code>); kein Pfad, keine Abfrage, keine Zugangsdaten; <code>http</code> nur für <code>localhost</code>, <code>127.x.x.x</code>, <code>[::1]</code></td></tr>
+      <tr><td>audience</td><td>Text, Pflicht</td><td>Die <code>RELAY_AUDIENCE</code> des Relays (druckbares ASCII ohne Leerzeichen, 1 bis 128 Zeichen)</td></tr>
+      <tr><td>keyId</td><td>Text, Pflicht</td><td>Schlüsselkennung der Schlüsseldatei (<code>[a-z][a-z0-9-]{0,31}</code>), sonst <code>bad-key-id</code></td></tr>
+      <tr><td>privateKey</td><td><code>Uint8Array</code> (PKCS#8, 1 bis 256 Byte) oder <code>CryptoKey</code>, Pflicht</td><td>ECDSA-P-256-Schlüssel; Bytes werden kopiert; sonst <code>bad-key</code></td></tr>
+      <tr><td>trust</td><td>Liste von PEM-Texten, 1 bis 64, Pflicht</td><td>Vertrauensanker: die Entscheidung des Aufrufers. Jeder Eintrag muss als PEM lesbar sein (sonst <code>bad-pem</code>)</td></tr>
+      <tr><td>services</td><td>Liste von Dienstkennungen, 1 bis 16, verschieden, Pflicht</td><td>In der Reihenfolge der Vorliebe; der erste wird zuerst versucht, die anderen sind der Failover</td></tr>
+      <tr><td>fetch</td><td>Funktion, optional</td><td>Vorgabe: das <code>fetch</code> der Umgebung. Bekommt <code>redirect: 'error'</code>, <code>credentials: 'omit'</code>, <code>cache: 'no-store'</code></td></tr>
+      <tr><td>now</td><td>() → Zahl, optional</td><td>Uhr in Unix-Millisekunden (Vorgabe <code>Date.now</code>); keine endliche Zahl beim Aufruf: <code>bad-options</code></td></tr>
+      <tr><td>random</td><td>(länge) → Uint8Array, optional</td><td>Zufall für das <code>jti</code> (16 Byte; Vorgabe <code>crypto.getRandomValues</code>); jeder Versuch ruft es neu auf</td></tr>
+      <tr><td>timeoutMs</td><td>Zahl 1000 bis 600000, optional</td><td>Gesamtfrist eines <code>stamp</code>-Aufrufs über alle Versuche (Vorgabe 130000; Formel in <code>docs/client.md</code>)</td></tr>
+      <tr><td>maxAttempts</td><td>ganze Zahl 1 bis 10, optional</td><td>Höchstens so viele Sendungen je Dienst bei <code>429</code> und <code>503 busy</code> (Vorgabe 3); die eine Uhrkorrektur zählt nicht</td></tr>
+      <tr><td>minGenTimeSlackMs</td><td>Zahl 0 bis 3600000, optional</td><td>Abstand unter der Sendezeit für <code>minGenTime</code> (Vorgabe 60000, wie <code>genTimeSlackMs</code> des Relays)</td></tr>
+      <tr><td>maxClockOffsetMs</td><td>Zahl 0 bis 86400000, optional</td><td>Größter Uhrversatz, den der <code>Date</code>-Kopf eines <code>401</code> korrigieren darf (Vorgabe 120000); mehr bleibt <code>401</code>, damit ein Relay die Frischeprüfung nicht beliebig verschieben kann</td></tr>
+    </table>
+    <h3>ClientFailure (Fehlerform von <code>stamp</code>)</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>ok</td><td>false</td><td></td></tr>
+      <tr><td>reason</td><td>ClientReason</td><td>Ein Code der Bibliothek (Tabelle 4: <code>bad-hash</code>, <code>bad-options</code>, <code>bad-key</code>, <code>untrusted-chain</code>, <code>time-too-old</code>, <code>imprint-mismatch</code> und alle anderen der Prüfung) oder einer der folgenden</td></tr>
+      <tr><td>reason: network-error</td><td></td><td>Kein Dienst hat geantwortet (<code>fetch</code> ist fehlgeschlagen)</td></tr>
+      <tr><td>reason: timeout</td><td></td><td><code>timeoutMs</code> ist abgelaufen</td></tr>
+      <tr><td>reason: aborted</td><td></td><td>Das <code>signal</code> des Aufrufers hat abgebrochen</td></tr>
+      <tr><td>reason: relay-error</td><td></td><td>Das Relay hat mit einem Fehler geantwortet (<code>status</code>, <code>code</code>); <code>detail</code> ist der <code>reason</code> einer <code>502</code>-Antwort oder die Dienstkennung</td></tr>
+      <tr><td>reason: bad-response</td><td></td><td>Eine <code>200</code>-Antwort, die keine Antwort des Relays ist (kein JSON, falsche Form, andere Dienstkennung, Token nicht base64url, zu groß)</td></tr>
+      <tr><td>status, code</td><td>Zahl, Text; optional</td><td>HTTP-Status und <code>error</code> der letzten Fehlerantwort des Relays (bei <code>relay-error</code>)</td></tr>
+    </table>
+    <h3>Evidence (Beleg, Fassung 1)</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>v</td><td>die Zahl 1</td><td>Fassung des Belegformats; eine andere ist <code>bad-evidence</code></td></tr>
+      <tr><td>kind</td><td><code>'single'</code> oder <code>'batch'</code></td><td>Das Token deckt den Hash (<code>single</code>) oder einen Merkle-Baum (<code>batch</code>, dann steht <code>batch</code> da, sonst nicht)</td></tr>
+      <tr><td>service</td><td>Text <code>[a-z][a-z0-9-]{0,31}</code></td><td>Kennung des Dienstes aus <code>services.json</code></td></tr>
+      <tr><td>hash</td><td>base64url, genau 32 Byte, kanonisch</td><td>Der gestempelte SHA-256</td></tr>
+      <tr><td>hashAlg</td><td><code>'sha256'</code></td><td>Verfahren des Hashes</td></tr>
+      <tr><td>receivedAtMs</td><td>ganze Zahl, Unix-Millisekunden, 1e11 bis unter 1e15</td><td>Uhr des Clients (nach einer Korrektur durch das <code>Date</code> des Relays) bei Eingang der Antwort; nur eine Notiz, kein Beweis</td></tr>
+      <tr><td>token</td><td>base64url, 1 bis 262144 Byte</td><td>Das TimeStampToken (DER), so wie das Relay es liefert (base64url, nicht base64)</td></tr>
+      <tr><td>batch</td><td>BatchProof, nur bei <code>kind: 'batch'</code></td><td>Genau die Form der Antwort des Relays (Abschnitt BatchProof)</td></tr>
+      <tr><td>policy</td><td>OID-Text, optional, höchstens 128 Zeichen</td><td>Richtlinie des Tokens (Wiederholung der Prüfung; <code>verifyEvidence</code> gleicht sie ab)</td></tr>
+      <tr><td>genTime</td><td>ISO-8601-Text (UTC) mit Millisekunden</td><td>Bestätigte Zeit (Wiederholung der Prüfung; maßgeblich ist die neue Prüfung)</td></tr>
+      <tr><td>signerNotAfter</td><td>ISO-8601-Text (UTC), optional</td><td>Ende der Gültigkeit des Zeitstempel-Zertifikats (Wiederholung; zum rechtzeitigen Neustempeln)</td></tr>
+    </table>
+    <p>
+      Der Beleg wird streng gelesen (<code>readEvidence</code>): ein einfaches Objekt oder JSON-Text, jedes Feld einmal über seinen Descriptor (ein Getter wird nicht
+      ausgeführt), unbekannte Felder sind <code>bad-evidence</code>. Kanonischer Text (<code>serializeEvidence</code>): Reihenfolge <code>v, kind, service, hash,
+      hashAlg, receivedAtMs, token, batch, policy, genTime, signerNotAfter</code>, im Beleg <code>v, size, index, salt, path</code>.
+      <code>VerifiedEvidence</code> ist <code>VerifiedTimestamp</code> plus <code>kind</code>, <code>service</code>, <code>receivedAtMs</code> und bei <code>batch</code> <code>{ size, index }</code>.
+      <code>VerifyEvidenceOptions</code>: <code>trust</code> (Pflicht) und die Optionen von <code>VerifyOptions</code> außer <code>expectedNonce</code>.
+    </p>
+    <table>
+      <tr><th>Name</th><th>Wert</th><th>Wirkung</th></tr>
+      <tr><td>MAX_TOKEN_BYTES</td><td>262144</td><td>Längstes Token im Beleg (gleich <code>maxBytes</code> des Lesers)</td></tr>
+      <tr><td>MAX_JSON_CHARS</td><td>500000</td><td>Längster Beleg als JSON-Text, in Zeichen</td></tr>
+      <tr><td>MAX_POLICY_CHARS</td><td>128</td><td>Längster Richtlinien-OID im Beleg</td></tr>
+      <tr><td>DEFAULT_TIMEOUT_MS</td><td>130000</td><td>Vorgabe von <code>timeoutMs</code></td></tr>
+      <tr><td>DEFAULT_MAX_ATTEMPTS</td><td>3</td><td>Vorgabe von <code>maxAttempts</code></td></tr>
+      <tr><td>DEFAULT_SLACK_MS</td><td>60000</td><td>Vorgabe von <code>minGenTimeSlackMs</code></td></tr>
+      <tr><td>DEFAULT_MAX_CLOCK_OFFSET_MS</td><td>120000</td><td>Vorgabe von <code>maxClockOffsetMs</code></td></tr>
+      <tr><td>MAX_SERVICES</td><td>16</td><td>Einträge von <code>services</code></td></tr>
+      <tr><td>MAX_TRUST</td><td>64</td><td>Einträge von <code>trust</code></td></tr>
+    </table>
+
     <h2>4 Fehlercodes</h2>
     <table>
       <tr><th>Code</th><th>Bedeutung</th></tr>
@@ -181,6 +259,8 @@
       <tr><td>bad-key-id</td><td>Schlüsselkennung nicht nach <code>[a-z][a-z0-9-]{0,31}</code></td></tr>
       <tr><td>bad-key-file</td><td>Schlüsseldatei des Relays ungültig (Regelname in <code>detail</code>; Teil des Relays, nicht der Bibliothek)</td></tr>
       <tr><td>bad-batch</td><td>Beleg des Sammelbetriebs ungültig: kein einfaches Objekt, ein Feld fehlt oder ist zu viel, <code>v</code> nicht 1, <code>size</code> nicht 1 bis 1024, <code>index</code> nicht unter <code>size</code>, <code>salt</code> oder ein Pfadelement nicht base64url zu genau 32 Byte, Pfad länger als 10 oder von falscher Länge für <code>size</code> und <code>index</code></td></tr>
+      <tr><td>bad-evidence</td><td>Beleg (Evidence) hat nicht die Form der Fassung 1: kein einfaches Objekt oder Text über der Grenze, ein Feld fehlt, ist zu viel, hat den falschen Typ oder die falsche Größe, ein Getter, eine andere Fassung als 1, <code>batch</code> nicht genau bei <code>kind: 'batch'</code>; <code>detail</code> nennt das Feld. Auch von <code>verifyEvidence</code>, wenn <code>genTime</code>, <code>policy</code> oder <code>signerNotAfter</code> des Belegs von der Prüfung des Tokens abweichen (Teil des Clients, <code>zeitstempel/client</code>)</td></tr>
+      <tr><td>evidence-hash-mismatch</td><td><code>verifyEvidence</code>: der Hash des Belegs ist nicht der übergebene Hash (wird vor dem Token geprüft)</td></tr>
       <tr><td>too-large</td><td>Eingabe über der Größengrenze</td></tr>
       <tr><td>malformed</td><td>Kein gültiges DER</td></tr>
       <tr><td>indefinite-length</td><td>BER mit unbestimmter Länge (nicht erlaubt)</td></tr>
@@ -252,10 +332,11 @@
       <tr><td>Schlüsseldatei: <code>restartAfter</code></td><td>ganze Zahl, Unix-Sekunden (1000000000 bis 99999999999), optional, oberste Ebene</td><td>Gilt <code>Startzeit &lt; restartAfter &lt;= jetzt</code>, beendet sich das Relay einmal sauber (Exit-Code 0); ein Prozess-Überwacher startet es neu. Das Relay schreibt nie in die Datei. Sonst <code>bad-key-file</code> (<code>restart-after</code>)</td></tr>
       <tr><td>Anfrage: <code>mode</code></td><td>Text <code>"solo"</code>, optional im JSON-Körper neben <code>hash</code></td><td>Direkter Stempel des Hashes ohne Merkle-Baum, Antwort ohne <code>batch</code>: Schlüsselart 2 sofort (nach dem Mindestabstand zum letzten Aufruf des Dienstes), Art 1 sofort <code>403 solo-not-allowed</code> (kein Budget, kein Platz). Steht im signierten Körper, ist also an die Signatur gebunden. Anderer Wert: <code>400 bad-mode</code>. Ohne Sammelbetrieb wirkungslos</td></tr>
       <tr><td>Anfrage: <code>upstream</code></td><td>Objekt, optional im JSON-Körper neben <code>hash</code> (und <code>mode</code>): bei <code>basic</code> <code>{ "user", "password" }</code>, bei <code>bearer</code> und <code>header</code> <code>{ "token" }</code>; Strings aus druckbarem ASCII (Benutzername ohne <code>:</code>, Token ohne Leerzeichen, <code>"</code> und <code>\</code>)</td><td>Zugangsdaten für einen bezahlten Dienst (<code>auth</code> in <code>services.json</code>). Steht im signierten Körper, ist also an die Signatur gebunden. Quelle <code>relay</code> oder Dienst ohne <code>auth</code>: nicht erlaubt; Quelle <code>client</code>: Pflicht. Verstoß gegen Form, Zeichen oder Länge: <code>400 bad-upstream</code>. Nie im Protokoll, nie in Zählern oder Fehlertexten</td></tr>
-      <tr><td>Fehlercodes</td><td><code>bad-upstream</code> (400), <code>bad-mode</code> (400), <code>solo-not-allowed</code> (403), <code>service-not-allowed</code> (403), <code>busy</code> (503)</td><td>Einzelheiten und Zähler (<code>solo</code>, <code>soloDenied</code>, <code>serviceDenied</code>, <code>keyRevoked</code>, <code>keyExpired</code>, <code>keyReloads</code>, <code>keyReloadFailed</code>) in <code>docs/relay.md</code>, „Schlüsselarten und Solo-Stempel“</td></tr>
+      <tr><td>Fehlercodes</td><td><code>bad-upstream</code> (400), <code>bad-mode</code> (400), <code>solo-not-allowed</code> (403), <code>service-not-allowed</code> (403), <code>key-share</code> (429), <code>busy</code> (503)</td><td>Einzelheiten und Zähler (<code>solo</code>, <code>soloDenied</code>, <code>serviceDenied</code>, <code>shareDenied</code>, <code>keyRevoked</code>, <code>keyExpired</code>, <code>keyReloads</code>, <code>keyReloadFailed</code>) in <code>docs/relay.md</code>, „Schlüsselarten und Solo-Stempel“</td></tr>
+      <tr><td>Einstellung <code>RELAY_KEY_SHARE</code></td><td>ganze Zahl 10 bis 100 (Prozent), Vorgabe 100 = aus; leer oder anders = Startabbruch</td><td>Anteil einer Schlüsselkennung am Minutenbudget eines Dienstes (je Dienst und Identität): höchstens <code>max(1, floor(Budget * Prozent / 100))</code> Annahmen in der gleitenden Minute, darüber <code>429 key-share</code> mit <code>Retry-After</code> (nichts verbraucht; Zähler <code>shareDenied</code>). Einzelbetrieb: jede Anfrage; Sammelbetrieb: nur Solo-Stempel (Hashes eines Fensters teilen einen Platz)</td></tr>
       <tr><td>Einstellung <code>RELAY_MAX_WAIT_MS</code></td><td>ganze Zahl 1000 bis 60000, Vorgabe 30000</td><td>Längste Wartezeit auf einen freien Platz beim Dienst, danach <code>503 busy</code></td></tr>
     </table>
-    <p class="note">Grenzen im Code (<code>relay/limits.ts</code>): <code>soloPerMinutePerKey</code> 4, <code>soloQueueMax</code> 6, <code>maxWaitDefaultMs</code> 30000, <code>keyFileCheckMs</code> 5000, <code>keyFileMaxBytes</code> 65536, <code>upstreamUserMax</code> 64, <code>upstreamPasswordMax</code> 128, <code>upstreamTokenMax</code> 384, <code>upstreamIdentitiesMax</code> 64; alle mit Wert in <code>docs/relay.md</code>.</p>
+    <p class="note">Grenzen im Code (<code>relay/limits.ts</code>): <code>soloPerMinutePerKey</code> 4, <code>soloQueueMax</code> 6, <code>maxWaitDefaultMs</code> 30000, <code>keyFileCheckMs</code> 5000, <code>keyFileMaxBytes</code> 65536, <code>keyShareMin</code> 10, <code>keyShareMax</code> 100, <code>upstreamUserMax</code> 64, <code>upstreamPasswordMax</code> 128, <code>upstreamTokenMax</code> 384, <code>upstreamIdentitiesMax</code> 64; alle mit Wert in <code>docs/relay.md</code>.</p>
 
     <h2>6 Werkseinstellungen (mitgelieferte Daten)</h2>
     <p>

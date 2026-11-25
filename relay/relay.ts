@@ -85,6 +85,13 @@ export interface RelayOptions {
   upstreamAuth?: ReadonlyMap<string, UpstreamCredentials>;
   /** Identities (credentials of the app) known at once per service (default `RELAY_LIMITS.upstreamIdentitiesMax`); a parameter for tests. */
   upstreamIdentities?: number;
+  /**
+   * `RELAY_KEY_SHARE`: the share of a service's budget per minute (whole percent, 10 to 100, default 100 = off) that ONE key
+   * may use at one lane (service and identity): at most `max(1, floor(budget * share / 100))` admitted requests per
+   * sliding minute, then `429 key-share`. Single operation: every request; collecting operation: the solo stamps (a window
+   * is one slot for all its hashes). Only with authentication (a request without a key id has no share).
+   */
+  keyShare?: number;
 }
 
 /** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
@@ -118,6 +125,8 @@ export interface RelayStats {
   keyExpired?: number;
   /** Requests of a key whose `services` does not name the service: `403 service-not-allowed`; present once counted. */
   serviceDenied?: number;
+  /** Requests refused with `429 key-share` (only the share of the key at a service was reached); present once counted; global, never per key. */
+  shareDenied?: number;
 }
 
 const JSON_TYPE = 'application/json';
@@ -160,7 +169,10 @@ export interface Relay {
    * (identities, budget times, last calls, lanes of the planner, gates of single operation). Their number must stay
    * limited: an expired identity leaves none behind.
    */
-  heldForTests: () => Record<'known' | 'windows' | 'lastCall' | 'lanes' | 'gates', number>;
+  heldForTests: () => Record<
+    'known' | 'windows' | 'lastCall' | 'lanes' | 'gates' | 'shares',
+    number
+  >;
 }
 
 export function createRelay(options: RelayOptions): Relay {
@@ -220,6 +232,13 @@ export function createRelay(options: RelayOptions): Relay {
   // lane key (the service id; for credentials of the client `<id>#<digest>`) → times of the service's requests/slots in the window
   const windows = new Map<string, number[]>();
   const keyWindows = new Map<string, number[]>(); // key id → request times in the window (memory only)
+  // `RELAY_KEY_SHARE`: per (key id, lane) the times of the admitted requests in the window (memory only, never output).
+  // Entries whose times are all expired are dropped at every admission: the table holds the keys and lanes active in the last window.
+  const keyShare = options.keyShare ?? 100;
+  if (!(Number.isInteger(keyShare) && keyShare >= 10 && keyShare <= 100)) {
+    throw new Error('relay keyShare is invalid'); // at start, no content
+  }
+  const shares = new Map<string, number[]>();
   let total: number[] = [];
   const buildKeys = (keys: readonly RelayKey[]) => {
     const byId = new Map<string, KeyObject>();
@@ -393,6 +412,38 @@ export function createRelay(options: RelayOptions): Relay {
           windows.set(laneKey, own);
         }
         if (kid !== null) mine.push(now);
+      },
+    };
+  }
+
+  /**
+   * The share of one key at one lane (`RELAY_KEY_SHARE`): the seconds to wait when the key has used its part of the lane's
+   * budget in the last window, and `spend`. A look writes nothing. Null at 100 (off).
+   */
+  function shareBudget(
+    laneKey: string,
+    kid: string,
+    minIntervalMs: number,
+  ): { wait: number | null; spend: () => void } | null {
+    if (keyShare >= 100) return null;
+    const now = tick();
+    const id = `${kid}|${laneKey}`;
+    const times = (shares.get(id) ?? []).filter((t) => now - t < bw).map((t) => Math.min(t, now));
+    const laneLimit = Math.max(1, Math.floor(bw / minIntervalMs));
+    const limit = Math.max(1, Math.floor((laneLimit * keyShare) / 100));
+    return {
+      wait:
+        times.length >= limit
+          ? Math.max(1, Math.ceil((bw - (now - times[times.length - limit]!)) / 1000))
+          : null,
+      spend: () => {
+        times.push(now);
+        shares.set(id, times);
+        for (const [other, list] of shares) {
+          if (other !== id && now - Math.min(list[list.length - 1]!, now) >= bw) {
+            shares.delete(other);
+          }
+        }
       },
     };
   }
@@ -656,7 +707,11 @@ export function createRelay(options: RelayOptions): Relay {
     );
     const cache = auth ? cacheWait(auth.kid) : null;
     const soloNow = wantsSolo && auth ? soloBudget(auth.kid) : null;
-    const waits = [budgetNow.wait, cache, soloNow?.wait ?? null].filter(
+    // The share of the key at this lane (off at 100): every request in single operation, only the solo stamps in collecting
+    // operation (a window is one slot for all its hashes: joining it takes none).
+    const shareNow =
+      auth !== null && (!batch || direct) ? shareBudget(lk, auth.kid, service.minIntervalMs) : null;
+    const waits = [budgetNow.wait, cache, soloNow?.wait ?? null, shareNow?.wait ?? null].filter(
       (w): w is number => w !== null,
     );
     // The slot of the service is not free within the longest wait: the old 429 (waiting is for a short squeeze only)
@@ -668,6 +723,11 @@ export function createRelay(options: RelayOptions): Relay {
     const gateMs = batch ? 0 : gateWaitMs(lk, service.minIntervalMs);
     if (gateMs > maxWaitMs) waits.push(Math.max(1, Math.ceil(gateMs / 1000)));
     if (waits.length > 0) {
+      // only the share says no: its own code (the same 429 with Retry-After; nothing is spent either way)
+      if (shareNow?.wait != null && waits.length === 1) {
+        stats.shareDenied = (stats.shareDenied ?? 0) + 1;
+        return send(res, 429, { error: 'key-share' }, origin, { 'Retry-After': String(waits[0]) });
+      }
       return send(res, 429, { error: 'rate-limited' }, origin, {
         'Retry-After': String(Math.max(...waits)),
       });
@@ -684,6 +744,7 @@ export function createRelay(options: RelayOptions): Relay {
     }
     budgetNow.spend();
     soloNow?.spend();
+    shareNow?.spend();
     if (auth && signedId !== null) remember(signedId, auth);
     const entry = tracked ? touchIdentity(lk, service) : null;
     if (entry) entry.pending += 1;
@@ -1546,6 +1607,7 @@ export function createRelay(options: RelayOptions): Relay {
       ...(stats.keyRevoked === undefined ? {} : { keyRevoked: stats.keyRevoked }),
       ...(stats.keyExpired === undefined ? {} : { keyExpired: stats.keyExpired }),
       ...(stats.serviceDenied === undefined ? {} : { serviceDenied: stats.serviceDenied }),
+      ...(stats.shareDenied === undefined ? {} : { shareDenied: stats.shareDenied }),
     }),
     close,
     setKeys,
@@ -1557,6 +1619,7 @@ export function createRelay(options: RelayOptions): Relay {
       lastCall: lastCall.size,
       lanes: lanes.size,
       gates: gates.size,
+      shares: shares.size,
     }),
   };
 }

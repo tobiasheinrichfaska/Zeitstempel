@@ -36,6 +36,7 @@ Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nut
 | `RELAY_BATCH_MAX`          | Sammelbetrieb: höchstens so viele Anfragen in einem Fenster, ganze Zahl 2 bis 1024; ein volles Fenster schließt sofort                                                                                                                                                                                                                                   | 128                                          |
 | `RELAY_UPSTREAM_AUTH_<ID>` | Zugangsdaten eines bezahlten Dienstes, die das Relay selbst hält (`<ID>`: Kennung in Großbuchstaben, `-` als `_`); `Benutzer:Passwort` bei `basic`, sonst das Token; **Pflicht** für einen gewählten Dienst mit Quelle `relay`, **freiwillig** bei `either`; siehe „Zugangsdaten zu bezahlten Diensten“                                                  | keine                                        |
 | `RELAY_MAX_WAIT_MS`        | Längste Wartezeit einer Anfrage in ms, ganze Zahl 1000 bis 60000: im Sammelbetrieb auf einen freien Platz beim Dienst, im Einzelbetrieb auf den Mindestabstand zum letzten Aufruf des Dienstes; danach `503 busy`; siehe „Schlüsselarten und Solo-Stempel“ und „Grenzen (`relay/limits.ts`)“                                                             | 30000                                        |
+| `RELAY_KEY_SHARE`          | Anteil in ganzen Prozent, 10 bis 100 (Vorgabe 100 = aus, nichts ändert sich): so viel vom Minutenbudget **eines Dienstes** darf **eine** Schlüsselkennung höchstens belegen; darüber `429 key-share`; leerer oder ungültiger Wert = Startabbruch; siehe „Anteil je Schlüssel am Dienstbudget“                                                            |
 
 **Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
 `RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
@@ -253,9 +254,52 @@ Anfragen je Minute bei 15 s) sperrt ein einziger gültiger Schlüssel mit 4 Anfr
 alle anderen Kennungen bis zum Ende des Zeitfensters (bei FreeTSA mit 5 s: 12 Anfragen). `perMinuteTotal` (60) wird mit
 den mitgelieferten Diensten nie erreicht (die vier Dienstgrenzen ergeben zusammen nur 24 je Minute); `perMinutePerKey`
 (20) kann ein Schlüssel erreichen, der mehrere Dienste zugleich nutzt. Beide greifen im Sammelbetrieb früher
-(siehe dort: sie zählen jede Anfrage). Das Relay verteilt das Budget eines Dienstes nicht fair auf die
-Kennungen: Wer einen gültigen Schlüssel hat (auch einen gestohlenen), kann einen Dienst für alle übrigen
-aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen (Eintrag entfernen, Relay neu starten).
+(siehe dort: sie zählen jede Anfrage). **Ohne `RELAY_KEY_SHARE` (Vorgabe) verteilt das Relay das Budget eines Dienstes
+nicht fair auf die Kennungen:** wer einen gültigen Schlüssel hat (auch einen gestohlenen), kann einen Dienst für alle
+übrigen aussperren. Mit `RELAY_KEY_SHARE` (nächster Abschnitt) ist der Anteil einer Kennung begrenzt; ein Schlüssel
+lässt sich außerdem widerrufen (Eintrag entfernen oder `"revoked": true`).
+
+#### Anteil je Schlüssel am Dienstbudget (`RELAY_KEY_SHARE`)
+
+`RELAY_KEY_SHARE` ist eine ganze Zahl in Prozent, 10 bis 100 (Vorgabe 100 = aus: das Verhalten bleibt wie ohne die
+Einstellung, es wird nichts gezählt). Ein Wert unter 100 begrenzt, wie viel vom Minutenbudget eines Dienstes (`60000 /
+minIntervalMs`, bei FreeTSA 12, bei 15 s 4) **eine** Schlüsselkennung in der gleitenden Minute belegen darf:
+
+    Obergrenze = max(1, floor(Dienstbudget * Prozent / 100))        FreeTSA bei 50: 6      15-s-Dienst bei 50: 2
+
+- **Je Spur.** Das Budget und der Anteil gelten je (Dienst, Identität): hat ein Dienst Zugangsdaten der App, ist jede
+  Identität eine eigene Spur mit eigenem Budget und eigenem Anteil der Kennung. Ohne Schlüssel (`RELAY_AUTH=off`) gibt es
+  keine Kennung und keinen Anteil.
+- **Darüber `429`** mit `Retry-After` (die Zeit, bis der älteste Platz dieser Kennung in der Minute frei wird; folgt
+  zugleich eine andere Grenze, gilt die längste Zeit) und dem Code **`key-share`**. Wenn **nur** der Anteil nein sagt,
+  zählt `shareDenied` (global, nur die Summe, nie je Schlüssel) und `refused['key-share']`; sagt auch das Dienstbudget,
+  `perMinutePerKey` oder `perMinuteTotal` nein, bleibt es bei `rate-limited`. Die Abweisung verbraucht nichts: kein
+  Gesamt- und kein Schlüsselbudget, kein Eintrag gegen Wiederholung, keine Reservierung beim Planer, kein Platz im Anteil.
+  Der Kopf einer abgewiesenen Anfrage ist also keine Wiederholung und gilt noch, bis der Anteil wieder frei ist.
+- **Einzelbetrieb.** Gezählt wird die **Annahme** je (Spur, Kennung) in der gleitenden Minute, **auf der Wanduhr** wie die
+  anderen Mengenzähler dieser Betriebsart (Dienstbudget, `perMinuteTotal`, `perMinutePerKey`); der Mindestabstand läuft
+  weiter auf der monotonen Uhr. Das Dienstbudget und der Anteil zählen dieselben Annahmen, der Anteil nur je Kennung.
+- **Sammelbetrieb (entschieden: nur Solo).** Jeder **Solo-Stempel** (Schlüsselart 2) nimmt einen ganzen Platz des Dienstes
+  und zählt gegen den Anteil (monotone Uhr, wie der ganze Planer). **Hashes in einem Fenster teilen sich einen Platz:** ein
+  Fenster ist ein Platz für alle seine Hashes, eine Anfrage, die ein offenes Fenster betritt, nimmt keinen Platz und
+  zählt nicht gegen den Anteil. Eine Obergrenze je Kennung und Fenster (`max(1, floor(RELAY_BATCH_MAX * Prozent / 100))`
+  Hashes) wurde geprüft und **nicht** gebaut: Fenster füllen sich auch aus der Warteschlange der Anfragen, die noch auf
+  einen Platz warten, und das `Retry-After` „bis zum Fensterschluss“ gäbe es für ein Fenster, das noch nicht offen ist,
+  nicht; das wären zwei neue Zustände im Planer für ein Risiko, das schon begrenzt ist: Hashes im Fenster kosten den
+  Dienst nichts, die Zahl der Fenster hängt an der Zeit (nicht an der Kennung), und eine Kennung kann höchstens
+  `perMinutePerKey` (20) Hashes je Minute einbringen (bei einem sehr kleinen `RELAY_BATCH_MAX` können wenige Kennungen die
+  Fenster füllen: dort `RELAY_BATCH_MAX` nicht kleiner als die Zahl der Nutzer wählen). Das Aussperren am Dienstbudget kann
+  im Sammelbetrieb nur ein Schlüssel der Art 2 mit Solo-Stempeln (die der Betreiber vergibt); der Anteil begrenzt ihn.
+- **Zähler im Arbeitsspeicher, begrenzt.** Eine Tabelle je (Kennung, Spur); jede Annahme wirft die Einträge hinaus, deren
+  Zeiten alle älter als die Minute sind. Sie hält also nur Kennungen und Spuren der letzten Minute (höchstens
+  `perMinuteTotal` Annahmen; die Tabelle hat höchstens so viele Einträge). Das Neulesen der Schlüsseldatei ändert die
+  Zähler nicht (ein Schlüssel, der aus der Datei verschwindet, ist ungültig; sein Zähler läuft aus). Eine Uhr, die
+  zurückgestellt wird, setzt Zeiten in der Zukunft auf „jetzt“ (wie bei den anderen Zählern).
+- **Empfehlung.** Mit mehreren Nutzergruppen (mehrere Apps, mehrere Schlüssel) im Pilot `RELAY_KEY_SHARE=50`: ein
+  Schlüssel belegt höchstens die Hälfte der Plätze, ein zweiter bekommt immer welche (bei FreeTSA 6 von 12). Mit genau
+  einer Nutzergruppe bringt die Einstellung nichts; sie senkt nur deren Anteil. Bei Anteilen unter 100 / (Zahl der
+  Schlüssel) bleibt Budget ungenutzt, auch wenn kein anderer Schlüssel etwas will: der Anteil ist eine feste Grenze,
+  kein Teilen nach Bedarf.
 
 ### Browser (CORS)
 
@@ -427,6 +471,7 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit                                                                                                                                                                                                                                                                                                                                                                                           |
 | 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 429    | `key-share`                                                                     | Nur der Anteil dieser Schlüsselkennung am Dienstbudget (`RELAY_KEY_SHARE`) ist erreicht; `Retry-After` in Sekunden; nichts verbraucht; zählt `shareDenied`                                                                                                                                                                                                                                                                                                                                                    |
 | 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`)                                                                                                                                                                                                                                                                                                                                                                                  |
 | 503    | `shutting-down`                                                                 | Das Relay wird beendet; die Anfrage wartete (im Sammelbetrieb in einem Fenster oder auf einen Platz, im Einzelbetrieb auf den Mindestabstand) und ist nicht gestempelt, die App versucht es später neu                                                                                                                                                                                                                                                                                                        |
@@ -832,18 +877,19 @@ Solo-Stempel der Art 2; **der Rest wartet**.
 Nur Summen, nichts je Schlüssel, nichts von der Anfrage (Variante A). Sie erscheinen in `relay.stats()` und in der
 Zeile `counts` erst, wenn sie zum ersten Mal gezählt wurden:
 
-| Zähler            | Bedeutung                                                                                                                      |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `solo`            | Solo-Stempel, die der Dienst gegeben hat (zählt auch in `stamped`)                                                             |
-| `soloDenied`      | Solo-Anfragen der Art 1 (oder ohne Schlüssel), die sofort `403 solo-not-allowed` bekamen (auch unter `refused`)                |
-| `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                                 |
-| `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal          |
-| `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)                  |
-| `keyRevoked`      | Anfragen mit **gültiger Signatur** eines gesperrten Schlüssels (`"revoked": true`); Antwort `401`, wie bei unbekannter Kennung |
-| `keyExpired`      | Anfragen mit gültiger Signatur eines Schlüssels nach seinem `notAfter`; Antwort `401`, wie bei unbekannter Kennung             |
-| `serviceDenied`   | Anfragen eines Schlüssels mit `services`, der einen anderen Dienst verlangte: `403 service-not-allowed` (auch unter `refused`) |
+| Zähler            | Bedeutung                                                                                                                                           |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `solo`            | Solo-Stempel, die der Dienst gegeben hat (zählt auch in `stamped`)                                                                                  |
+| `soloDenied`      | Solo-Anfragen der Art 1 (oder ohne Schlüssel), die sofort `403 solo-not-allowed` bekamen (auch unter `refused`)                                     |
+| `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                                                      |
+| `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal                               |
+| `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)                                       |
+| `keyRevoked`      | Anfragen mit **gültiger Signatur** eines gesperrten Schlüssels (`"revoked": true`); Antwort `401`, wie bei unbekannter Kennung                      |
+| `keyExpired`      | Anfragen mit gültiger Signatur eines Schlüssels nach seinem `notAfter`; Antwort `401`, wie bei unbekannter Kennung                                  |
+| `serviceDenied`   | Anfragen eines Schlüssels mit `services`, der einen anderen Dienst verlangte: `403 service-not-allowed` (auch unter `refused`)                      |
+| `shareDenied`     | Anfragen, die nur wegen des Anteils der Kennung am Dienstbudget `429 key-share` bekamen (`RELAY_KEY_SHARE`; auch unter `refused`); nie je Schlüssel |
 
-`busy` und `solo-not-allowed` stehen außerdem unter `refused` wie jeder Fehlercode.
+`busy`, `solo-not-allowed` und `key-share` stehen außerdem unter `refused` wie jeder Fehlercode.
 
 ### Schlüsseldatei laufend lesen
 
@@ -1143,6 +1189,8 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `maxWaitDefaultMs`      | 30000  | `RELAY_MAX_WAIT_MS`: Wert ohne Angabe                                                                                                                               |
 | `maxWaitMinMs`          | 1000   | `RELAY_MAX_WAIT_MS`: kleinster Wert                                                                                                                                 |
 | `maxWaitMaxMs`          | 60000  | `RELAY_MAX_WAIT_MS`: größter Wert (Proxy- und Client-Fristen im Einzelbetrieb mindestens Wartegrenze + 17 s, im Sammelbetrieb Wartegrenze + Fenster + Kette + 17 s) |
+| `keyShareMin`           | 10     | `RELAY_KEY_SHARE`: kleinster Wert in Prozent                                                                                                                        |
+| `keyShareMax`           | 100    | `RELAY_KEY_SHARE`: größter Wert und Wert ohne Angabe (100 = aus)                                                                                                    |
 | `upstreamUserMax`       | 64     | Zugangsdaten der App: längster Benutzername bei `basic` (druckbares ASCII, ohne `:`)                                                                                |
 | `upstreamPasswordMax`   | 128    | längstes Passwort bei `basic` (druckbares ASCII)                                                                                                                    |
 | `upstreamTokenMax`      | 384    | längstes Token bei `bearer` und `header` (druckbares ASCII ohne Leerzeichen, `"` und `\`)                                                                           |
