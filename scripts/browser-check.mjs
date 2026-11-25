@@ -11,13 +11,19 @@
 //     (node_modules next to this project, or NODE_PATH).
 // Exit codes: 0 all checks passed, 1 a check failed, 2 the check could not run (no Playwright, no browser,
 // no `dist/`).
-// Two parts per browser:
+// Three parts per browser (87 checks in Chromium, 57 in A and B, 30 in C; about 80 s):
 //   A) the relay with authentication off (`keys: 'off'`, loopback): the four recorded tokens, a call from the
 //      page, `Retry-After` on a 429.
 //   B) signed calls: `signRelayRequest` with key bytes and a non-extractable CryptoKey, wrong signatures,
 //      clock correction with `Date`, replay, CORS with preflight, collecting operation with
 //      `verifyBatchedTimestamp`, solo stamps of a type-2 key, the insecure context (Chromium only), and the
 //      same verdicts as in Node. The token builder of the tests stands in for a service.
+//   C) the client `zeitstempel/client` (dist/client) in the page, page and relays on different origins of
+//      127.0.0.1 (same site, so a cookie WOULD be sent with credentials 'include': a control proves it): stamp in
+//      single and collecting operation, solo (type 2, and type 1 refused), evidence round trip and
+//      verifyEvidence (browser and Node), wrong hash, key as bytes and as non-extractable CryptoKey, clock
+//      correction with a Date.now override (+-30 s without, +-62 s with one 401, +-70 s refused), Retry-After on
+//      429, abort (waiting, slow answer, before sending), failover between services, no cookie or Authorization.
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import http from 'node:http';
@@ -963,6 +969,592 @@ async function partB(engine, browser, launcher) {
   }
 }
 
+// Part C: the client `zeitstempel/client` in the browser (dist/client), against real relays with a stub service.
+// The page is served from 127.0.0.1:<port> and the relays listen on other ports of 127.0.0.1: another ORIGIN
+// (CORS with preflight applies) but the same SITE, so a cookie of the page WOULD be sent with
+// `credentials: 'include'` (the control request below proves that, so "no cookie" means something).
+async function partC(engine, browser) {
+  const rec = (name, pass, detail) => record(engine, `C ${name}`, pass, detail);
+  const clientLib = await import(`${R}dist/client/index.js`);
+  const page = pageServer();
+  await listen(page);
+  const pageOrigin = `http://127.0.0.1:${page.address().port}`;
+  const AUDC = 'https://relay.browser-check-client';
+  const log = []; // every request any relay of this part saw
+  const relays = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  try {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    const pageErrors = [];
+    p.on('pageerror', (e) => pageErrors.push(String(e)));
+    await p.goto(`${pageOrigin}/`);
+    await p.evaluate(async () => {
+      window.zs = await import('/dist/index.js');
+      window.zc = await import('/dist/client/index.js');
+      window.__real = Date.now.bind(Date);
+      document.cookie = 'zs_probe=secret; path=/';
+    });
+    await p.evaluate((a) => {
+      window.__anchor = a;
+    }, ANCHORS.freetsa);
+    // keys made in the browser: a (bytes), b (type 2, bytes), c (non-extractable CryptoKey)
+    const keys = await p.evaluate(async () => {
+      window.K = {};
+      window.PK = {};
+      const res = {};
+      for (const [n, ex] of [
+        ['a', true],
+        ['b', true],
+        ['c', false],
+      ]) {
+        const k = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, ex, [
+          'sign',
+          'verify',
+        ]);
+        window.K[n] = k;
+        if (ex)
+          window.PK[n] = Array.from(
+            new Uint8Array(await crypto.subtle.exportKey('pkcs8', k.privateKey)),
+          );
+        res[n] = Array.from(new Uint8Array(await crypto.subtle.exportKey('raw', k.publicKey)));
+      }
+      return res;
+    });
+    await p.evaluate(
+      ({ trust, aud }) => {
+        window.TRUST = trust;
+        window.mk = async (B, who, extra = {}) => {
+          let privateKey;
+          let keyId = 'app-' + who[0];
+          if (who === 'a' || who === 'b') privateKey = Uint8Array.from(window.PK[who]);
+          else if (who === 'c') privateKey = window.K.c.privateKey;
+          else if (who === 'a-import') {
+            privateKey = await crypto.subtle.importKey(
+              'pkcs8',
+              Uint8Array.from(window.PK.a),
+              { name: 'ECDSA', namedCurve: 'P-256' },
+              false,
+              ['sign'],
+            );
+          }
+          const c = window.zc.createRelayClient({
+            relayUrl: B,
+            audience: aud,
+            keyId,
+            privateKey,
+            trust: [window.TRUST],
+            services: ['freetsa'],
+            ...extra,
+          });
+          if (!c.ok) throw new Error('client ' + c.reason);
+          return c.value;
+        };
+        window.hashOf = async (s) =>
+          new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+        window.setOffset = (ms) => {
+          Date.now = () => window.__real() + ms;
+        };
+      },
+      { trust: SIGNER.caPem, aud: AUDC },
+    );
+    const relayKeys = [
+      { id: 'app-a', publicKey: Uint8Array.from(keys.a) },
+      { id: 'app-b', publicKey: Uint8Array.from(keys.b), solo: true },
+      { id: 'app-c', publicKey: Uint8Array.from(keys.c) },
+    ];
+    const make = (name, minIntervalMs, up, extra = {}) => {
+      const { server } = createRelayServer({
+        services: SERVICES.map((s) => ({
+          ...s,
+          anchorPems: [...s.anchorPems, SIGNER.caPem],
+          minIntervalMs,
+        })),
+        origins: [pageOrigin],
+        allowPlainHttp: false,
+        upstream: up,
+        random: (n) => new Uint8Array(randomBytes(n)),
+        now: () => Date.now(),
+        keys: relayKeys,
+        audience: AUDC,
+        ...extra,
+      });
+      server.prependListener('request', (q, r) => {
+        const e = {
+          relay: name,
+          m: q.method,
+          url: q.url,
+          origin: q.headers.origin,
+          cookie: q.headers.cookie,
+          authz: q.headers.authorization,
+          hasAuth: q.headers['x-zeitstempel-auth'] !== undefined,
+          status: null,
+        };
+        log.push(e);
+        r.on('finish', () => {
+          e.status = r.statusCode;
+        });
+      });
+      relays.push(server);
+      return server;
+    };
+    const down = new Set(); // services the failover relay's stub refuses
+    const slowUp = async (t, body) => {
+      await sleep(4000);
+      return upstream(t, body);
+    };
+    const failUp = async (t, body) =>
+      down.has(t.id)
+        ? { status: 500, contentType: 'text/plain', body: new Uint8Array(0) }
+        : upstream(t, body);
+    const rs = make('single', 300, upstream, { maxWaitMs: 5000 });
+    const rb = make('batch', 250, upstream, {
+      maxWaitMs: 5000,
+      batch: { windowMs: 300, max: 100 },
+    });
+    const rl = make('limit', 4000, upstream, { maxWaitMs: 1000 });
+    const ra = make('slow', 300, slowUp, { maxWaitMs: 5000 });
+    const rf = make('failover', 300, failUp, { maxWaitMs: 5000 });
+    for (const s of [rs, rb, rl, ra, rf]) await listen(s);
+    const U = (s) => `http://127.0.0.1:${s.address().port}`;
+    const BS = U(rs),
+      BB = U(rb),
+      BL = U(rl),
+      BA = U(ra),
+      BF = U(rf);
+    const seen = async (relay, from) => {
+      await sleep(80);
+      return log.slice(from).filter((e) => e.relay === relay && e.m === 'POST');
+    };
+    const mark = () => log.length;
+    const trust = SIGNER.caPem;
+    const nodeVerify = async (text, hash) =>
+      clientLib.verifyEvidence(text, Uint8Array.from(hash), { trust: [trust] });
+
+    // --- single operation: stamp, evidence, round trip, wrong hash ---
+    const one = await p
+      .evaluate(async (B) => {
+        const c = await window.mk(B, 'a');
+        const h = await window.hashOf('client-1');
+        const r = await c.stamp(h);
+        const out = { r, h: Array.from(h) };
+        if (r.ok) {
+          const zc = window.zc;
+          out.v = await zc.verifyEvidence(r.value, h, { trust: [window.TRUST] });
+          const t1 = zc.serializeEvidence(r.value);
+          const back = t1.ok ? zc.readEvidence(t1.value) : null;
+          const t2 = back?.ok ? zc.serializeEvidence(back.value) : null;
+          out.text = t1.ok ? t1.value : null;
+          out.round = !!(
+            back?.ok &&
+            t2?.ok &&
+            t2.value === t1.value &&
+            JSON.stringify(back.value) === JSON.stringify(r.value)
+          );
+          out.fromText = t1.ok
+            ? await zc.verifyEvidence(t1.value, h, { trust: [window.TRUST] })
+            : null;
+          out.wrong = await zc.verifyEvidence(r.value, await window.hashOf('other'), {
+            trust: [window.TRUST],
+          });
+          out.badAnchor = await zc.verifyEvidence(r.value, h, { trust: [window.__anchor] });
+          const flip = {
+            ...r.value,
+            token:
+              r.value.token.slice(0, 40) +
+              (r.value.token[40] === 'A' ? 'B' : 'A') +
+              r.value.token.slice(41),
+          };
+          out.tampered = await zc.verifyEvidence(flip, h, { trust: [window.TRUST] });
+        }
+        return out;
+      }, BS)
+      .catch((e) => ({ err: String(e) }));
+    rec(
+      '1 stamp single operation (key as bytes): evidence, kind single',
+      !!one.r?.ok &&
+        one.r.value.kind === 'single' &&
+        one.r.value.service === 'freetsa' &&
+        !('batch' in one.r.value),
+      JSON.stringify(one.r?.ok ? { kind: one.r.value.kind, genTime: one.r.value.genTime } : one),
+    );
+    rec(
+      '2 verifyEvidence in the browser ok, genTime as in the evidence',
+      !!one.v?.ok && one.v.value.genTime === one.r.value.genTime,
+      one.v?.ok ? one.v.value.genTime : one.v?.reason,
+    );
+    rec(
+      '3 serializeEvidence/readEvidence round trip, same text, verifies from text',
+      one.round === true && !!one.fromText?.ok,
+      '',
+    );
+    rec(
+      '4 evidence from the browser verifies in Node too (same genTime)',
+      await (async () => {
+        const v = await nodeVerify(one.text, one.h);
+        return v.ok && v.value.genTime === one.v.value.genTime;
+      })(),
+      '',
+    );
+    rec(
+      '5 wrong hash -> evidence-hash-mismatch',
+      one.wrong?.ok === false && one.wrong.reason === 'evidence-hash-mismatch',
+      one.wrong?.reason,
+    );
+    rec(
+      '6 changed token refused, other anchor refused (untrusted-chain)',
+      one.tampered?.ok === false &&
+        one.badAnchor?.ok === false &&
+        one.badAnchor.reason === 'untrusted-chain',
+      `tampered=${one.tampered?.reason} anchor=${one.badAnchor?.reason}`,
+    );
+
+    // --- keys: non-extractable CryptoKey, key imported non-extractable from bytes ---
+    for (const [who, label] of [
+      ['c', 'CryptoKey generated non-extractable'],
+      ['a-import', 'CryptoKey imported from PKCS#8 bytes, non-extractable'],
+    ]) {
+      const k = await p.evaluate(
+        async ({ B, who }) => {
+          const c = await window.mk(B, who);
+          const h = await window.hashOf('key-' + who);
+          const r = await c.stamp(h);
+          const v = r.ok
+            ? await window.zc.verifyEvidence(r.value, h, { trust: [window.TRUST] })
+            : null;
+          const key = who === 'c' ? window.K.c.privateKey : null;
+          const ex = key
+            ? await crypto.subtle.exportKey('pkcs8', key).then(
+                () => 'extractable',
+                () => 'locked',
+              )
+            : 'locked';
+          return { r: r.ok ? 'ok' : r.reason, v: v?.ok === true, ex };
+        },
+        { B: BS, who },
+      );
+      rec(`7 stamp with a ${label}`, k.r === 'ok' && k.v && k.ex === 'locked', JSON.stringify(k));
+    }
+
+    // --- collecting operation and solo ---
+    const bt = await p.evaluate(async (B) => {
+      const c = await window.mk(B, 'a');
+      const hs = await Promise.all([0, 1, 2].map((i) => window.hashOf('batch-' + i)));
+      const rs = await Promise.all(hs.map((h) => c.stamp(h)));
+      const vs = [];
+      for (let i = 0; i < 3; i++)
+        vs.push(
+          rs[i].ok
+            ? await window.zc.verifyEvidence(rs[i].value, hs[i], { trust: [window.TRUST] })
+            : null,
+        );
+      const text = rs[0].ok ? window.zc.serializeEvidence(rs[0].value) : null;
+      return {
+        res: rs.map((r) =>
+          r.ok
+            ? {
+                kind: r.value.kind,
+                size: r.value.batch?.size,
+                index: r.value.batch?.index,
+                token: r.value.token,
+              }
+            : r,
+        ),
+        v: vs.map((v) => v?.ok === true),
+        text: text?.ok ? text.value : null,
+        h0: Array.from(hs[0]),
+      };
+    }, BB);
+    rec(
+      '8 stamp collecting operation: three batch evidences, one token, indices distinct, verifyEvidence ok',
+      bt.res.every((r) => r.kind === 'batch') &&
+        bt.v.every(Boolean) &&
+        new Set(bt.res.map((r) => r.token)).size === 1 &&
+        new Set(bt.res.map((r) => r.index)).size === 3,
+      JSON.stringify(bt.res.map((r) => [r.kind, r.size, r.index])),
+    );
+    rec(
+      '9 batch evidence verifies in Node too',
+      bt.text !== null && (await nodeVerify(bt.text, bt.h0)).ok === true,
+      '',
+    );
+    await sleep(600);
+    const solo = await p.evaluate(async (B) => {
+      const c = await window.mk(B, 'b');
+      const h = await window.hashOf('solo-1');
+      const r = await c.stamp(h, { mode: 'solo' });
+      const v = r.ok ? await window.zc.verifyEvidence(r.value, h, { trust: [window.TRUST] }) : null;
+      return {
+        r: r.ok ? { kind: r.value.kind, hasBatch: 'batch' in r.value } : r,
+        v: v?.ok === true,
+      };
+    }, BB);
+    rec(
+      '10 solo with a type 2 key: kind single, no batch, verifies',
+      solo.r.kind === 'single' && solo.r.hasBatch === false && solo.v,
+      JSON.stringify(solo),
+    );
+    const solo1 = await p.evaluate(async (B) => {
+      const c = await window.mk(B, 'a');
+      const r = await c.stamp(await window.hashOf('solo-denied'), { mode: 'solo' });
+      return r.ok ? { ok: true } : { reason: r.reason, status: r.status, code: r.code };
+    }, BB);
+    rec(
+      '11 solo with a type 1 key -> relay-error 403 solo-not-allowed (no batch evidence handed out)',
+      solo1.reason === 'relay-error' && solo1.status === 403 && solo1.code === 'solo-not-allowed',
+      JSON.stringify(solo1),
+    );
+
+    // --- clock correction by overriding Date.now in the page (relay window +-60 s, client limit 65 s) ---
+    for (const off of [30000, -30000]) {
+      const r = await p.evaluate(
+        async ({ B, off }) => {
+          window.setOffset(off);
+          try {
+            const c = await window.mk(B, 'a');
+            const h = await window.hashOf('clock' + off);
+            const r = await c.stamp(h);
+            const v = r.ok
+              ? await window.zc.verifyEvidence(r.value, h, { trust: [window.TRUST] })
+              : null;
+            return { ok: r.ok, reason: r.reason, v: v?.ok === true };
+          } finally {
+            window.setOffset(0);
+          }
+        },
+        { B: BS, off },
+      );
+      rec(
+        `12 app clock ${off / 1000 > 0 ? '+' : ''}${off / 1000} s: stamp ok, evidence verifies`,
+        r.ok && r.v,
+        JSON.stringify(r),
+      );
+    }
+    for (const off of [62000, -62000]) {
+      const m = mark();
+      const r = await p.evaluate(
+        async ({ B, off }) => {
+          window.setOffset(off);
+          try {
+            const c = await window.mk(B, 'a');
+            const r1 = await c.stamp(await window.hashOf('corr1' + off));
+            return { ok: r1.ok, reason: r1.reason };
+          } finally {
+            window.setOffset(0);
+          }
+        },
+        { B: BS, off },
+      );
+      const posts = await seen('single', m);
+      const n401 = posts.filter((e) => e.status === 401).length;
+      rec(
+        `13 app clock ${off / 1000 > 0 ? '+' : ''}${off / 1000} s (outside the relay window, inside 65 s): one 401, corrected from Date, stamp ok`,
+        r.ok && n401 === 1 && posts.length === 2,
+        `${JSON.stringify(r)} statuses=${posts.map((e) => e.status)}`,
+      );
+    }
+    {
+      // the offset is remembered: the second stamp of the same client needs no 401
+      const m = mark();
+      const r = await p.evaluate(async (B) => {
+        window.setOffset(62000);
+        try {
+          const c = await window.mk(B, 'a');
+          const a = await c.stamp(await window.hashOf('rem1'));
+          const b = await c.stamp(await window.hashOf('rem2'));
+          return { a: a.ok, b: b.ok };
+        } finally {
+          window.setOffset(0);
+        }
+      }, BS);
+      const posts = await seen('single', m);
+      rec(
+        '13b the corrected offset is remembered: two stamps, one 401 only',
+        r.a && r.b && posts.length === 3 && posts.filter((e) => e.status === 401).length === 1,
+        `statuses=${posts.map((e) => e.status)}`,
+      );
+    }
+    for (const off of [70000, -70000]) {
+      const m = mark();
+      const r = await p.evaluate(
+        async ({ B, off }) => {
+          window.setOffset(off);
+          try {
+            const c = await window.mk(B, 'a');
+            const r = await c.stamp(await window.hashOf('far' + off));
+            return r.ok ? { ok: true } : { reason: r.reason, status: r.status };
+          } finally {
+            window.setOffset(0);
+          }
+        },
+        { B: BS, off },
+      );
+      const posts = await seen('single', m);
+      rec(
+        `14 app clock ${off / 1000 > 0 ? '+' : ''}${off / 1000} s (beyond 65 s): relay-error 401, no endless loop (${posts.length} requests)`,
+        r.reason === 'relay-error' && r.status === 401 && posts.length === 1,
+        JSON.stringify(r),
+      );
+    }
+
+    // --- Retry-After on 429 (relay `limit`: 4 s distance, waits at most 1 s) ---
+    const lim1 = await p.evaluate(async (B) => {
+      const c = await window.mk(B, 'a', { maxAttempts: 1 });
+      const r1 = await c.stamp(await window.hashOf('lim-1'));
+      const t = performance.now();
+      const r2 = await c.stamp(await window.hashOf('lim-2'));
+      return {
+        r1: r1.ok,
+        r2: r2.ok ? 'ok' : { reason: r2.reason, status: r2.status, code: r2.code },
+        ms: Math.round(performance.now() - t),
+      };
+    }, BL);
+    rec(
+      '15 429 with maxAttempts 1: relay-error 429, answered at once',
+      lim1.r1 && lim1.r2.reason === 'relay-error' && lim1.r2.status === 429 && lim1.ms < 1500,
+      JSON.stringify(lim1),
+    );
+    const lim2 = await p.evaluate(async (B) => {
+      const ac = new AbortController();
+      const c = await window.mk(B, 'a', { maxAttempts: 3 });
+      setTimeout(() => ac.abort(), 500);
+      const t = performance.now();
+      const r = await c.stamp(await window.hashOf('lim-3'), { signal: ac.signal });
+      return { reason: r.ok ? 'ok' : r.reason, ms: Math.round(performance.now() - t) };
+    }, BL);
+    rec(
+      '16 abort while waiting for Retry-After: aborted at once',
+      lim2.reason === 'aborted' && lim2.ms < 2000,
+      JSON.stringify(lim2),
+    );
+    const lim3 = await p.evaluate(async (B) => {
+      const c = await window.mk(B, 'a', { maxAttempts: 3 });
+      const h = await window.hashOf('lim-4');
+      const t = performance.now();
+      const r = await c.stamp(h);
+      const v = r.ok ? await window.zc.verifyEvidence(r.value, h, { trust: [window.TRUST] }) : null;
+      return {
+        reason: r.ok ? 'ok' : r.reason,
+        v: v?.ok === true,
+        ms: Math.round(performance.now() - t),
+      };
+    }, BL);
+    {
+      const postsL = log.filter((e) => e.relay === 'limit' && e.m === 'POST');
+      const n429 = postsL.filter((e) => e.status === 429).length;
+      rec(
+        '17 429 waits Retry-After and sends again: ok after the wait, evidence verifies',
+        lim3.reason === 'ok' && lim3.v && lim3.ms >= 300 && n429 >= 3,
+        `${JSON.stringify(lim3)} 429s=${n429}`,
+      );
+    }
+
+    // --- abort during a slow answer; abort before sending ---
+    const slow = await p.evaluate(async (B) => {
+      const ac = new AbortController();
+      const c = await window.mk(B, 'a');
+      setTimeout(() => ac.abort(), 400);
+      const t = performance.now();
+      const r = await c.stamp(await window.hashOf('slow-1'), { signal: ac.signal });
+      return { reason: r.ok ? 'ok' : r.reason, ms: Math.round(performance.now() - t) };
+    }, BA);
+    rec(
+      '18 AbortSignal during a slow answer: aborted at once',
+      slow.reason === 'aborted' && slow.ms < 2000,
+      JSON.stringify(slow),
+    );
+    {
+      const m = mark();
+      const pre = await p.evaluate(async (B) => {
+        const ac = new AbortController();
+        ac.abort();
+        const c = await window.mk(B, 'a');
+        const r = await c.stamp(await window.hashOf('pre'), { signal: ac.signal });
+        return r.ok ? 'ok' : r.reason;
+      }, BA);
+      const posts = await seen('slow', m);
+      rec(
+        '19 signal already aborted: aborted, nothing sent',
+        pre === 'aborted' && posts.length === 0,
+        `${pre} requests=${posts.length}`,
+      );
+    }
+
+    // --- failover between services of one relay: the first answers 502 ---
+    down.add('freetsa');
+    {
+      const m = mark();
+      const f = await p.evaluate(async (B) => {
+        const c = await window.mk(B, 'a', { services: ['freetsa', 'sectigo'] });
+        const h = await window.hashOf('failover');
+        const r = await c.stamp(h);
+        const v = r.ok
+          ? await window.zc.verifyEvidence(r.value, h, { trust: [window.TRUST] })
+          : null;
+        return { r: r.ok ? { service: r.value.service } : { reason: r.reason }, v: v?.ok === true };
+      }, BF);
+      const posts = await seen('failover', m);
+      rec(
+        '20 failover: freetsa answers 502, sectigo stamps, evidence verifies',
+        f.r.service === 'sectigo' &&
+          f.v &&
+          posts.map((e) => `${e.url.split('/').pop()}:${e.status}`).join(',') ===
+            'freetsa:502,sectigo:200',
+        `${JSON.stringify(f)} ${posts.map((e) => `${e.url.split('/').pop()}:${e.status}`)}`,
+      );
+      const only = await p.evaluate(async (B) => {
+        const c = await window.mk(B, 'a', { services: ['freetsa', 'sectigo'] });
+        const r = await c.stamp(await window.hashOf('failover-2'), { service: 'freetsa' });
+        return r.ok ? { ok: true } : { reason: r.reason, status: r.status };
+      }, BF);
+      rec(
+        '21 option service: no failover, relay-error 502',
+        only.reason === 'relay-error' && only.status === 502,
+        JSON.stringify(only),
+      );
+    }
+    down.clear();
+
+    // --- no cookies, no credentials; cross-origin with preflight ---
+    const control = await p.evaluate(async (B) => {
+      await fetch(B + '/v1/stamp/freetsa', { method: 'GET', credentials: 'include' }).catch(
+        () => {},
+      );
+      return document.cookie;
+    }, BS);
+    await sleep(80);
+    const ctl = log.filter((e) => e.m === 'GET' && e.url === '/v1/stamp/freetsa');
+    rec(
+      '22 control: a fetch with credentials include DOES carry the page cookie (same site, other origin)',
+      control.includes('zs_probe') &&
+        ctl.length === 1 &&
+        /zs_probe=secret/.test(ctl[0].cookie ?? ''),
+      `cookie sent=${ctl[0]?.cookie}`,
+    );
+    const posts = log.filter((e) => e.m === 'POST');
+    rec(
+      `23 none of the ${posts.length} stamp requests of the client carries a cookie or an Authorization header`,
+      posts.length > 20 &&
+        posts.every((e) => e.cookie === undefined && e.authz === undefined && e.hasAuth),
+      `cookies=${posts.filter((e) => e.cookie !== undefined).length} authz=${posts.filter((e) => e.authz !== undefined).length}`,
+    );
+    const opts = log.filter((e) => e.m === 'OPTIONS');
+    rec(
+      '24 cross-origin: every call has the page origin, preflights were made',
+      posts.every((e) => e.origin === pageOrigin) && opts.length > 0,
+      `${opts.length} OPTIONS`,
+    );
+    rec('25 page errors', pageErrors.length === 0, pageErrors.join(' | '));
+    await p.close();
+  } finally {
+    for (const s of relays) {
+      s.closeAllConnections();
+      s.close();
+    }
+    page.close();
+  }
+}
+
 let ran = 0;
 for (const engine of wanted) {
   const launcher = playwright[engine];
@@ -980,6 +1572,7 @@ for (const engine of wanted) {
   try {
     await partA(engine, browser);
     await partB(engine, browser, launcher);
+    await partC(engine, browser);
   } finally {
     await browser.close();
   }

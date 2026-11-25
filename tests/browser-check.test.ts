@@ -36,6 +36,27 @@ describe('browser check: wiring', () => {
     expect(text).toContain('process.exit(failed ? 1 : 0)');
   });
 
+  it('part C: the client in the browser (dist/client, other origin, clock offsets, abort, failover, no cookies)', () => {
+    const text = read('scripts/browser-check.mjs');
+    expect(text).toContain('async function partC(');
+    expect(text).toContain('await partC(engine, browser)');
+    expect(text).toContain('dist/client/index.js');
+    for (const needle of [
+      'evidence-hash-mismatch',
+      "'solo-not-allowed'",
+      'setOffset(',
+      '62000',
+      '70000',
+      'AbortController',
+      "credentials: 'include'",
+      'failover',
+      'extractable',
+    ])
+      expect(text, needle).toContain(needle);
+    // the count in the header is the count of the checks the script makes (A, B and C)
+    expect(text).toMatch(/87 checks in Chromium/);
+  });
+
   it('package.json has the script and no Playwright dependency', () => {
     const pkg = JSON.parse(read('package.json')) as {
       scripts: Record<string, string>;

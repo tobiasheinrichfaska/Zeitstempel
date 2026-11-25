@@ -9,8 +9,8 @@ festes, versioniertes JSON-Format und lässt sich später ohne das Relay und ohn
 - Browser und Node, nur Standard-APIs (`fetch`, WebCrypto, `AbortSignal`): kein `node:`, kein `Buffer`, kein `process`
   (Wächter-Test und ESLint). `fetch`, Uhr und Zufall sind Parameter.
 - Wie im Kern **wirft nichts**: Fehler sind Codes (`{ ok: false, reason }`). Status 0.1.0: nicht veröffentlicht, nicht
-  von einem Menschen sicherheitsgeprüft; getestet unter Node gegen ein echtes Relay mit Stub-Dienst, **im Browser noch nicht**
-  (Vorschlag unten).
+  von einem Menschen sicherheitsgeprüft; getestet unter Node gegen ein echtes Relay mit Stub-Dienst und im Browser nur in
+  headless Chromium (Abschnitt „Im Browser getestet“; Firefox und Safari nicht).
 
 ## Schnellstart
 
@@ -227,10 +227,31 @@ Redundanz.
   (der Client protokolliert nichts). Keine Zugangsdaten für bezahlte Dienste (`upstream`): der Client kennt sie nicht.
 - Nicht geprüft: Sperrung, die Aussage über Zeit vor dem Stempel, ob der Dienst qualifiziert ist (`docs/grenzen.md`, `docs/dienste.md`).
 
+## Im Browser getestet
+
+`node scripts/browser-check.mjs` (Teil C, nach `npm run build`) lädt `dist/client` in headless Chromium 157 über eine eigene Seite
+und ruft echte Relays (Einzel- und Sammelbetrieb, Schlüsseldatei, Audience; Stub-Dienst) auf. Seite und Relay liegen auf
+verschiedenen Ports von `127.0.0.1`: andere Origin (CORS mit Vorabfrage), aber dieselbe Site, damit ein Cookie der Seite bei
+`credentials: 'include'` gesendet würde (eine Kontrollanfrage beweist das). Geprüft, 30 Prüfungen, alle bestanden:
+
+- `stamp` im Einzelbetrieb (Schlüssel als Bytes): Beleg, `verifyEvidence`, `serializeEvidence`/`readEvidence` gleicher Text, derselbe
+  Beleg prüft auch unter Node; falscher Hash `evidence-hash-mismatch`, veränderter Token und falscher Anker abgewiesen.
+- Schlüssel als nicht extrahierbarer `CryptoKey` (erzeugt und aus PKCS#8-Bytes importiert).
+- Sammelbetrieb (drei parallele Belege `batch`, ein Token, verschiedene Indizes, auch unter Node geprüft); Solo mit Schlüssel der Art 2
+  (`kind: single`, kein `batch`); Solo mit Art 1: `relay-error` 403 `solo-not-allowed`.
+- Uhrabgleich über eine Überschreibung von `Date.now` der Seite: ±30 s ohne Korrektur, ±62 s mit genau einer `401` und Korrektur
+  (der Versatz wird gemerkt: zweiter Aufruf ohne `401`), ±70 s `relay-error` 401 ohne Wiederholung (Grenze 65 s).
+- `Retry-After` bei `429` (mit `maxAttempts: 1` sofort der Fehler, sonst Warten und Erfolg), Abbruch per `AbortSignal` beim Warten, bei
+  einer langsamen Antwort und schon vor dem Senden (dann wird nichts gesendet).
+- Failover: der erste Dienst liefert `502`, der zweite stempelt; mit `service` kein Failover.
+- Keine Cookies, kein `Authorization` in allen Anfragen des Clients; Origin der Seite in jeder Anfrage, Vorabfragen beobachtet.
+
+Nicht geprüft: Firefox und Safari, ein echter Dienst, ein Relay hinter einem Proxy, Dauer über die kurzen Fenster des Tests hinaus.
+
 ## Grenzen und offene Punkte
 
-- Nur unter Node getestet (echtes Relay mit Stub-Dienst, Fake-Relay für Fehlerantworten). Im Browser: noch nicht; ein Prüfplan steht
-  im Bericht zu dieser Änderung (headless Chromium, CORS mit Vorabfrage, `CryptoKey`, Abbruch).
+- Unter Node getestet (echtes Relay mit Stub-Dienst, Fake-Relay für Fehlerantworten) und im Browser nur in headless Chromium
+  (nächster Abschnitt); Firefox und Safari wurden nicht ausgeführt.
 - `receivedAtMs` ist die Uhr der App und kein Beweis. Ein Beleg beweist nur: dieser Hash lag zu `genTime` vor (bei `batch`: er war
   in der Menge, die der Dienst gestempelt hat; `docs/relay.md`, „Was der Beleg sagt, und was nicht“).
 - Keine eigene Wiederholung bei `500` auf demselben Dienst und keine Frist je Dienst.
