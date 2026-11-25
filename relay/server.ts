@@ -1,6 +1,8 @@
 import http from 'node:http';
 import { createRelay, type Relay, type RelayOptions } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
+import { createMetrics } from './metrics.ts';
+import type { IncomingMessage } from 'node:http';
 
 /** How long a socket may stay open after the relay wrote its last word to it. */
 const CLOSE_GRACE_MS = 1_000;
@@ -31,11 +33,33 @@ export function createRelayServer(
     host?: string;
     /** RELAY_KEEPALIVE_MS: replaces the keep-alive of both bindings. */
     keepAliveMs?: number;
+    /** RELAY_METRICS=1: serve `GET /metrics` to loopback peers (else the route does not exist: 404 like any unknown one). */
+    metrics?: boolean;
+    /** For tests: the peer address a request counts as having (default: the socket's remote address). */
+    peerAddress?: (req: IncomingMessage) => string | undefined;
   } = {},
 ): { server: http.Server; relay: Relay } {
   const relay = createRelay(options);
   // connectionsCheckingInterval: how often the server looks for connections past their deadline
-  const server = http.createServer({ connectionsCheckingInterval: 1_000 }, relay.handle);
+  // Counting answers is on only with RELAY_METRICS=1: without it the relay's handler is used as it is.
+  const metrics =
+    limits.metrics === true
+      ? createMetrics({
+          serviceIds: options.services.map((s) => s.id),
+          stats: relay.stats,
+          mono: options.monotonicNow ?? (() => performance.now()),
+          ...(limits.peerAddress === undefined ? {} : { peerAddress: limits.peerAddress }),
+        })
+      : null;
+  const handler =
+    metrics === null
+      ? relay.handle
+      : (req: IncomingMessage, res: http.ServerResponse): void => {
+          if (metrics.serve(req, res)) return;
+          metrics.observe(req, res);
+          relay.handle(req, res);
+        };
+  const server = http.createServer({ connectionsCheckingInterval: 1_000 }, handler);
   const timeout = limits.requestTimeoutMs ?? RELAY_LIMITS.requestTimeoutMs;
   // Node's own answers to a broken or slow client (408, 431, 400), now with the 408 counted apart from
   // a client that went away. Nothing of the request is looked at or logged.

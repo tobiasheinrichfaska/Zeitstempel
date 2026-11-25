@@ -135,6 +135,10 @@ export const RELAY_LIMITS = {
    * the cost is bounded by this.
    */
   keyFileMaxBytes: 65_536,
+  /** `/metrics` (RELAY_METRICS=1): largest text the endpoint sends; a longer one is cut at a line end and ends with `# truncated`. */
+  metricsMaxBytes: 16_384,
+  /** `/metrics`: most distinct refusal codes written as a label; the rest is summed under `other`. */
+  metricsMaxReasons: 32,
 } as const;
 
 /**
