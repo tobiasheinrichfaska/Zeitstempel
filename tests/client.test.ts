@@ -426,13 +426,15 @@ describe('strict readers', () => {
   it('parseRelayAnswer limits', () => {
     expect(parseRelayAnswer(goodAnswer()).ok).toBe(true);
     expect(parseRelayAnswer(goodAnswer({ accuracyMs: 1000 })).ok).toBe(true);
+    expect(parseRelayAnswer(goodAnswer({ accuracyMs: 0.5 })).ok).toBe(true); // micros give fractions
     const bads = [
       null,
       [],
       goodAnswer({ service: 'Bad' }),
       goodAnswer({ genTime: 'yesterday' }),
       goodAnswer({ accuracyMs: -1 }),
-      goodAnswer({ accuracyMs: 1.5 }),
+      goodAnswer({ accuracyMs: '1' }),
+      goodAnswer({ accuracyMs: Infinity }),
       goodAnswer({ serial: 'ABC' }),
       goodAnswer({ serial: 'a'.repeat(CLIENT_LIMITS.maxSerialChars + 1) }),
       goodAnswer({ token: '' }),

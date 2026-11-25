@@ -5,10 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+# The check only reads the repository.
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request makes the older run pointless.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tests:
     name: Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -21,3 +31,28 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
+      - name: Smoke test of the build
+        run: node -e "import('./dist/index.js').then(m=>{if(typeof m.verifyTimestampToken!=='function')process.exit(1)})"
+      - name: Package contents
+        run: npm pack --dry-run --ignore-scripts
+
+  # The library and the relay's browser interface in a real browser (scripts/browser-check.mjs). Playwright is
+  # not a dependency of the project: the version is named here, and nothing of it is installed into the project.
+  browser:
+    name: Browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --no-save --no-package-lock playwright@1.63.0
+          npx playwright@1.63.0 install --with-deps chromium
+      - name: Browser check
+        run: node scripts/browser-check.mjs

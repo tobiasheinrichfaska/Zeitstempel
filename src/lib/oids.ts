@@ -8,12 +8,36 @@ export const OID = {
   signingCertificate: '1.2.840.113549.1.9.16.2.12',
   signingCertificateV2: '1.2.840.113549.1.9.16.2.47',
   ekuTimeStamping: '1.3.6.1.5.5.7.3.8',
+  anyExtendedKeyUsage: '2.5.29.37.0',
   extBasicConstraints: '2.5.29.19',
+  extSubjectKeyIdentifier: '2.5.29.14',
   extKeyUsage: '2.5.29.15',
   extEku: '2.5.29.37',
+  extSubjectAltName: '2.5.29.17',
   ecPublicKey: '1.2.840.10045.2.1',
   rsaEncryption: '1.2.840.113549.1.1.1',
 } as const;
+
+/**
+ * Certificate extensions the reader knows and that are harmless when marked critical: it either
+ * evaluates them (basic constraints, key usage, extended key usage) or they carry no restriction on
+ * how the certificate may be used (identifiers, names, policies, access and CRL locations).
+ * A critical extension that is not listed makes the certificate unusable (RFC 5280 § 4.2).
+ */
+export const KNOWN_EXTENSIONS: ReadonlySet<string> = new Set([
+  '2.5.29.14', // subjectKeyIdentifier
+  '2.5.29.15', // keyUsage
+  '2.5.29.17', // subjectAltName
+  '2.5.29.19', // basicConstraints
+  '2.5.29.31', // cRLDistributionPoints
+  '2.5.29.32', // certificatePolicies
+  '2.5.29.35', // authorityKeyIdentifier
+  '2.5.29.37', // extKeyUsage
+  '1.3.6.1.5.5.7.1.1', // authorityInfoAccess
+]);
+
+/** Bounds of a subjectKeyIdentifier in bytes: the `[0]` identifier of a SignerInfo and the extension of a certificate. */
+export const SKI_BYTES = { min: 1, max: 64 } as const;
 
 export type HashName = 'SHA-1' | 'SHA-256' | 'SHA-384' | 'SHA-512';
 

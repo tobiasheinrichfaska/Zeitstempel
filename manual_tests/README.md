@@ -16,5 +16,16 @@ Dienste** brauchen und deshalb nicht in die automatische Prüfung gehören (die 
 | --------------- | ------------------------------------------------------------------------ |
 | `01_dienste.md` | Dienste erreichbar und Antworten gültig; Relay gegen einen echten Dienst |
 
-Ohne Netz: `node scripts/browser-check.mjs` prüft Bibliothek und Relay-Schnittstelle in Headless-Chromium
-(braucht Playwright mit installiertem Chromium; erwartet sechs Zeilen `OK`).
+## Ohne Netz: `node scripts/browser-check.mjs`
+
+Prüft Bibliothek und Relay-Schnittstelle in Headless-Chromium; erwartet werden sechs Zeilen `OK`.
+Voraussetzungen:
+
+- Node 24 und `npm install` (`vite` baut das Bündel; es kommt als Abhängigkeit von `vitest` mit und ist deshalb
+  keine eigene Abhängigkeit des Projekts).
+- Playwright (Version 1.5x oder neuer; getestet mit 1.63) mit installiertem Chromium (`npx playwright install
+chromium`). Playwright ist **keine** Abhängigkeit des Projekts: so installieren, dass `require('playwright')` es
+  findet (`node_modules` neben dem Projekt oder `NODE_PATH`).
+- Kein Schlüssel nötig: das Relay im Skript läuft mit abgeschalteter Anmeldung (`keys: 'off'`, wie
+  `RELAY_AUTH=off`, nur auf 127.0.0.1). Die Prüfung deckt also `signRelayRequest` und den signierten Kopf im
+  Browser **nicht** ab.

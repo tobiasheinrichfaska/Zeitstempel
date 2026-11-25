@@ -15,7 +15,14 @@ Deutschland aus, mit dem SHA-256 eines kurzen Testtexts. Jeder Dienst bekam je L
 - DigiCert über `https://` lief in einen Timeout (8 bis 15 s), Certum über `https://` kam nicht zustande
   (Verbindungsfehler). Beide werden deshalb über `http://` angesprochen. Das Token ist signiert; `http`
   schützt nicht die Echtheit, aber die Vertraulichkeit der Anfrage (nur ein Hash) geht verloren. Das Relay
-  verwendet solche Dienste nur, wenn `RELAY_ALLOW_PLAIN_HTTP=1` gesetzt ist.
+  verwendet solche Dienste nur, wenn `RELAY_ALLOW_PLAIN_HTTP=1` gesetzt ist. **Was ein Angreifer auf der Strecke
+  über `http` kann:** den Hash **mitlesen** (bei ratbarem Inhalt bestätigt das den Inhalt), das **Budget des Dienstes
+  verbrennen** (Anfragen oder Antworten stören; das Relay zählt jede gesendete Anfrage) und die Antwort **nicht
+  fälschen** (das Token ist signiert; eine veränderte oder fremde Antwort besteht die Prüfung nicht). Ein altes, echt
+  signiertes Token einzuspielen scheitert an der Nonce, die das Relay je Anfrage neu wählt (`nonce-mismatch`). Eine
+  **Rückdatierung** (Token mit früherer `genTime` zu diesem Hash) gelingt nur mit dem Signierschlüssel des Dienstes (abgelaufen oder
+  gestohlen), nicht über die Strecke; sie wird jetzt durch die Frischeprüfung abgefangen (Relay: `genTimeSlackMs`,
+  `docs/relay.md`; Bibliothek: `minGenTime`, `docs/grenzen.md`), die App muss `minGenTime` aber selbst übergeben.
 - Die Antwortzeiten sind einzelne Messungen, keine Statistik und kein Versprechen der Dienste.
 - Die Zeit in den Token stimmte bei allen vier Diensten auf die Sekunde mit der Zeit der Anfrage überein.
 
@@ -24,6 +31,13 @@ Deutschland aus, mit dem SHA-256 eines kurzen Testtexts. Jeder Dienst bekam je L
 Die Anker liegen als Dateien unter `anchors/`; **wer ihnen vertraut, entscheidet der Betreiber** (die
 Bibliothek bekommt sie als Parameter). Herkunft und Fingerabdruck (SHA-256):
 
+**Die Anker sind Wurzeln, keine einzelnen Dienste.** Die Prüfung akzeptiert jedes Zeitstempel-Zertifikat, dessen
+Kette bei dem übergebenen Anker endet, also auch das einer anderen Zeitstempel-Stelle derselben Hierarchie (etwa
+unter der Wurzel von Sectigo oder DigiCert). „Dienst X hat bestätigt“ ist deshalb stärker als das, was geprüft wird:
+geprüft wird „ein Zeitstempel-Zertifikat unter diesem Anker“. Wer enger vertrauen will, übergibt statt der Wurzel
+selbst eine Zwischen-CA oder das Zertifikat des Signierers als Anker (die Anker-Ausnahme erlaubt das, siehe
+`docs/grenzen.md`); die mitgelieferten Dateien tun das nicht.
+
 | Datei                             | Herkunft                                                                    | Fingerabdruck                                                                                   | gültig bis |
 | --------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- |
 | `freetsa-root.pem`                | `https://freetsa.org/files/cacert.pem`                                      | A6:37:9E:7C:EC:C0:5F:AA:3C:BF:07:60:13:D7:45:E3:27:BB:BA:A3:8C:0B:9A:F2:24:69:D4:70:1D:18:AA:BC | 2041-03-07 |
@@ -31,24 +45,83 @@ Bibliothek bekommt sie als Parameter). Herkunft und Fingerabdruck (SHA-256):
 | `digicert-trusted-root-g4.pem`    | dasselbe Paket                                                              | 55:2F:7B:DC:F1:A7:AF:9E:6C:E6:72:01:7F:4F:12:AB:F7:72:40:C7:8E:76:1A:C2:03:D1:D9:D2:0A:C8:99:88 | 2038-01-15 |
 | `certum-trusted-network-ca-2.pem` | dasselbe Paket                                                              | B6:76:F2:ED:DA:E8:77:5C:D3:6C:B0:F6:3C:D1:D4:60:39:61:F4:9E:62:65:BA:01:3A:2F:03:07:B6:D0:B8:04 | 2046-10-06 |
 
-Die Fingerabdrücke sollte ein Mensch gegen die Veröffentlichung des jeweiligen Betreibers abgleichen,
-bevor die Anker für echte Nachweise benutzt werden (das ist hier nicht geschehen).
+**Abgleich (2026-11-23):** Die Fingerabdrücke (`openssl x509 -fingerprint -sha256`, über das DER-Zertifikat) wurden
+mit öffentlichen Betreiberseiten und dem System-Trust-Store abgeglichen (Netzabgleich, keine Rückfrage bei den
+Betreibern, keine menschliche Prüfung). Ergebnis je Anker:
+
+| Anker                             | Quelle des Abgleichs                                                                                                  | Ergebnis                                                                               | Gültig bis | Vorbehalt                                                                                                                                                           |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `freetsa-root.pem`                | `https://freetsa.org/files/cacert.pem` und Seite `https://freetsa.org/index_en.php`                                   | Datei bytegleich; der SHA-256 auf der Seite passt zur Datei                            | 2041-03-07 | Seite und Datei vom selben Betreiber (keine unabhängige Zweitquelle); der Seitenwert ist der Hash der PEM-Datei, nicht des Zertifikats; nicht im System-Trust-Store |
+| `usertrust-rsa.pem`               | `http://crt.sectigo.com/USERTrustRSACertificationAuthority.crt` (Link der Sectigo-Seite); System-Trust-Store          | Fingerabdruck des Downloads und des Stores gleich                                      | 2038-01-18 | Download nur über http; Sectigo nennt keinen Fingerabdruck im Text                                                                                                  |
+| `digicert-trusted-root-g4.pem`    | `https://knowledge.digicert.com/general-information/digicert-trusted-root-authority-certificates`; System-Trust-Store | SHA-256 und SHA-1 der Betreiberseite und des Stores gleich                             | 2038-01-15 | Seitenwerte über ein Abrufwerkzeug gelesen (SHA-256 dort wörtlich)                                                                                                  |
+| `certum-trusted-network-ca-2.pem` | `https://repository.certum.pl/ctnca2.cer`; System-Trust-Store; SHA-1 gegen Mozilla-Bugzilla                           | Fingerabdruck des Downloads und des Stores gleich; SHA-1 gleich der Angabe bei Mozilla | 2046-10-06 | nur der Download aus dem Betreiber-Repository ist die Betreiberquelle                                                                                               |
+
+Der System-Trust-Store ist das Mozilla-Bundle von Debian (`ca-certificates`); CCADB wurde nicht direkt abgerufen.
+Alle vier Anker sind selbstsigniert, RSA 4096 und über zehn Jahre gültig. Offen bleibt der Abgleich durch einen
+Menschen und die Rückfrage bei den Betreibern, bevor die Anker für echte Nachweise benutzt werden.
 FreeTSA stellte am 2026-03-16 auf ein neues Zeitstempel-Zertifikat mit ECDSA P-384 um (laut ihrer Seite);
 das alte ist abgelaufen. Die Prüfung nutzt immer das Zertifikat aus dem Token.
 
-## Nutzungsbedingungen (ehrlich: nicht geklärt)
+## Nutzungsbedingungen (Stand 2026-11-23)
 
-- **FreeTSA:** Die Seite verweist auf eine Nutzungsrichtlinie, die am 2026-11-23 nicht abrufbar war, und
-  bittet, den Dienst nicht zu missbrauchen. Das Intervall von 15 s im Relay ist eine vorsichtige Annahme.
-  Keine Zusage zu Verfügbarkeit oder rechtlicher Wirkung.
-- **Sectigo, DigiCert:** Öffentliche Dienste, gedacht für das Zeitstempeln von **signiertem Code**.
-  Andere Nutzung ist nicht ausdrücklich angeboten; die Bedingungen wurden nicht geprüft. Für den
-  Dauerbetrieb einer Anwendung ist das **nicht** vertretbar, ohne vorher den Betreiber zu fragen.
-- **Certum:** Öffentlicher Dienst einer Zertifizierungsstelle, Umfang hier nicht dokumentiert.
+**Nicht rechtlich geprüft, Betreiber nicht gefragt.** Gelesen wurden nur öffentlich abrufbare Seiten (am
+2026-11-23); gesendet wurde nichts an die Dienste außer den Testanfragen. Das ist keine Rechtsberatung und keine
+Zusage der Betreiber.
+
+| Dienst   | Beliebige Hashes (nicht nur Code-Signing)? | Ratenlimit (öffentlich)               | Verfügbarkeit / Haftung                                  | Rechtswirkung               |
+| -------- | ------------------------------------------ | ------------------------------------- | -------------------------------------------------------- | --------------------------- |
+| FreeTSA  | erlaubt, auch kommerziell                  | 1 Anfrage/s je IP                     | "best-effort", kein SLA                                  | nicht geregelt              |
+| Sectigo  | unklar (Seite beschreibt nur Code-Signing) | Bitte um 15 s Pause zwischen Anfragen | nichts für den freien Endpunkt                           | eIDAS nur über `/qualified` |
+| DigiCert | unklar (keine Bedingungen gefunden)        | keines genannt                        | nichts genannt                                           | nicht geregelt              |
+| Certum   | unklar, wahrscheinlich vertragspflichtig   | keines genannt                        | 24/7 gegenüber Vertragskunden zugesagt; Haftung begrenzt | nicht geregelt              |
+
+- **FreeTSA** (`https://freetsa.org/freetsa.html`): "a maximum of one timestamping request per second per IP
+  address is permitted"; "Timestamps issued by FreeTSA may be used for commercial purposes"; "provided on a
+  best-effort basis, without any guarantee of availability". Gespeichert werden nur IP-Adressen (Missbrauchs-
+  erkennung), keine Hashes. Mehr Last gegen Spende (eigene Instanz). Nicht geregelt: Haftung, Rechtswirkung.
+  **Das Relay ist eine einzige IP: das Limit gilt für alle Nutzer des Relays zusammen.** Das Intervall (`minIntervalMs`)
+  von FreeTSA in `services.json` ist **5 s** (12 Stempel je Minute): belegt ist 1 Anfrage je Sekunde, 5 s sind die
+  vorsichtige Reserve (das Fünffache des erlaubten Takts). Das Relay hält den Abstand in **beiden Betriebsarten** ein: zwei Aufrufe
+  desselben Dienstes liegen mindestens `minIntervalMs` auseinander (im Einzelbetrieb wartet eine Anfrage darauf, höchstens
+  `RELAY_MAX_WAIT_MS`, sonst `429` oder `503 busy`; `docs/relay.md`). Im **Sammelbetrieb** (`RELAY_BATCH_MS`, `docs/relay.md`)
+  macht das Relay je Fenster einen einzigen Stempel für beliebig viele Hashes und hält den Takt des Dienstes damit
+  unabhängig von der Zahl der Nutzer ein; das Fenster darf dann nicht kürzer sein als `minIntervalMs` (sonst startet das Relay nicht).
+  Die anderen drei Dienste behalten 15 s.
+- **Sectigo** (`https://www.sectigo.com/resource-library/time-stamping-server`, Seite von 2018): bittet um
+  "a delay of 15 seconds or more" zwischen Anfragen; beschreibt nur Code-Signing, ohne Nutzung für anderes zu
+  verbieten; für eIDAS verweist sie auf `/qualified`, der freie Endpunkt ist also nicht qualifiziert. Ausdrückliche
+  Bedingungen, Verfügbarkeit oder Haftung für den freien Endpunkt fanden wir nicht (Relying Party Agreement und
+  TSPPS nicht gelesen).
+- **DigiCert** (`https://knowledge.digicert.com/general-information/rfc3161-compliant-time-stamp-authority-server`):
+  nennt die Adresse ohne jede Bedingung (nur Signieren mit Authenticode); in der Rechtsablage steht keine
+  Zeitstempel-Richtlinie. Nutzung außerhalb des Code-Signings ist weder erlaubt noch verboten dokumentiert.
+- **Certum** (Politik des Zeitstempeldienstes v1.7, polnisch, von uns übersetzt): nennt als Einsatz auch
+  archivierte Daten und Transaktionen, befreit aber nur Microsoft Authenticode von Lizenzgebühr und
+  Vertragspflicht und kündigt gegenüber Nutzern ohne passenden Vertrag Schadensersatzforderungen an; Haftung
+  höchstens 20 000 zł. Daher ist für andere Nutzung wahrscheinlich ein Vertrag nötig. Die allgemeinen
+  Bedingungen (Anhang 1) und die Zertifizierungsrichtlinie wurden nicht gelesen.
+- **Alle vier** sind nicht qualifiziert.
 - Geprüft und **nicht aufgenommen**: `timestamp.apple.com` (Code-Signierung für Apple-Entwickler),
   `zeitstempel.dfn.de` (Dienst des DFN-Vereins für dessen Nutzerkreis); beide antworteten, ihre Bedingungen
   passen aber nicht. `timestamp.globalsign.com` und `tsa.mesign.com` antworteten mit 403,
   `tsa.swisssign.net` mit einer Weiterleitung.
+
+### Empfehlung (Entscheidung beim Betreiber)
+
+**FreeTSA ist der einzige Dienst mit ausdrücklich erlaubter allgemeiner Nutzung** (auch kommerziell, mit dem
+Limit von 1 Anfrage/s je IP). Sectigo, DigiCert und Certum nur nach Rückfrage beim Betreiber und nicht für den
+Dauerbetrieb einer Anwendung.
+
+### Offene Fragen an die Betreiber
+
+- **FreeTSA:** Wie lange bleiben Zertifikate und Token prüfbar? Ist die Bündelung mehrerer Apps über eine
+  Relay-IP gewollt? Was gilt bei Haftung und Rechtswirkung?
+- **Sectigo:** Darf der freie Endpunkt für beliebige Hash-Zeitstempel genutzt werden? Gilt die 15-s-Pause je IP
+  oder insgesamt? Gibt es eine Verfügbarkeits- oder Haftungsregelung? Gilt das Relying Party Agreement dafür?
+- **DigiCert:** Ist Nutzung außerhalb des Code-Signings erlaubt? Gibt es Limits? Warum nur http? Gelten
+  Relying Party Agreement und Limited Warranty für diese Token?
+- **Certum:** Ist `time.certum.pl` für beliebige Hash-Zeitstempel ohne Vertrag nutzbar? Gibt es ein Ratenlimit?
+  Was steht in Anhang 1 und in der Zertifizierungsrichtlinie? Warum kein https?
 
 ## Was ein Nachweis damit wert ist
 
@@ -77,8 +150,15 @@ Preis, Bedingungen) und braucht meist eine Anmeldung (Benutzer und Passwort oder
 }
 ```
 
-Offen: Das Relay kann **keine Anmeldung** gegenüber dem Dienst. Sie müsste aus der Umgebung des Betreibers
-kommen (nie aus dem Repo) und ist ein eigener Schritt, wenn ein Vertrag besteht.
+**Anmeldung beim Dienst (neu, nicht gegen einen echten Dienst getestet):** Ein bezahlter Dienst darf ein Feld `auth`
+bekommen (`{"kind": "basic" | "bearer" | "header", "source": "relay" | "client" | "either"}`, bei `header` mit
+`"header": "<Name>"`; nur für `https`). Die Zugangsdaten liefert das Relay aus seiner Umgebung
+(`RELAY_UPSTREAM_AUTH_<ID>`, nie aus dem Repo) oder die App selbst im signierten Körper (`upstream`); Einzelheiten,
+Fehlercodes und Warnungen in `docs/relay.md`, „Zugangsdaten zu bezahlten Diensten“. **Nicht abgedeckt:** Dienste mit
+IP-Freigabe (z. B. SK) und Dienste mit Zertifikat (z. B. Disig, D-Trust); Privatschlüssel von Zertifikaten werden nicht
+übertragen. Verträge wie InfoCert Art. 7 und Certum untersagen die Weitergabe von Zugangsdaten an Dritte: für die eigene
+App ist das Relay kein Dritter, für fremde Apps schon (nicht rechtlich geprüft). Der Eintrag oben bekäme dann z. B.
+`"auth": {"kind": "basic", "source": "client"}`.
 
 ## Selbst nachmessen
 

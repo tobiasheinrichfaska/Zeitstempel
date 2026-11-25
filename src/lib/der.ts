@@ -1,3 +1,4 @@
+import { copyKnown, uint8Length } from './bytes.ts';
 import { ReaderError } from './result.ts';
 
 /**
@@ -75,6 +76,22 @@ function readOne(buf: Uint8Array, pos: number, end: number): { node: Node; next:
     },
     next: pos + header + len,
   };
+}
+
+/**
+ * A private copy of the bytes a reader is given (its own `ArrayBuffer`, also when the input lives in a
+ * `SharedArrayBuffer`), so that nothing a reader returns points into the caller's buffer. The length is read from
+ * the internal slot and checked against `maxBytes` BEFORE anything is copied; the copy is made with `set`, never
+ * through the iterator. A `Uint8Array` of another realm is fine; anything else (another typed array such as `Uint16Array`, a proxy, an
+ * array, a string) is `malformed`.
+ */
+export function ownBytes(bytes: unknown): Uint8Array {
+  const length = uint8Length(bytes);
+  if (length === null) throw new ReaderError('malformed');
+  if (length > DER_LIMITS.maxBytes) throw new ReaderError('too-large');
+  const copy = copyKnown(bytes as Uint8Array, length);
+  if (!copy) throw new ReaderError('malformed');
+  return copy;
 }
 
 /** Reads exactly one element that spans all of `bytes` (nothing may follow it). */
@@ -156,6 +173,13 @@ export function integerBytes(node: Node): Uint8Array {
   return v;
 }
 
+/** An INTEGER's content bytes (minimal encoding) that must not be negative (sign bit clear). */
+export function unsignedBytes(node: Node): Uint8Array {
+  const v = integerBytes(node);
+  if ((v[0]! & 0x80) !== 0) throw new ReaderError('malformed');
+  return v;
+}
+
 /** A small non-negative INTEGER as a number. */
 export function integerNumber(node: Node): number {
   const v = integerBytes(node);
@@ -182,8 +206,10 @@ export function bitStringBytes(node: Node): Uint8Array {
   return node.value.subarray(1);
 }
 
-/** UTCTime or GeneralizedTime (whole seconds, with an optional fraction for the latter) as ms. */
-export function time(node: Node): number {
+/** UTCTime or GeneralizedTime (whole seconds, with an optional fraction of up to 9 digits for the latter, cut off to ms, never rounded) as ms.
+ * `fraction: false` is the certificate form (RFC 5280 § 4.1.2.5.2: GeneralizedTime without fractional seconds);
+ * a time stamp's `genTime` (RFC 3161) keeps the fraction. */
+export function time(node: Node, fraction = true): number {
   const text = new TextDecoder('ascii').decode(node.value);
   let m: RegExpExecArray | null;
   let year: number;
@@ -193,10 +219,11 @@ export function time(node: Node): number {
     if (!m) throw new ReaderError('bad-time');
     year = Number(m[1]) >= 50 ? 1900 + Number(m[1]) : 2000 + Number(m[1]);
   } else if (node.tag === TAG.generalizedTime) {
-    m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.(\d{1,3}))?Z$/.exec(text);
+    m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.(\d{1,9}))?Z$/.exec(text);
     if (!m) throw new ReaderError('bad-time');
     year = Number(m[1]);
     frac = m[7] ?? '';
+    if (!fraction && frac !== '') throw new ReaderError('bad-time');
   } else {
     throw new ReaderError('bad-time');
   }
@@ -208,7 +235,8 @@ export function time(node: Node): number {
     number,
   ];
   if (node.tag === TAG.generalizedTime && frac.endsWith('0')) throw new ReaderError('bad-time');
-  const ms = Date.UTC(year, mo - 1, d, h, mi, s) + (frac ? Number(frac.padEnd(3, '0')) : 0);
+  const ms =
+    Date.UTC(year, mo - 1, d, h, mi, s) + (frac ? Number(frac.slice(0, 3).padEnd(3, '0')) : 0);
   const back = new Date(ms);
   if (
     back.getUTCFullYear() !== year ||

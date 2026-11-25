@@ -94,7 +94,7 @@ for (const s of loadServices()) {
       path(`${s.id}.chain.pem`),
     ];
     for (const a of s.anchors) args.push('-CAfile', root(a));
-    // openssl takes one -CAfile; our anchors are one file per service
+    // `openssl ts -verify` takes one -CAfile; each shipped service names exactly one anchor, so this adds one
     const result = spawnSync('openssl', args, { encoding: 'utf8' });
     row.openssl =
       result.status === 0

@@ -1,9 +1,27 @@
-import { equalBytes, trimZeros } from './bytes.ts';
-import { TAG, children, expect, integerBytes, octets, oid, parseDer } from './der.ts';
+import { byteLength, copyBytes, copyKnown, equalBytes, trimZeros } from './bytes.ts';
+import {
+  DER_LIMITS,
+  TAG,
+  children,
+  ctx,
+  ctxPrimitive,
+  expect,
+  inner,
+  integerBytes,
+  octets,
+  oid,
+  parseDer,
+} from './der.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
-import { readToken, type ParsedToken, type TstInfo } from './token.ts';
-import { parsePemCertificates, type Certificate } from './x509.ts';
+import { MAX_CERTIFICATES, readToken, type ParsedToken, type TstInfo } from './token.ts';
+import {
+  parsePemCertificates,
+  rsaModulusBits,
+  sameName,
+  subjectAltNames,
+  type Certificate,
+} from './x509.ts';
 
 /** Trusted root (or intermediate) certificates, as PEM text. The caller decides whom to trust. */
 export type TrustAnchors = readonly string[];
@@ -11,14 +29,39 @@ export type TrustAnchors = readonly string[];
 export interface VerifyOptions {
   /** The nonce that was sent. When given, the token must carry exactly this nonce. */
   expectedNonce?: Uint8Array;
-  /** The moment at which certificates must be valid. Default: the token's own time. */
+  /**
+   * An additional moment at which the signer certificate and the chain must be valid: they must be valid at the
+   * token's own time (`genTime`) AND at `at` (both, `at` does not replace `genTime`). Default: only `genTime`.
+   * Must be a valid Date, else `bad-options`.
+   */
   at?: Date;
-  /** The current time: a token from the future (beyond the skew) is refused. Default: not checked. */
+  /**
+   * The earliest `genTime` that is accepted: an older token is refused (`time-too-old`). Without it freshness is
+   * NOT checked: a token whose time lies far in the past passes as long as the signer certificate was valid
+   * then (a back-dated token from a service whose key has expired or leaked; docs/grenzen.md). Pass the moment
+   * the request was sent minus a small tolerance. Given but not a valid Date: `bad-options`.
+   */
+  minGenTime?: Date;
+  /** The current time: a token from the future (beyond the skew) is refused. Default: not checked. Given but not a valid Date: `bad-options`. */
   now?: Date;
-  /** Allowed difference between the token time and `now`. Default 5 minutes. */
+  /** Allowed difference between the token time and `now`. Default 5 minutes; a number >= 0 (Infinity allowed), else `bad-options`. */
   maxSkewMs?: number;
   /** RFC 3161 wants the extended key usage to be critical. Default true. */
   requireCriticalEku?: boolean;
+  /**
+   * The smallest RSA modulus (in bits) the signer certificate and every certificate of the chain may have (a
+   * weaker one is `weak-key`). Default 2048; 0 switches the rule off. Trust anchors are exempt (the caller chose
+   * them). A finite number >= 0, else `bad-options`.
+   */
+  minRsaBits?: number;
+  /**
+   * The policy OID(s) the caller expects, in dotted notation (a string, or a non-empty array of at most 16
+   * strings): the `policy` of the TSTInfo must be one of them, else `policy-mismatch` (RFC 3161 § 2.4.1, the
+   * policy of the request). Compared as exact text: `1.2.3` does not match `1.2.3.4`. Not given: not checked.
+   * Anything else (another type, an empty or too long array, a text that is no OID in dotted notation):
+   * `bad-options`.
+   */
+  expectedPolicy?: string | readonly string[];
 }
 
 export interface VerifiedTimestamp {
@@ -31,10 +74,34 @@ export interface VerifiedTimestamp {
   signer: string;
   /** Number of certificates from the signer up to the trust anchor (anchor included). */
   chainLength: number;
+  /**
+   * Start of the validity of the signer certificate, ISO 8601 (UTC). The verification judged the certificates at
+   * `genTime`; after `signerNotAfter` (or once the key leaks or is revoked) the proof loses its weight
+   * (docs/grenzen.md).
+   */
+  signerNotBefore: string;
+  /** End of the validity of the signer certificate, ISO 8601 (UTC); see `signerNotBefore`. */
+  signerNotAfter: string;
 }
 
 const MAX_CHAIN = 6;
+const MAX_CANDIDATES = 8; // usable, signature-valid issuer candidates tried per certificate
+const MAX_SIGNATURE_CHECKS = 64; // signature verifications for the whole chain search
+const MAX_REASON_CHECKS = 4; // extra verifications, after a failed search, to name the reason
+const MAX_TRUST_ANCHORS = 64; // entries of `trust`; a longer list is `bad-options`, checked before any entry is read
+
+/** The limits of the chain search (docs/grenzen.md and docs/data-model.html name each value). */
+export const VERIFY_LIMITS = {
+  MAX_CHAIN,
+  MAX_CANDIDATES,
+  MAX_SIGNATURE_CHECKS,
+  MAX_REASON_CHECKS,
+  MAX_TRUST_ANCHORS,
+  MAX_CERTIFICATES,
+} as const;
+
 const DEFAULT_SKEW_MS = 5 * 60 * 1000;
+const DEFAULT_MIN_RSA_BITS = 2048;
 
 const subtle = (): SubtleCrypto => {
   const s = globalThis.crypto?.subtle;
@@ -48,9 +115,13 @@ async function digest(name: HashName, data: Uint8Array): Promise<Uint8Array> {
 
 /** DER `ECDSA-Sig-Value` → the fixed-size `r || s` that WebCrypto verifies. */
 function ecdsaRaw(der: Uint8Array, size: number): Uint8Array {
-  const [r, s] = children(expect(parseDer(der), TAG.sequence)).map((n) =>
-    trimZeros(integerBytes(n)),
-  );
+  const parts = children(expect(parseDer(der), TAG.sequence));
+  if (parts.length !== 2) throw new ReaderError('signature-invalid');
+  const [r, s] = parts.map((n) => {
+    const bytes = integerBytes(n);
+    if ((bytes[0]! & 0x80) !== 0) throw new ReaderError('signature-invalid'); // negative
+    return trimZeros(bytes);
+  });
   if (!r || !s || r.length > size || s.length > size) throw new ReaderError('signature-invalid');
   const out = new Uint8Array(size * 2);
   out.set(r, size - r.length);
@@ -129,6 +200,131 @@ export function nameToString(name: Uint8Array): string {
 
 const same = (a: Uint8Array, b: Uint8Array) => equalBytes(a, b);
 
+const dedupe = (certs: readonly Certificate[]): Certificate[] =>
+  certs.filter((c, i) => certs.findIndex((d) => same(d.raw, c.raw)) === i);
+
+const dateGetTime = Date.prototype.getTime;
+const MAX_DATE_MS = 8.64e15;
+
+/**
+ * The milliseconds of a genuine `Date` (prototype exactly `Date.prototype`), read once with the built-in
+ * `getTime` (an overridden `getTime`, a subclass or an object that only claims to be a Date count for
+ * nothing); `null` when it is none or not a finite time.
+ */
+function dateMs(d: unknown): number | null {
+  try {
+    if (typeof d !== 'object' || d === null || Object.getPrototypeOf(d) !== Date.prototype) {
+      return null;
+    }
+    const ms = dateGetTime.call(d) as unknown;
+    return typeof ms === 'number' && Number.isFinite(ms) && Math.abs(ms) <= MAX_DATE_MS ? ms : null;
+  } catch {
+    return null; // not a real Date (no internal time slot), or a proxy that throws
+  }
+}
+
+const NONCE_BYTES = { min: 1, max: 16 } as const;
+
+/** The options as read once and checked; the rest of the verification uses only this. */
+interface OptionSnapshot {
+  readonly now: number | undefined;
+  readonly at: number | undefined;
+  readonly minGenTime: number | undefined;
+  readonly maxSkewMs: number;
+  readonly expectedNonce: Uint8Array | undefined;
+  readonly requireCriticalEku: boolean;
+  readonly minRsaBits: number;
+  readonly expectedPolicy: readonly string[] | undefined;
+}
+
+const MAX_EXPECTED_POLICIES = 16;
+// dotted OID in canonical form: at least two arcs, no leading zeros, the first arc 0 to 2 (so the text of a
+// policy read from a token and the text given here are equal exactly when they name the same OID)
+const OID_TEXT = /^[012](?:\.(?:0|[1-9][0-9]{0,15})){1,31}$/;
+
+/** `expectedPolicy` as a frozen list of OID texts; a bad value is `bad-options`. Read by length and index, once each. */
+function readExpectedPolicy(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  let list: unknown[];
+  if (typeof value === 'string') list = [value];
+  else {
+    if (!Array.isArray(value)) throw new ReaderError('bad-options');
+    const count: unknown = (value as unknown[]).length;
+    if (typeof count !== 'number' || !Number.isInteger(count)) throw new ReaderError('bad-options');
+    if (count < 1 || count > MAX_EXPECTED_POLICIES) throw new ReaderError('bad-options');
+    list = [];
+    for (let i = 0; i < count; i += 1) list.push((value as unknown[])[i]);
+  }
+  for (const text of list) {
+    if (typeof text !== 'string' || text.length > 256 || !OID_TEXT.test(text)) {
+      throw new ReaderError('bad-options');
+    }
+    // first arcs 0 and 1 allow the second arc 0 to 39 only (X.690 § 8.19.4)
+    const [a, b] = text.split('.') as [string, string];
+    if (a !== '2' && Number(b) > 39) throw new ReaderError('bad-options');
+  }
+  return Object.freeze([...(list as string[])]);
+}
+
+/**
+ * Reads every option exactly once into a frozen snapshot and checks it: a given option must be usable (no
+ * silent skipping of a check because of a bad value). `options` must be a plain object (prototype
+ * `Object.prototype` or `null`). Only own properties count (nothing inherited from `Object.prototype`); a
+ * getter is read once and one that throws gives `bad-options`; `Date` values become milliseconds (read
+ * once with the built-in `getTime`) and the nonce is copied.
+ */
+function checkOptions(options: unknown): OptionSnapshot {
+  const bad = () => new ReaderError('bad-options');
+  const snapshot = (read: (key: string) => unknown): OptionSnapshot => {
+    const now = read('now');
+    const at = read('at');
+    const minGen = read('minGenTime');
+    const skew = read('maxSkewMs');
+    const nonce = read('expectedNonce');
+    const critical = read('requireCriticalEku');
+    const rsaBits = read('minRsaBits');
+    const policy = readExpectedPolicy(read('expectedPolicy'));
+    const nowMs = now === undefined ? undefined : dateMs(now);
+    const atMs = at === undefined ? undefined : dateMs(at);
+    const minGenMs = minGen === undefined ? undefined : dateMs(minGen);
+    if (nowMs === null || atMs === null || minGenMs === null) throw bad();
+    if (skew !== undefined && (typeof skew !== 'number' || Number.isNaN(skew) || skew < 0)) {
+      throw bad();
+    }
+    // length checked before the copy, the copy never goes through the iterator (copyBytes)
+    const nonceCopy =
+      nonce === undefined ? undefined : copyBytes(nonce, NONCE_BYTES.min, NONCE_BYTES.max);
+    if (nonceCopy === null) throw bad();
+    if (critical !== undefined && typeof critical !== 'boolean') throw bad();
+    if (
+      rsaBits !== undefined &&
+      (typeof rsaBits !== 'number' || !Number.isFinite(rsaBits) || rsaBits < 0)
+    ) {
+      throw bad();
+    }
+    return Object.freeze({
+      now: nowMs,
+      at: atMs,
+      minGenTime: minGenMs,
+      maxSkewMs: skew ?? DEFAULT_SKEW_MS,
+      expectedNonce: nonceCopy,
+      requireCriticalEku: critical ?? true,
+      minRsaBits: rsaBits ?? DEFAULT_MIN_RSA_BITS,
+      expectedPolicy: policy,
+    });
+  };
+  if (options === undefined) return snapshot(() => undefined);
+  if (typeof options !== 'object' || options === null) throw bad();
+  const o = options as Record<string, unknown>;
+  try {
+    const proto: unknown = Object.getPrototypeOf(o);
+    if (proto !== Object.prototype && proto !== null) throw bad(); // class instance, Map, Date, array …
+    return snapshot((key) => (Object.hasOwn(o, key) ? o[key] : undefined));
+  } catch (e) {
+    throw e instanceof ReaderError ? e : bad(); // a getter or proxy trap that throws
+  }
+}
+
 async function checkSigningCertificate(token: ParsedToken, signer: Certificate): Promise<void> {
   const attrs = token.signer.attributes;
   const v2 = attrs.get(OID.signingCertificateV2);
@@ -140,7 +336,11 @@ async function checkSigningCertificate(token: ParsedToken, signer: Certificate):
   let hash: HashName = v2 ? 'SHA-256' : 'SHA-1';
   let at = 0;
   if (v2 && first[0]?.tag === TAG.sequence) {
-    hash = HASHES[oid(children(first[0])[0]!)]?.name ?? hash;
+    // ESSCertIDv2: an unknown hash OID or SHA-1 is refused, never a silent fallback to SHA-256 (SHA-1 stays
+    // accepted only in the v1 attribute)
+    const named = HASHES[oid(children(first[0])[0]!)]?.name;
+    if (!named || named === 'SHA-1') throw new ReaderError('unsupported-hash');
+    hash = named;
     at = 1;
   }
   const expected = octets(first[at]!);
@@ -149,36 +349,223 @@ async function checkSigningCertificate(token: ParsedToken, signer: Certificate):
   }
 }
 
-function validAt(cert: Certificate, at: number): boolean {
-  return cert.notBefore <= at && at <= cert.notAfter;
-}
-
-/** Looks for the issuer of `cert` among `pool` whose key verifies `cert`'s signature. */
-async function findIssuer(
-  cert: Certificate,
-  pool: readonly Certificate[],
-): Promise<Certificate | null> {
-  for (const candidate of pool) {
-    if (!same(candidate.subject, cert.issuer)) continue;
-    const alg = SIGNATURES[cert.signatureOid];
-    if (!alg?.hash) continue;
+/**
+ * The signing certificate of the token. By issuer and serial number (SignerInfo version 1) the first certificate
+ * of the token that matches is taken. By `subjectKeyIdentifier` (version 3) several certificates may carry the
+ * same identifier (a look-alike with another key, a re-issued certificate): the one whose hash the signed
+ * `signingCertificate` attribute names is taken, so a look-alike never hides the real one. At most
+ * MAX_CERTIFICATES certificates are looked at, each costs one hash and no signature check; a certificate without
+ * the extension never matches (the identifier is never computed from the key). The attribute binds exactly one
+ * certificate, so the signature is checked against that one only. No match: `signer-certificate-missing`; matches
+ * but none the attribute names: the reason of the first one (`signing-certificate-mismatch` and the like).
+ */
+async function findSigner(token: ParsedToken): Promise<Certificate> {
+  const sid = token.signer.sid;
+  if (sid.kind === 'issuerAndSerialNumber') {
+    const signer = token.certificates.find(
+      (c) => sameName(c.issuer, sid.issuer) && same(trimZeros(c.serial), sid.serial),
+    );
+    if (!signer) throw new ReaderError('signer-certificate-missing');
+    await checkSigningCertificate(token, signer);
+    return signer;
+  }
+  const named = token.certificates.filter(
+    (c) => c.subjectKeyIdentifier !== null && same(c.subjectKeyIdentifier, sid.ski),
+  );
+  if (named.length === 0) throw new ReaderError('signer-certificate-missing');
+  let firstFailure: ReaderError | null = null;
+  for (const candidate of named) {
     try {
-      if (await verifyWithKey(candidate, cert.signatureOid, null, cert.tbs, cert.signature)) {
-        return candidate;
-      }
-    } catch {
-      /* an unsupported key or signature: try the next candidate */
+      await checkSigningCertificate(token, candidate);
+      return candidate;
+    } catch (e) {
+      if (!(e instanceof ReaderError)) throw e;
+      firstFailure ??= e;
     }
   }
+  throw firstFailure ?? new ReaderError('signer-certificate-missing');
+}
+
+const lowerAscii = (bytes: Uint8Array): Uint8Array =>
+  bytes.map((b) => (b >= 0x41 && b <= 0x5a ? b + 32 : b));
+
+/**
+ * RFC 3161 § 2.4.2: a `tsa` name in the TSTInfo must correspond to one of the subject names of the signer
+ * certificate: its subject (a `directoryName`, by the simplified name rule) or an entry of its subjectAltName of
+ * the same kind. directoryName: simplified name rule; dNSName: ASCII case ignored; every other kind (rfc822Name,
+ * URI, iPAddress, registeredID, otherName ...): the same bytes (docs/grenzen.md). Nothing else is derived from the
+ * certificate (no name in the subject's emailAddress counts as an rfc822Name).
+ */
+function checkTsaName(tsa: Uint8Array | null, signer: Certificate): void {
+  if (!tsa) return;
+  const name = parseDer(tsa);
+  const isDirectory = name.tag === ctx(4);
+  const wanted = isDirectory ? inner(name).raw : name.raw;
+  if (isDirectory && sameName(wanted, signer.subject)) return;
+  const entries = subjectAltNames(signer); // unreadable: bad-certificate
+  for (const entry of entries) {
+    if (entry.tag !== name.tag) continue;
+    let match: boolean;
+    try {
+      match = isDirectory
+        ? sameName(inner(entry).raw, wanted)
+        : name.tag === ctxPrimitive(2)
+          ? same(lowerAscii(entry.value), lowerAscii(name.value))
+          : same(entry.raw, name.raw);
+    } catch {
+      throw new ReaderError('bad-certificate');
+    }
+    if (match) return;
+  }
+  throw new ReaderError('tsa-mismatch');
+}
+
+/** Valid at every one of the given moments (`genTime`, and `at` when the caller gave one). */
+function validAt(cert: Certificate, times: readonly number[]): boolean {
+  return times.every((t) => cert.notBefore <= t && t <= cert.notAfter);
+}
+
+/** An RSA key below the smallest allowed size (never for another kind of key; `minRsaBits` 0: never). */
+function isWeakRsa(cert: Certificate, minRsaBits: number): boolean {
+  if (minRsaBits === 0) return false;
+  const bits = rsaModulusBits(cert);
+  return bits !== null && bits < minRsaBits;
+}
+
+/** Why a candidate issuer is unusable at time `at`, or null when it is fine. */
+function issuerFlaw(
+  issuer: Certificate,
+  anchors: readonly Certificate[],
+  times: readonly number[],
+  minRsaBits: number,
+  below: number,
+) {
+  const isAnchor = anchors.some((a) => same(a.raw, issuer.raw));
+  // no basicConstraints at all (an X.509 v1 root): a CA only when the caller handed it over as an anchor
+  // (the caller's decision); an explicit cA=false and every intermediate without the extension stay refused
+  const isCa = issuer.isCa === null && isAnchor ? true : issuer.isCa;
+  if (isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
+    return 'not-a-ca' as const;
+  }
+  // pathLenConstraint (RFC 5280 § 4.2.1.9, § 6.1.4): at most that many non-self-issued intermediate CAs below
+  // it; a trust anchor's value counts too (`openssl verify` does the same, measured: the anchor limits its chain)
+  if (issuer.pathLen !== null && below > issuer.pathLen) return 'chain-too-long' as const;
+  if (!validAt(issuer, times)) return 'certificate-not-valid-at-time' as const;
+  if (issuer.unknownCritical && !isAnchor) {
+    return 'bad-certificate' as const; // a trust anchor is the caller's decision, not checked
+  }
+  // EKU nesting (browser practice): a CA that names purposes must allow time stamping. No EKU: no limit.
+  if (
+    issuer.eku !== null &&
+    !isAnchor &&
+    !issuer.eku.oids.some((o) => o === OID.ekuTimeStamping || o === OID.anyExtendedKeyUsage)
+  ) {
+    return 'bad-eku' as const;
+  }
+  if (!isAnchor && isWeakRsa(issuer, minRsaBits)) return 'weak-key' as const;
   return null;
+}
+
+/**
+ * Builds the chain from `signer` up to a trust anchor. Every usable, signature-valid candidate issuer is
+ * tried (depth, usable candidates per step and signature checks are bounded), so a look-alike certificate
+ * with the same name cannot hide the real intermediate. The cheap checks (`issuerFlaw`) come before the
+ * signature check: an unusable look-alike costs no signature check and does not count against
+ * MAX_CANDIDATES. The reason of a failure is worked out only after the whole search has failed, with a
+ * budget of its own (MAX_REASON_CHECKS), so finding it never takes checks from a sibling branch.
+ * Returns the number of certificates (anchor included) or throws the reason of the first failed branch.
+ */
+async function buildChain(
+  signer: Certificate,
+  anchors: readonly Certificate[],
+  pool: readonly Certificate[],
+  times: readonly number[],
+  minRsaBits: number,
+): Promise<number> {
+  type Flawed = { candidate: Certificate; flaw: NonNullable<ReturnType<typeof issuerFlaw>> };
+  type Failure = ReaderError | { current: Certificate; flawed: Flawed[] };
+  let checks = 0;
+  let exhausted = false; // a usable candidate was left untried because a limit was reached
+  let firstFailure: Failure | null = null;
+  const remember = (failure: Failure) => {
+    firstFailure ??= failure;
+  };
+  const verifies = async (current: Certificate, candidate: Certificate): Promise<boolean> => {
+    try {
+      return await verifyWithKey(
+        candidate,
+        current.signatureOid,
+        null,
+        current.tbs,
+        current.signature,
+      );
+    } catch {
+      return false; // an unsupported key or signature: try the next candidate
+    }
+  };
+  const walk = async (
+    current: Certificate,
+    length: number,
+    path: readonly Certificate[],
+  ): Promise<number | null> => {
+    if (anchors.some((a) => same(a.raw, current.raw))) return length;
+    if (length > MAX_CHAIN) {
+      remember(new ReaderError('chain-too-long'));
+      return null;
+    }
+    const named = SIGNATURES[current.signatureOid]?.hash
+      ? pool.filter(
+          (c) => sameName(c.subject, current.issuer) && !path.some((p) => same(p.raw, c.raw)), // not self-signed, no loop
+        )
+      : [];
+    const usable: Certificate[] = [];
+    const flawed: Flawed[] = [];
+    // intermediates between the signer and the candidate; a self-issued one (same name as issuer and subject:
+    // a key rollover) does not count (RFC 5280 § 6.1.4 (l))
+    const below = path.slice(1).filter((c) => !sameName(c.subject, c.issuer)).length;
+    for (const candidate of named) {
+      const flaw = issuerFlaw(candidate, anchors, times, minRsaBits, below);
+      if (flaw) flawed.push({ candidate, flaw });
+      else usable.push(candidate);
+    }
+    let found = 0;
+    for (const candidate of usable) {
+      if (checks >= MAX_SIGNATURE_CHECKS || found >= MAX_CANDIDATES) {
+        exhausted = true;
+        break;
+      }
+      checks += 1;
+      if (!(await verifies(current, candidate))) continue;
+      found += 1;
+      const result = await walk(candidate, length + 1, [...path, candidate]);
+      if (result !== null) return result;
+    }
+    if (found === 0) remember({ current, flawed }); // why is decided later, if the search fails
+    return null;
+  };
+  const length = await walk(signer, 1, [signer]);
+  if (length !== null) return length;
+  if (exhausted) throw new ReaderError('untrusted-chain'); // the search was cut short: no more exact reason
+  const failure = firstFailure as Failure | null;
+  if (failure instanceof ReaderError) throw failure;
+  if (failure) {
+    // nothing usable signed it: report why the first look-alike that did sign it is unusable
+    let spent = 0;
+    for (const { candidate, flaw } of failure.flawed) {
+      if (spent >= MAX_REASON_CHECKS) break;
+      spent += 1;
+      if (await verifies(failure.current, candidate)) throw new ReaderError(flaw);
+    }
+  }
+  throw new ReaderError('untrusted-chain');
 }
 
 /**
  * Verifies a time stamp token against the SHA-256 hash it must cover:
  * imprint, nonce (when given), the CMS signature, the signing-certificate attribute, the key usage of
- * the signer, the validity of every certificate at the stamped time, and a chain that ends in one
- * of the given trust anchors. Revocation is NOT checked; name constraints and path length are not
- * evaluated (see docs/grenzen.md). Never throws.
+ * the signer, the validity of every certificate at the stamped time (and at `at`, when given), and a chain
+ * that ends in one of the given trust anchors. The age of the token is checked only with `minGenTime`.
+ * Revocation is NOT checked; name constraints are not evaluated (`pathLenConstraint` is) (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
  */
 export async function verifyTimestampToken(
   tokenBytes: Uint8Array,
@@ -186,27 +573,67 @@ export async function verifyTimestampToken(
   trust: TrustAnchors,
   options: VerifyOptions = {},
 ): Promise<Result<VerifiedTimestamp>> {
-  if (!(expectedSha256 instanceof Uint8Array) || expectedSha256.length !== 32)
-    return fail('bad-hash');
-  const anchorsRead = guard(() => trust.flatMap((pem) => parsePemCertificates(pem)));
+  try {
+    return await verifyChecked(tokenBytes, expectedSha256, trust, options);
+  } catch {
+    return fail('malformed'); // not reachable by design: the last net under the promise "never throws"
+  }
+}
+
+async function verifyChecked(
+  tokenBytes: unknown,
+  expectedSha256: unknown,
+  trust: unknown,
+  options: unknown,
+): Promise<Result<VerifiedTimestamp>> {
+  const wanted = copyBytes(expectedSha256, 32, 32);
+  if (!wanted) return fail('bad-hash');
+  // the token is copied once, into an ArrayBuffer of its own (length checked before the copy); the rest
+  // works with the copy only, so a buffer changed or emptied meanwhile, or one living in a
+  // SharedArrayBuffer, changes nothing
+  const tokenLength = byteLength(tokenBytes);
+  if (tokenLength === null) return fail('malformed');
+  if (tokenLength > DER_LIMITS.maxBytes) return fail('too-large');
+  const tokenCopy = copyKnown(tokenBytes as Uint8Array, tokenLength); // the value is asked once, not twice
+  if (!tokenCopy) return fail('malformed');
+  // the list is read by length and index (once each), never through the iterator, and bounded first
+  let trustList: unknown[];
+  try {
+    if (!Array.isArray(trust)) return fail('bad-options');
+    const count: unknown = (trust as unknown[]).length;
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+      return fail('bad-options');
+    }
+    if (count > MAX_TRUST_ANCHORS) return fail('bad-options');
+    trustList = [];
+    for (let i = 0; i < count; i += 1) trustList.push((trust as unknown[])[i]);
+  } catch {
+    return fail('bad-options'); // a proxy whose traps throw is no list
+  }
+  const anchorsRead = guard(() => trustList.flatMap((pem) => parsePemCertificates(pem as string)));
   if (!anchorsRead.ok) return anchorsRead;
   const anchors = anchorsRead.value;
   try {
-    const token = readToken(tokenBytes);
+    const opts = checkOptions(options);
+    const token = readToken(tokenCopy);
     const info: TstInfo = token.info;
     if (info.hashName !== 'SHA-256') throw new ReaderError('unsupported-hash');
-    if (!same(info.imprint, expectedSha256)) throw new ReaderError('imprint-mismatch');
-    if (options.expectedNonce) {
-      const want = trimZeros(options.expectedNonce);
+    if (!same(info.imprint, wanted)) throw new ReaderError('imprint-mismatch');
+    if (opts.expectedNonce !== undefined) {
+      const want = trimZeros(opts.expectedNonce);
       if (!info.nonce || !same(info.nonce, want)) throw new ReaderError('nonce-mismatch');
     }
-    if (
-      options.now &&
-      info.genTime > options.now.getTime() + (options.maxSkewMs ?? DEFAULT_SKEW_MS)
-    ) {
+    if (opts.expectedPolicy !== undefined && !opts.expectedPolicy.includes(info.policy)) {
+      throw new ReaderError('policy-mismatch');
+    }
+    if (opts.now !== undefined && info.genTime > opts.now + opts.maxSkewMs) {
       throw new ReaderError('time-in-future');
     }
-    const at = (options.at ?? new Date(info.genTime)).getTime();
+    if (opts.minGenTime !== undefined && info.genTime < opts.minGenTime) {
+      throw new ReaderError('time-too-old');
+    }
+    // the certificates must be valid at the stamped time and, when given, at `at` as well
+    const times = opts.at === undefined ? [info.genTime] : [info.genTime, opts.at];
 
     // signed attributes: content type, message digest, signing certificate
     const attrs = token.signer.attributes;
@@ -219,12 +646,20 @@ export async function verifyTimestampToken(
       throw new ReaderError('message-digest-mismatch');
     }
 
-    // signer certificate
-    const signer = token.certificates.find(
-      (c) => same(c.issuer, token.signer.issuer) && same(trimZeros(c.serial), token.signer.serial),
-    );
-    if (!signer) throw new ReaderError('signer-certificate-missing');
-    await checkSigningCertificate(token, signer);
+    // signer certificate, found as the SignerInfo names it
+    const signer = await findSigner(token);
+    // an RSA key below the smallest size is refused before it is used (a platform may or may not import it); a
+    // signer the caller trusts as an anchor is exempt
+    if (!anchors.some((a) => same(a.raw, signer.raw)) && isWeakRsa(signer, opts.minRsaBits)) {
+      throw new ReaderError('weak-key');
+    }
+    // A signature OID that names its hash (ecdsa-with-SHA384 ...) must agree with the digestAlgorithm of the
+    // SignerInfo (RFC 5652 § 5.3, openssl: "signature failure"); a bare OID takes the digestAlgorithm's hash.
+    // SHA-1 stays `unsupported-signature` (refused in verifyWithKey).
+    const namedHash = SIGNATURES[token.signer.signatureOid]?.hash;
+    if (namedHash && namedHash !== 'SHA-1' && namedHash !== digestHash) {
+      throw new ReaderError('signature-invalid');
+    }
     if (
       !(await verifyWithKey(
         signer,
@@ -236,37 +671,35 @@ export async function verifyTimestampToken(
     ) {
       throw new ReaderError('signature-invalid');
     }
+    checkTsaName(info.tsa, signer); // RFC 3161 § 2.4.2: the tsa name must be one of the signer's names
     const eku = signer.eku;
     if (
       !eku ||
-      !eku.oids.includes(OID.ekuTimeStamping) ||
-      ((options.requireCriticalEku ?? true) && !eku.critical)
+      eku.oids.length !== 1 || // RFC 3161 § 2.3: exactly one purpose, id-kp-timeStamping
+      eku.oids[0] !== OID.ekuTimeStamping ||
+      (opts.requireCriticalEku && !eku.critical)
     ) {
       throw new ReaderError('bad-eku');
     }
+    const signerIsAnchor = anchors.some((a) => same(a.raw, signer.raw));
+    if (signer.unknownCritical && !signerIsAnchor) {
+      throw new ReaderError('bad-certificate');
+    }
     if (signer.keyUsage !== null && (signer.keyUsage & 0xc0) === 0)
       throw new ReaderError('bad-eku');
-    if (!validAt(signer, at)) throw new ReaderError('certificate-not-valid-at-time');
+    // the signer is an end entity: a certificate that is a CA (cA TRUE) or may sign certificates (keyCertSign)
+    // is refused, unless the caller handed it over as the trust anchor itself
+    if (
+      !signerIsAnchor &&
+      (signer.isCa === true || (signer.keyUsage !== null && (signer.keyUsage & 0x04) !== 0))
+    ) {
+      throw new ReaderError('bad-certificate');
+    }
+    if (!validAt(signer, times)) throw new ReaderError('certificate-not-valid-at-time');
 
     // chain to a trust anchor
-    let current = signer;
-    let length = 1;
-    const pool = [...anchors, ...token.certificates]; // anchors first: a cross-signed twin of an anchor must not win
-    for (;;) {
-      const anchor = anchors.find((a) => same(a.raw, current.raw));
-      if (anchor) break;
-      if (length > MAX_CHAIN) throw new ReaderError('chain-too-long');
-      const issuer = await findIssuer(current, pool);
-      if (!issuer) throw new ReaderError('untrusted-chain');
-      if (issuer.isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
-        throw new ReaderError('not-a-ca');
-      }
-      if (!validAt(issuer, at)) throw new ReaderError('certificate-not-valid-at-time');
-      length += 1;
-      if (same(issuer.raw, current.raw)) throw new ReaderError('untrusted-chain'); // self-signed, not an anchor
-      current = issuer;
-      if (anchors.some((a) => same(a.raw, current.raw))) break;
-    }
+    const pool = dedupe([...anchors, ...token.certificates]); // anchors first: a cross-signed twin of an anchor must not win
+    const length = await buildChain(signer, anchors, pool, times, opts.minRsaBits);
     return ok({
       genTime: new Date(info.genTime).toISOString(),
       accuracyMs: info.accuracyMs,
@@ -274,6 +707,8 @@ export async function verifyTimestampToken(
       serial: info.serial,
       signer: nameToString(signer.subject),
       chainLength: length,
+      signerNotBefore: new Date(signer.notBefore).toISOString(),
+      signerNotAfter: new Date(signer.notAfter).toISOString(),
     });
   } catch (e) {
     return fail(e instanceof ReaderError ? e.reason : 'malformed');
