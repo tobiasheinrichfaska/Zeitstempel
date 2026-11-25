@@ -26,8 +26,8 @@ export const RELAY_LIMITS = {
    * Requests per minute for one key id (on top of the total). With the four shipped services (4 per
    * minute each at 15 s, 12 for FreeTSA at 5 s, 24 together) the total is never reached and this limit only
    * by a key that uses several services: the per-service counters, which are global and not per key, bite
-   * first, so one valid key can use up a service for all others. There is no fairness per key at a service's
-   * budget (a known limit, docs/relay.md). In collecting operation both count every request, not every stamp.
+   * first, so one valid key can use up a service for all others. A share per key at a service's budget is
+   * available (`RELAY_KEY_SHARE`, `keyShareMin`; off by default, docs/relay.md). In collecting operation both count every request, not every stamp.
    */
   perMinutePerKey: 20,
   /** Allowed difference (seconds) between the time in a signed request and the relay's clock. */
@@ -100,6 +100,10 @@ export const RELAY_LIMITS = {
    * 3.53 s at the largest wait of 60 s.
    */
   singleQueueMax: 16,
+  /** RELAY_KEY_SHARE: smallest accepted percent (one key at one service's budget per minute). */
+  keyShareMin: 10,
+  /** RELAY_KEY_SHARE: largest accepted percent and the value when not set (100 = off: no share per key). */
+  keyShareMax: 100,
   /** RELAY_MAX_WAIT_MS: value when not set (how long a request may wait for a free slot or, in single operation, for the minimum distance, then `503 busy`). */
   maxWaitDefaultMs: 30_000,
   /** RELAY_MAX_WAIT_MS: smallest accepted value. */
@@ -140,3 +144,11 @@ export const RELAY_LIMITS = {
  * would wait the whole limit and then be refused without a stamp. Also the most by which a wait can exceed the limit: the time of the call itself counts (a loop that stood still is `503 busy`).
  */
 export const WAIT_TOLERANCE_MS = 50;
+
+/**
+ * Authentication: how far before the relay's start (the lowest clock reading it has seen, `startMs`) the `ts` of a head may
+ * lie and still count. The app signs a moment before the relay reads its clock (network, queue), so a head made at the very
+ * moment of the start, or right after the relay's clock was set back, is older than the reading by a few milliseconds; one
+ * second covers that. Older heads are refused (the replay cache is empty after a start, so they could be replayed once more).
+ */
+export const AUTH_START_SLACK_MS = 1000;

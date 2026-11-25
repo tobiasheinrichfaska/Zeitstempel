@@ -26,11 +26,17 @@ describe('library core', () => {
       const imports = [...text.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map(
         (m) => m[1]!,
       );
+      // src/client/ is the one part that may call `fetch` (only to the relay) and import the library next to it
+      // (`../lib/`); `node:` is never allowed, anywhere in src/
+      const isClient = /[\\/]src[\\/]client[\\/]/.test(file);
       for (const spec of imports) {
-        expect(spec.startsWith('./'), `${spec} must be a sibling file`).toBe(true);
+        expect(spec.startsWith('node:'), `${spec} is a node: import`).toBe(false);
+        const allowed =
+          spec.startsWith('./') || (isClient && /^\.\.\/lib\/[a-z0-9-]+\.ts$/.test(spec));
+        expect(allowed, `${spec} must be a sibling file`).toBe(true);
       }
       expect(text).not.toMatch(/\bBuffer\b(?!Source)|\bprocess\.|\brequire\(/);
-      expect(text).not.toMatch(/\bfetch\s*\(/);
+      if (!isClient) expect(text).not.toMatch(/\bfetch\s*\(/);
     });
   }
 });

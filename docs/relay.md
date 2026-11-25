@@ -21,20 +21,22 @@ Ohne Schlüsseldatei startet das Relay **nicht** (Zeile `config-error` auf stder
 Exit-Code 1, die Meldung nennt die möglichen Kennungen aus `services.json`). Wer wählt, liest vorher die
 Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nutzung ausdrücklich.
 
-| Einstellung                | Bedeutung                                                                                                                                                                                                                                                                                               | Vorgabe                                      |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `PORT`                     | Port, ganze Zahl von 1 bis 65535, nur Dezimalziffern (`0x50`, `1e2`, Leerzeichen, `0` und ein leerer Wert beenden den Start; `0` = vom System gewählter Port ist nicht erlaubt, Proxy und Firewall brauchen einen bekannten Port)                                                                       | 8080                                         |
-| `RELAY_ORIGINS`            | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                                                                                                                                                                                         | keine                                        |
-| `RELAY_ALLOW_PLAIN_HTTP`   | `1` erlaubt Dienste, die nur über `http` antworten                                                                                                                                                                                                                                                      | aus                                          |
-| `RELAY_SERVICES`           | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                                                                                                                                                                            | keine                                        |
-| `RELAY_KEYS_FILE`          | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`                                                                                                                                                                                                                 | keine                                        |
-| `RELAY_AUTH`               | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                                                                                                                                                                                                                          | aus                                          |
-| `RELAY_HOST`               | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt                                                                                                                                                                                                              | `127.0.0.1`                                  |
-| `RELAY_KEEPALIVE_MS`       | Leerlauf einer Verbindung zwischen zwei Anfragen in ms, ganze Zahl 1000 bis 120000 (übersteuert beide Werte, siehe „Leerlauf-Verbindungen“)                                                                                                                                                             | nach Bindung: 65000 bei Loopback, sonst 5000 |
-| `RELAY_BATCH_MS`           | Sammelbetrieb: Fenster in ms, ganze Zahl 1000 bis 60000; leer oder `0` = aus (jede Anfrage bekommt einen eigenen Stempel); siehe „Sammelbetrieb“                                                                                                                                                        | aus                                          |
-| `RELAY_BATCH_MAX`          | Sammelbetrieb: höchstens so viele Anfragen in einem Fenster, ganze Zahl 2 bis 1024; ein volles Fenster schließt sofort                                                                                                                                                                                  | 128                                          |
-| `RELAY_UPSTREAM_AUTH_<ID>` | Zugangsdaten eines bezahlten Dienstes, die das Relay selbst hält (`<ID>`: Kennung in Großbuchstaben, `-` als `_`); `Benutzer:Passwort` bei `basic`, sonst das Token; **Pflicht** für einen gewählten Dienst mit Quelle `relay`, **freiwillig** bei `either`; siehe „Zugangsdaten zu bezahlten Diensten“ | keine                                        |
-| `RELAY_MAX_WAIT_MS`        | Längste Wartezeit einer Anfrage in ms, ganze Zahl 1000 bis 60000: im Sammelbetrieb auf einen freien Platz beim Dienst, im Einzelbetrieb auf den Mindestabstand zum letzten Aufruf des Dienstes; danach `503 busy`; siehe „Schlüsselarten und Solo-Stempel“ und „Grenzen (`relay/limits.ts`)“            | 30000                                        |
+| Einstellung                | Bedeutung                                                                                                                                                                                                                                                                                                                                                | Vorgabe                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `PORT`                     | Port, ganze Zahl von 1 bis 65535, nur Dezimalziffern (`0x50`, `1e2`, Leerzeichen, `0` und ein leerer Wert beenden den Start; `0` = vom System gewählter Port ist nicht erlaubt, Proxy und Firewall brauchen einen bekannten Port)                                                                                                                        | 8080                                         |
+| `RELAY_ORIGINS`            | Browser-Herkünfte, durch Komma getrennt, genau `https://host[:port]` (oder `http://localhost…`)                                                                                                                                                                                                                                                          | keine                                        |
+| `RELAY_ALLOW_PLAIN_HTTP`   | `1` erlaubt Dienste, die nur über `http` antworten                                                                                                                                                                                                                                                                                                       | aus                                          |
+| `RELAY_SERVICES`           | Kennungen der angebotenen Dienste, durch Komma getrennt; **Pflicht** (Start bricht sonst ab)                                                                                                                                                                                                                                                             | keine                                        |
+| `RELAY_KEYS_FILE`          | Pfad der Schlüsseldatei (siehe „Zugangsschlüssel“); Pflicht, außer mit `RELAY_AUTH=off`                                                                                                                                                                                                                                                                  | keine                                        |
+| `RELAY_AUDIENCE`           | Der Name dieses Relays im signierten Kopf (Audience): druckbares ASCII ohne Leerzeichen, 1 bis 128 Zeichen, üblich die öffentliche Herkunft (`https://relay.example`); **Pflicht mit `RELAY_KEYS_FILE`** (sonst Startabbruch, `RELAY_AUDIENCE fehlt …`), bei `RELAY_AUTH=off` nicht nötig; je Instanz und Umgebung eine eigene, siehe „Zugangsschlüssel“ |
+| `RELAY_AUTH`               | nur `off` ist gültig: Start ohne Schlüssel, **nur für die lokale Entwicklung**                                                                                                                                                                                                                                                                           | aus                                          |
+| `RELAY_HOST`               | Adresse, auf der das Relay lauscht; mit `RELAY_AUTH=off` nur eine Loopback-Adresse erlaubt                                                                                                                                                                                                                                                               | `127.0.0.1`                                  |
+| `RELAY_KEEPALIVE_MS`       | Leerlauf einer Verbindung zwischen zwei Anfragen in ms, ganze Zahl 1000 bis 120000 (übersteuert beide Werte, siehe „Leerlauf-Verbindungen“)                                                                                                                                                                                                              | nach Bindung: 65000 bei Loopback, sonst 5000 |
+| `RELAY_BATCH_MS`           | Sammelbetrieb: Fenster in ms, ganze Zahl 1000 bis 60000; leer oder `0` = aus (jede Anfrage bekommt einen eigenen Stempel); siehe „Sammelbetrieb“                                                                                                                                                                                                         | aus                                          |
+| `RELAY_BATCH_MAX`          | Sammelbetrieb: höchstens so viele Anfragen in einem Fenster, ganze Zahl 2 bis 1024; ein volles Fenster schließt sofort                                                                                                                                                                                                                                   | 128                                          |
+| `RELAY_UPSTREAM_AUTH_<ID>` | Zugangsdaten eines bezahlten Dienstes, die das Relay selbst hält (`<ID>`: Kennung in Großbuchstaben, `-` als `_`); `Benutzer:Passwort` bei `basic`, sonst das Token; **Pflicht** für einen gewählten Dienst mit Quelle `relay`, **freiwillig** bei `either`; siehe „Zugangsdaten zu bezahlten Diensten“                                                  | keine                                        |
+| `RELAY_MAX_WAIT_MS`        | Längste Wartezeit einer Anfrage in ms, ganze Zahl 1000 bis 60000: im Sammelbetrieb auf einen freien Platz beim Dienst, im Einzelbetrieb auf den Mindestabstand zum letzten Aufruf des Dienstes; danach `503 busy`; siehe „Schlüsselarten und Solo-Stempel“ und „Grenzen (`relay/limits.ts`)“                                                             | 30000                                        |
+| `RELAY_KEY_SHARE`          | Anteil in ganzen Prozent, 10 bis 100 (Vorgabe 100 = aus, nichts ändert sich): so viel vom Minutenbudget **eines Dienstes** darf **eine** Schlüsselkennung höchstens belegen; darüber `429 key-share`; leerer oder ungültiger Wert = Startabbruch; siehe „Anteil je Schlüssel am Dienstbudget“                                                            |
 
 **Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
 `RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
@@ -85,15 +87,25 @@ Relay kennt nur den **öffentlichen Schlüssel** und eine Schlüsselkennung `kid
 wird pro Anfrage nur eine Signatur. Die Schlüsseldatei des Relays enthält deshalb **kein Geheimnis**; es zählt ihre
 **Unversehrtheit**: wer sie schreiben kann, kann einen eigenen Schlüssel eintragen und damit stempeln.
 
-**Kopf:** `X-Zeitstempel-Auth: v2.<kid>.<ts>.<sig>`
+**Kopf:** `X-Zeitstempel-Auth: v3.<kid>.<ts>.<jti>.<sig>`
 
-- `ts`: Unix-Sekunden, dezimal, ohne führende Nullen.
+- `ts`: Unix-**Millisekunden**, ganze Dezimalzahl ohne führende Nullen (12 bis 15 Stellen, im heutigen Bereich 13).
+- `jti`: 16 zufällige Byte, die die App **für jede Anfrage neu** wählt, als base64url ohne `=` (22 Zeichen, nur die eine
+  kanonische Schreibweise: die 4 überzähligen Bits des letzten Zeichens sind 0). Das `jti` macht jede Anfrage einzeln
+  und ist der Schlüssel des Wiederholungsspeichers.
 - `sig` = base64url (ohne `=`, 86 Zeichen) der 64 Byte `r || s` (IEEE P1363, so wie WebCrypto ECDSA/SHA-256 sie
-  ausgibt) über die Nachricht `"zeitstempel-auth-v2\n" + METHODE + "\n" + PFAD + "\n" + ts + "\n" +
-hex(SHA-256(Körper))`. `PFAD` ist der Pfad ohne Abfrage (`/v1/stamp/freetsa`), `Körper` sind die rohen Bytes, wie
-  gesendet. Die Kennung ist nicht Teil der Nachricht; sie wählt den Schlüssel, gegen den geprüft wird. Die
-  Bibliothek rechnet das: `signRelayRequest` (siehe unten). Köpfe der früheren Fassung (`v1.…`, HMAC) werden mit
-  `401` abgelehnt.
+  ausgibt) über die Nachricht `"zeitstempel-auth-v3\n" + METHODE + "\n" + PFAD + "\n" + AUD + "\n" + ts + "\n" + jti +
+"\n" + hex(SHA-256(Körper))`. `PFAD` ist der Pfad ohne Abfrage (`/v1/stamp/freetsa`), `Körper` sind die rohen Bytes,
+  wie gesendet, `AUD` ist die Audience (nächster Absatz). Die Kennung ist nicht Teil der Nachricht; sie wählt den
+  Schlüssel, gegen den geprüft wird. Die Bibliothek rechnet das: `signRelayRequest` (siehe unten). Köpfe früherer
+  Fassungen (`v1.…` HMAC, `v2.…` Sekunden ohne `jti` und ohne Audience) werden wie jede falsche Form mit `401` abgelehnt.
+- **Audience (`AUD`):** der Name dieses Relays, den der Betreiber in `RELAY_AUDIENCE` setzt (druckbares ASCII ohne
+  Leerzeichen, 1 bis 128 Zeichen; üblich die öffentliche Herkunft, z. B. `https://relay.example`) und der App mitteilt.
+  Die App trägt ihn bei `signRelayRequest({ audience })` ein; das Relay prüft, dass die signierte `AUD` **genau** seiner
+  eigenen gleicht (Byte für Byte, auch Groß- und Kleinschreibung und ein Schrägstrich am Ende zählen). Weil sie in der
+  Signatur steht, gilt ein bei einem Relay abgefangener Kopf bei einem anderen nicht, auch wenn beide dieselbe
+  Schlüsseldatei benutzen: **je Instanz und je Umgebung (Test, Betrieb) eine eigene Audience**. Die Audience ist kein
+  Geheimnis.
 
 **Was das Relay prüft** (jeder Fehler der Anmeldung ist ein einheitliches `401 {"error":"unauthorized"}`; die
 Antwort verrät nicht, ob Kennung, Zeit oder Signatur falsch war. Die Reihenfolge der Prüfungen: `403`
@@ -104,14 +116,17 @@ Orakel für Kennung oder Signatur. Ohne Kopf gibt es für einen bekannten Dienst
 POST und kanonischem Ziel nie etwas anderes als `401`):
 
 1. Form des Kopfes und `ts` innerhalb von ±`authWindowSeconds` (60 s) der Uhr des Relays, **vor** dem Lesen des
-   Körpers; zusätzlich darf `ts` nicht vor dem Start des Prozesses liegen (`ts` · 1000 ≥ Startzeit − 1000 ms). Die
+   Körpers; zusätzlich darf `ts` nicht vor dem Start des Prozesses liegen (`ts` ≥ Startzeit − `AUTH_START_SLACK_MS`, 1000 ms; `ts` und alle Zeiten sind Millisekunden, das Fenster ist `authWindowSeconds` · 1000 ms und gilt auf die Millisekunde genau: `now − 60000 ≤ ts ≤ now + 60000`; die Schonfrist von einer Sekunde deckt, dass die App einen Augenblick vor der Uhrablesung des Relays signiert). Die
    Startzeit wird nie neu berechnet, sondern bei jeder Anfrage an einen Dienst nur **gesenkt** (`Startzeit =
 min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging die Uhr beim Start vor und wird später
    korrigiert, sinkt die Startzeit einmal auf den ersten beobachteten korrigierten Zeitpunkt; danach gilt für Köpfe ab
    dort wieder das volle ±60-s-Fenster. Der Wiederholungsspeicher liegt nur im Speicher und ist nach einem Neustart leer; ohne diese Regel ließe sich ein
-   mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: **nach einem
-   Neustart sind Köpfe aus der Zeit davor ungültig** (die App signiert ohnehin jeden Versuch neu). **Widerruf
-   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen; das Relay liest die Datei laufend neu und lässt den Schlüssel danach sofort nicht mehr zu (siehe „Schlüsseldatei laufend lesen“, kein Neustart nötig). **Grenzen:** (a) Geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur ersten Anfrage nach der Korrektur geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). (b) Geht sie beim Start **vor**, werden Köpfe von vor der ersten Anfrage nach der Korrektur abgelehnt (die App signiert ohnehin jeden Versuch neu); Köpfe von vor dem echten Neustart bleiben abgelehnt, weil der echte Start nie nach dem ersten korrigierten Zeitpunkt liegt. (c) Die Startzeit sinkt nur bei Anfragen an einen Dienst; setzt jemand die Uhr nach dem Start zurück, gelten Köpfe bis zum niedrigsten dabei beobachteten Zeitpunkt, nie weiter zurück. Die Uhr der App muss also auf etwa eine Minute genau gehen (±60 s). (d) Ein Kopf mit `ts` ab dem Start (bis +60 s; geht die Uhr der App vor, ist das möglich) bleibt nach einem Neustart bis zum Ende seines Fensters wiederholbar, also bis zu 120 s nach dem Start des Relays (`ts` ≤ Start + 60 s, dazu das Fenster von 60 s), weil der Wiederholungsspeicher dann leer ist; gegen einen Mitschnitt dieser Art schützt das Relay nicht (kein Codefix). (e) Eine Uhrablesung, die nicht endlich ist (`NaN`, `±Infinity`), wird bei Anfragen ignoriert und senkt die Startzeit nicht; ist die Uhr schon beim Start nicht endlich, **bricht der Start ab** (Fehler `relay clock is not finite at start`, kein Inhalt). Das Fenster wird **nach** dem Lesen
+   mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: nach einem
+   Neustart sind Köpfe aus der Zeit davor ungültig, **bis auf die Schonfrist von 1 s** (`AUTH_START_SLACK_MS`: die App signiert einen
+   Moment vor dem Lesen der Uhr des Relays): ein Kopf aus der letzten Sekunde vor dem Start kann über einen Neustart **einmal**
+   noch einmal abgespielt werden, weil der Wiederholungsspeicher leer ist (derselbe Hash, also ein zweiter Stempel desselben Hashes;
+   die App signiert ohnehin jeden Versuch neu). **Widerruf
+   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen; das Relay liest die Datei laufend neu: **neue** Anfragen mit diesem Schlüssel sind spätestens 5 s nach dem Speichern der Datei `401` (siehe „Schlüsseldatei laufend lesen“, kein Neustart nötig); eine schon angenommene, **wartende** Anfrage (Einzelbetrieb: auf den Mindestabstand; Sammelbetrieb: im Fenster oder in der Warteschlange) wird beim Feuern beziehungsweise Stempeln noch einmal gegen den aktuellen Satz geprüft (entfernt, gesperrt, `notAfter` erreicht, außerdem eine auf andere Dienste eingeschränkte `services`-Liste und für einen Solo-Stempel eine zurückgenommene Art 2) und bekommt dann `401` ohne Aufruf beim Dienst (ein Aufruf, der schon läuft, wird fertig; bis dahin vergehen höchstens `RELAY_MAX_WAIT_MS`, im Sammelbetrieb dazu das Fenster und die Kette verzögerter Fenster, bis zu einer Budgetminute). **Grenzen:** (a) Geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur ersten Anfrage nach der Korrektur geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). (b) Geht sie beim Start **vor**, werden Köpfe von vor der ersten Anfrage nach der Korrektur abgelehnt (die App signiert ohnehin jeden Versuch neu); Köpfe von vor dem echten Neustart bleiben abgelehnt, weil der echte Start nie nach dem ersten korrigierten Zeitpunkt liegt. (c) Die Startzeit sinkt nur bei Anfragen an einen Dienst; setzt jemand die Uhr nach dem Start zurück, gelten Köpfe bis zum niedrigsten dabei beobachteten Zeitpunkt, nie weiter zurück. Die Uhr der App muss also auf etwa eine Minute genau gehen (±60 s). (d) Ein Kopf mit `ts` ab einer Sekunde vor dem Start (bis +60 s; geht die Uhr der App vor, ist das möglich) bleibt nach einem Neustart bis zum Ende seines Fensters wiederholbar, also bis zu 120 s nach dem Start des Relays (`ts` ≤ Start + 60 s, dazu das Fenster von 60 s), weil der Wiederholungsspeicher dann leer ist; gegen einen Mitschnitt dieser Art schützt das Relay nicht (kein Codefix). (e) Eine Uhrablesung, die nicht endlich ist (`NaN`, `±Infinity`), wird bei Anfragen ignoriert und senkt die Startzeit nicht; ist die Uhr schon beim Start nicht endlich, **bricht der Start ab** (Fehler `relay clock is not finite at start`, kein Inhalt). (f) Ein Eintrag des Wiederholungsspeichers läuft nach der Wanduhr **und** nach der monotonen Uhr ab und bleibt, solange eine der beiden ihn noch gelten lässt: geht die Wanduhr vor und wird sie zurückgestellt, vergisst das Relay keinen Kopf, dessen Fenster wiederkommt. Der Preis: wird die Wanduhr um D zurückgestellt, bleibt jeder Eintrag nach der Wanduhr noch D länger; ist der Speicher dann voll (512 Plätze, bei den Standardgrenzen nur nach mehreren Rückstellungen innerhalb einer Stunde erreichbar), antwortet das Relay `429`, und `Retry-After` nennt höchstens 125 s (Fenster plus Aufbewahrung), die Sperre kann aber bis zum Aufholen der Wanduhr dauern. Der Eintrag früher zu löschen wäre unsicher: sein Kopf wäre nach dem Aufholen der Wanduhr wieder im Fenster und wiederholbar. Das Fenster wird **nach** dem Lesen
    des Körpers noch einmal geprüft (ein langsamer Körper rettet keinen veralteten Kopf).
 2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Das Relay führt **für jeden wohlgeformten
    Kopf genau eine** Prüfung aus, auch bei unbekannter Kennung (gegen einen je Prozess zufällig erzeugten
@@ -120,19 +135,25 @@ min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging d
    jeden wohlgeformten Kopf mit frischer Zeit; begrenzt wird die Arbeit durch höchstens 256 Verbindungen, die
    Frist von 5 s je Anfrage und das Zeitfenster. Es wird kein Geheimnis verglichen,
    ein Zeitangriff gibt also nichts preis.
-3. Eine Nachricht, die schon angenommen wurde, wird abgelehnt (Wiederholung): nach `200` und nach `502`/`504` (die Anfrage wurde
-   angenommen) braucht jeder weitere Versuch einen frischen Kopf. Nach `429` (nichts wurde eingetragen) darf
-   **derselbe** Kopf innerhalb des Zeitfensters wiederholt werden. **Gemerkt wird der Digest der signierten Nachricht (mit der
-   Kennung), nicht die Signatur:** ECDSA ist formbar, zu einer gültigen Signatur `(r, s)` ist auch `(r, n − s)`
-   für dieselbe Nachricht gültig, und ein Speicher über Signaturen ließe die Zwillingssignatur als neu durch (ein
-   Test belegt beides). Eine Wiederholung stirbt mit `401` **vor** dem `Content-Type`, vor der Prüfung des Hashes
+3. Ein Kopf, dessen `jti` bei derselben Kennung schon angenommen wurde, wird abgelehnt (Wiederholung): nach `200` und nach
+   `502`/`504` (die Anfrage wurde angenommen) braucht jeder weitere Versuch einen frischen Kopf (ein neues `jti`, das
+   `signRelayRequest` bei jedem Aufruf selbst zieht). Nach `429` (nichts wurde eingetragen) darf **derselbe** Kopf
+   innerhalb des Zeitfensters wiederholt werden. **Gemerkt wird das Paar (Kennung, `jti`), nicht die Signatur und nicht
+   ein Digest der Nachricht:** ECDSA ist formbar, zu einer gültigen Signatur `(r, s)` ist auch `(r, n − s)` für dieselbe
+   Nachricht gültig, und ein Speicher über Signaturen ließe die Zwillingssignatur als neu durch; die Zwillingssignatur
+   trägt aber dasselbe `jti` und bleibt deshalb eine Wiederholung (ein Test belegt beides). Weil das `jti` je Anfrage
+   zufällig ist, sind zwei Anfragen mit demselben Schlüssel, demselben Pfad, demselben Körper und derselben
+   Millisekunde (oder Sekunde) **zwei Anfragen**, keine Wiederholung; früher ergab das dieselbe Nachricht und die zweite
+   bekam `401`. Dasselbe `jti` bei einer anderen Kennung ist ein eigener Eintrag. Eine Wiederholung stirbt mit `401` **vor** dem `Content-Type`, vor der Prüfung des Hashes
    und vor dem Budget: sie verbraucht weder Budget noch Eintrag. Der Speicher wird nur **gelesen**, solange die Anfrage
    nicht bis zum Budget durchgekommen ist; eingetragen wird erst, wenn Hash und Form des Körpers stimmen und
    Budget **und** Speicher die Anfrage zulassen. Abgewiesene Versuche (`400`, `415`, `429`) füllen den Speicher
    also nicht und verbrauchen kein Budget.
    Der Speicher ist auf `authReplayEntries` Einträge begrenzt, davon darf eine Kennung höchstens den Anteil
    `authReplayKeyShare` halten (eine Kennung kann die anderen nicht aussperren). Ein Eintrag bleibt bis
-   `ts + authWindowSeconds + requestTimeoutMs`, also höchstens 125 s (bei richtiger Uhr). Weil nur zugelassene Anfragen eingetragen
+   `ts + authWindowSeconds · 1000 + requestTimeoutMs` (alles in Millisekunden), also höchstens 125 s nach dem Eintragen (bei
+   richtiger Uhr; ein Eintrag hält mindestens bis zum Ende des Fensters seines Kopfes, also 60 s nach dem `ts` plus die
+   Zeit, die ein Körper noch kommen darf). Weil nur zugelassene Anfragen eingetragen
    werden und höchstens `perMinuteTotal` je Minute zugelassen werden, gibt es **höchstens 180 Einträge zugleich**
    (60 × ⌈125 / 60⌉), gleich wie viele Schlüssel es gibt; `authReplayEntries` (512) ist eine **Obergrenze** mit
    Spielraum, die im Betrieb nicht erreicht wird, kein Wert, den man erwartet. Wäre er doch voll (oder der Anteil
@@ -153,10 +174,13 @@ Kopf hat nur, wer den privaten Schlüssel hat (oder eine mitgeschnittene Anfrage
 (eine Signaturprüfung, höchstens 512 Byte Körper) und ihre Zahl ist begrenzt durch die Frist von 5 s je Anfrage,
 höchstens 256 gleichzeitige Verbindungen und das Zeitfenster von 60 s. Kein Dienst wird dadurch aufgerufen.
 
-**Kein Relay in der Nachricht:** Die signierte Nachricht enthält nichts, was ein einzelnes Relay bezeichnet. Wird
-**derselbe Schlüssel bei zwei Relays** eingetragen, kann ein Kopf, der bei dem einen angenommen wurde, innerhalb von
-höchstens 60 s bei dem anderen noch einmal angenommen werden (Querwiederholung). **Schlüssel nicht auf mehrere
-Relays teilen**; je Relay einen eigenen eintragen.
+**Ein Relay in der Nachricht (Audience):** Die signierte Nachricht trägt die Audience des Relays. Wird **derselbe Schlüssel
+bei zwei Relays** eingetragen, die **verschiedene** `RELAY_AUDIENCE` haben, gilt ein Kopf nur bei dem Relay, für das er
+signiert wurde: ein bei dem einen abgefangener Kopf wird bei dem anderen mit `401` abgelehnt (Querwiederholung ist damit
+zu). Haben beide **dieselbe** Audience, ist das nicht der Fall (jede Instanz hat ihren eigenen Wiederholungsspeicher, ein
+Kopf gilt bei beiden einmal). **Je Instanz und je Umgebung eine eigene Audience**, und Schlüssel trotzdem nicht ohne
+Not auf mehrere Relays teilen; je Relay einen eigenen einzutragen bleibt die einfachste Regel. Ein App-Betreiber, der
+für mehrere Relays signiert, hält die Audience je Relay (sie gehört zur Adresse des Relays in der App).
 
 **Anfrageziel:** Das rohe Ziel der Anfrage muss gleich dem kanonischen Pfad sein (kein `./`, `..`, Rückwärtsstrich,
 keine Absolutform `http://…`, kein leeres `?`); sonst `400 bad-request`. So bindet die Signatur den Pfad wörtlich:
@@ -183,7 +207,12 @@ Das Relay schreibt weder Kennung noch Zeit noch Signatur ins Protokoll; die Zäh
   stempelt wie sonst, und die Anfrage zählt unter `client-aborted`. Der Dienst bekommt dafür keinen zusätzlichen Aufruf;
   der Stempel für den Hash kommt trotzdem zustande und wird nicht zurückgenommen.
 
-In beiden Betriebsarten ist das Mengenbudget mit der Annahme verbraucht (siehe „Budgets und Zähler“).
+Das Mengenbudget (Gesamt, Schlüssel, Dienst, Anteil des Schlüssels, Solo-Limit) wird mit der Annahme verbraucht und **zurückgegeben**,
+wenn für die Anfrage nichts an den Dienst gesendet wurde: Abbruch beim Warten (im Einzelbetrieb erst zum berechneten Zeitpunkt
+bemerkt, bis dahin gilt es als verbraucht), `503 busy`, `503 shutting-down` und `401`, weil der Schlüssel beim Warten gesperrt wurde.
+Der Eintrag im Wiederholungsspeicher bleibt (der Kopf war schon gesehen). **Grenze im Sammelbetrieb:** der Platz im Mengenbudget des Dienstes und der Abstand zum letzten Aufruf (`lastCall`) bleiben gebucht, wenn ein Fenster leer wird (alle Mitglieder abgebrochen oder gesperrt) oder ein wartender Solo-Stempel verfällt: zurück gehen nur Gesamt, Schlüssel, Solo und Anteil; das nächste Fenster wartet dann unnötig (konservativ, der Mindestabstand bleibt sicher). Im Sammelbetrieb bleibt der Hash eines abgebrochenen
+Clients im Baum und das Budget verbraucht (der Stempel wird gemacht). Ein Stempel, der beim Dienst scheitert (`502`, `504`),
+gibt nichts zurück (der Aufruf ging hinaus; siehe „Budgets und Zähler“).
 
 **Zu langsame Anfragen:** Kommt eine Anfrage nicht innerhalb von `requestTimeoutMs` vollständig an (Kopfzeilen oder
 Körper tröpfeln), beendet **der Server** die Verbindung und antwortet `408`. Das zählt unter `refused` als
@@ -192,9 +221,10 @@ abbrechen. Die Zähler `unauthorized`, `rate-limited` usw. bleiben davon unberü
 
 **Pipelining mit Müll:** Wer mehrere Anfragen hintereinander schickt (pipelined) und danach Müll nachschickt, bekommt nur die `400` und verliert die Antwort der laufenden Anfrage (wie bei Node).
 
-**Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`.
+**Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`
+(Version 3 mit weiteren Feldern je Eintrag: „Schlüsseldatei Version 3“ unten).
 `publicKey` ist der **unkomprimierte Punkt** (65 Byte: `04 || X || Y`) als base64url ohne `=`. Streng gelesen: genau
-diese Felder, 1 bis 64 Schlüssel, `id` nach dem Muster, der Punkt muss **auf der Kurve P-256 liegen** (sonst
+diese Felder, 0 bis 64 Schlüssel (eine ausdrücklich leere Liste ist gültig und sperrt alle, siehe unten), `id` nach dem Muster, der Punkt muss **auf der Kurve P-256 liegen** (sonst
 `public-key-point`), keine doppelte `id`, kein doppelter Schlüssel. Die Datei enthält **keine Geheimnisse**, gehört
 aber **nicht ins Repository** (`.gitignore` kennt `relay-keys*.json`, `*.keys.json` und `*keys*.json`): sie ist
 Konfiguration des Betreibers, und ein privater Schlüssel soll nie neben ihr liegen. Sie wird vom Betreiber verwaltet
@@ -209,7 +239,10 @@ Datei ersetzen. Verzeichnis und Eigentümer sind Sache des Betreibers. Doppelte 
 **Schlüssel erzeugen** (im geklonten Repository): `node scripts/make-key.ts <kennung>` (gleichwertig:
 `npm run -s make-key -- <kennung>`) schreibt in zwei Zeilen auf die Konsole (und in keine Datei) den **privaten**
 Schlüssel (PKCS#8, base64url; gehört nur der App, geheim halten) und den Eintrag `{id, publicKey}` für die
-Schlüsseldatei; ein Hinweis dazu geht auf stderr. Beispiel (gekürzt):
+Schlüsseldatei; ein Hinweis dazu geht auf stderr. Optionale Schalter machen weitere Felder des Eintrags (Version 3):
+`--solo`, `--not-after <unix>`, `--services a,b`, `--per-minute N` (Beispiel: `node scripts/make-key.ts app-1 --not-after
+1900000000 --services freetsa --per-minute 5`); falsche Werte enden mit Exit 2 und ohne Ausgabe, die Datei schreibt das
+Skript nie. Beispiel (gekürzt):
 
 ```text
 $ node scripts/make-key.ts app-1
@@ -217,20 +250,66 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…        <- Zeile 1: privater 
 {"id":"app-1","publicKey":"BAsY3mTq0…"}                  <- Zeile 2: Eintrag für die Schlüsseldatei
 ```
 
-Zeile 2 kommt in `keys` der Schlüsseldatei: `{"version": 2, "keys": [<Zeile 2>]}`. `npm run probe` liest `RELAY_PRIVATE_KEY` (der private Schlüssel,
-base64url) und `RELAY_KEY_ID` aus der Umgebung und signiert damit.
+Zeile 2 kommt in `keys` der Schlüsseldatei: `{"version": 2, "keys": [<Zeile 2>]}` (mit `notAfter`, `services` oder
+`perMinute` in der Zeile: `"version": 3`). `npm run probe` liest `RELAY_PRIVATE_KEY` (der private Schlüssel,
+base64url), `RELAY_KEY_ID` und `RELAY_AUDIENCE` (die Audience des Relays, gegen das es läuft) aus der Umgebung und signiert damit.
 
 **Grenze:** Der private Schlüssel liegt in der App. Eine Web-App, die ihn im Browser hält, kann ihn nicht vor ihren
 eigenen Besuchern verbergen; der Schlüssel schützt das Relay vor fremden Apps und Skripten, nicht vor den Nutzern
-einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus der Datei, Relay neu starten).
+einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus der Datei entfernen oder mit `"revoked": true` sperren; wirkt nach spätestens 5 s, kein Neustart).
 **Aussperren:** Die Dienst-Zähler gelten **global**, nicht je Kennung. Mit den mitgelieferten Diensten (je 4
 Anfragen je Minute bei 15 s) sperrt ein einziger gültiger Schlüssel mit 4 Anfragen in einer Minute einen Dienst für
 alle anderen Kennungen bis zum Ende des Zeitfensters (bei FreeTSA mit 5 s: 12 Anfragen). `perMinuteTotal` (60) wird mit
 den mitgelieferten Diensten nie erreicht (die vier Dienstgrenzen ergeben zusammen nur 24 je Minute); `perMinutePerKey`
 (20) kann ein Schlüssel erreichen, der mehrere Dienste zugleich nutzt. Beide greifen im Sammelbetrieb früher
-(siehe dort: sie zählen jede Anfrage). Das Relay verteilt das Budget eines Dienstes nicht fair auf die
-Kennungen: Wer einen gültigen Schlüssel hat (auch einen gestohlenen), kann einen Dienst für alle übrigen
-aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen (Eintrag entfernen, Relay neu starten).
+(siehe dort: sie zählen jede Anfrage). **Ohne `RELAY_KEY_SHARE` (Vorgabe) verteilt das Relay das Budget eines Dienstes
+nicht fair auf die Kennungen:** wer einen gültigen Schlüssel hat (auch einen gestohlenen), kann einen Dienst für alle
+übrigen aussperren. Mit `RELAY_KEY_SHARE` (nächster Abschnitt) ist der Anteil einer Kennung begrenzt; ein Schlüssel
+lässt sich außerdem widerrufen (Eintrag entfernen oder `"revoked": true`).
+
+#### Anteil je Schlüssel am Dienstbudget (`RELAY_KEY_SHARE`)
+
+`RELAY_KEY_SHARE` ist eine ganze Zahl in Prozent, 10 bis 100 (Vorgabe 100 = aus: das Verhalten bleibt wie ohne die
+Einstellung, es wird nichts gezählt). Ein Wert unter 100 begrenzt, wie viel vom Minutenbudget eines Dienstes (`60000 /
+minIntervalMs`, bei FreeTSA 12, bei 15 s 4) **eine** Schlüsselkennung in der gleitenden Minute belegen darf:
+
+    Obergrenze = max(1, floor(Dienstbudget * Prozent / 100))        FreeTSA bei 50: 6      15-s-Dienst bei 50: 2
+
+- **Je Spur.** Das Budget und der Anteil gelten je (Dienst, Identität): hat ein Dienst Zugangsdaten der App, ist jede
+  Identität eine eigene Spur mit eigenem Budget und eigenem Anteil der Kennung. Ohne Schlüssel (`RELAY_AUTH=off`) gibt es
+  keine Kennung und keinen Anteil.
+- **Darüber `429`** mit `Retry-After` (die Zeit, bis der älteste Platz dieser Kennung in der Minute frei wird; folgt
+  zugleich eine andere Grenze, gilt die längste Zeit) und dem Code **`key-share`**. Wenn **nur** der Anteil nein sagt,
+  zählt `shareDenied` (global, nur die Summe, nie je Schlüssel) und `refused['key-share']`; sagt auch das Dienstbudget,
+  `perMinutePerKey` oder `perMinuteTotal` nein, bleibt es bei `rate-limited`. Die Abweisung verbraucht nichts: kein
+  Gesamt- und kein Schlüsselbudget, kein Eintrag gegen Wiederholung, keine Reservierung beim Planer, kein Platz im Anteil.
+  (Eine **angenommene** Anfrage, die danach beim Warten abbricht oder `503 busy`/`shutting-down` bekommt, gibt ihren Anteil
+  und ihr Budget zurück, solange nichts an den Dienst gesendet wurde; ihr Wiederholungseintrag bleibt.)
+  Der Kopf einer abgewiesenen Anfrage ist also keine Wiederholung und gilt noch, bis der Anteil wieder frei ist.
+- **Einzelbetrieb.** Gezählt wird die **Annahme** je (Spur, Kennung) in der gleitenden Minute, **auf der Wanduhr** wie die
+  anderen Mengenzähler dieser Betriebsart (Dienstbudget, `perMinuteTotal`, `perMinutePerKey`); der Mindestabstand läuft
+  weiter auf der monotonen Uhr. Das Dienstbudget und der Anteil zählen dieselben Annahmen, der Anteil nur je Kennung.
+- **Sammelbetrieb (entschieden: nur Solo).** Jeder **Solo-Stempel** (Schlüsselart 2) nimmt einen ganzen Platz des Dienstes
+  und zählt gegen den Anteil (monotone Uhr, wie der ganze Planer). **Hashes in einem Fenster teilen sich einen Platz:** ein
+  Fenster ist ein Platz für alle seine Hashes, eine Anfrage, die ein offenes Fenster betritt, nimmt keinen Platz und
+  zählt nicht gegen den Anteil. Eine Obergrenze je Kennung und Fenster (`max(1, floor(RELAY_BATCH_MAX * Prozent / 100))`
+  Hashes) wurde geprüft und **nicht** gebaut: Fenster füllen sich auch aus der Warteschlange der Anfragen, die noch auf
+  einen Platz warten, und das `Retry-After` „bis zum Fensterschluss“ gäbe es für ein Fenster, das noch nicht offen ist,
+  nicht; das wären zwei neue Zustände im Planer für ein Risiko, das schon begrenzt ist: Hashes im Fenster kosten den
+  Dienst nichts, die Zahl der Fenster hängt an der Zeit (nicht an der Kennung), und eine Kennung kann höchstens
+  `perMinutePerKey` (20) Hashes je Minute einbringen (bei einem sehr kleinen `RELAY_BATCH_MAX` können wenige Kennungen die
+  Fenster füllen: dort `RELAY_BATCH_MAX` nicht kleiner als die Zahl der Nutzer wählen). Das Aussperren am Dienstbudget kann
+  im Sammelbetrieb nur ein Schlüssel der Art 2 mit Solo-Stempeln (die der Betreiber vergibt); der Anteil begrenzt ihn.
+- **Zähler im Arbeitsspeicher, begrenzt.** Eine Tabelle je (Kennung, Spur); jede Annahme wirft die Einträge hinaus, deren
+  Zeiten alle älter als die Minute sind. Sie hält also nur Kennungen und Spuren der letzten Minute (höchstens
+  `perMinuteTotal` Annahmen; die Tabelle hat höchstens so viele Einträge). Das Neulesen der Schlüsseldatei ändert die
+  Zähler nicht (ein Schlüssel, der aus der Datei verschwindet, ist ungültig; sein Zähler läuft aus). Eine Uhr, die
+  zurückgestellt wird, setzt Zeiten in der Zukunft auf „jetzt“ (wie bei den anderen Zählern).
+- **Empfehlung.** Mit mehreren Nutzergruppen (mehrere Apps, mehrere Schlüssel) im Pilot `RELAY_KEY_SHARE=50`: ein
+  Schlüssel belegt höchstens die Hälfte der Plätze, ein zweiter bekommt immer welche (bei FreeTSA 6 von 12). Mit genau
+  einer Nutzergruppe bringt die Einstellung nichts; sie senkt nur deren Anteil. Bei Anteilen unter 100 / (Zahl der
+  Schlüssel) bleibt Budget ungenutzt, auch wenn kein anderer Schlüssel etwas will: der Anteil ist eine feste Grenze,
+  kein Teilen nach Bedarf.
 
 ### Browser (CORS)
 
@@ -269,6 +348,7 @@ aussperren. Das ist eine bekannte Grenze; ein Schlüssel lässt sich widerrufen 
      path,
      body: new TextEncoder().encode(text),
      nowMs: sentMs, // Millisekunden, nicht Sekunden
+     audience: 'https://relay.example', // genau die RELAY_AUDIENCE dieses Relays
    });
    if (!signed.ok) throw new Error(signed.reason);
    const res = await fetch(relay + path, {
@@ -290,7 +370,15 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    **`nowMs` ist die Zeit in Millisekunden seit 1970 (`Date.now()`), nicht in Sekunden.** Die Bibliothek verlangt eine
    endliche Zahl ab 1e11 und **unter 1e15** (Bruchteile sind erlaubt); ein kleinerer Wert, etwa Sekunden, ergibt `bad-options`, damit
    nicht stillschweigend eine Zeit im Jahr 1970 signiert wird, und ebenso ein größerer (`Number.MAX_VALUE`, `1e17`): unter 1e15
-   hat `ts` höchstens 12 Stellen, mehr nimmt das Kopfformat des Relays nicht (1e15 ms sind das Jahr 33658).
+   hat `ts` höchstens 15 Stellen, mehr nimmt das Kopfformat des Relays nicht (1e15 ms sind das Jahr 33658). Bruchteile
+   einer Millisekunde werden abgeschnitten (`ts` ist eine ganze Zahl).
+
+   **`audience`** (Pflicht) ist die `RELAY_AUDIENCE` des Relays, das die Anfrage bekommt: druckbares ASCII ohne Leerzeichen,
+   1 bis 128 Zeichen, sonst `bad-options` (kein eigener Code; auch eine fehlende oder falsche Art, etwa eine Zahl).
+   **`jti`** (selten nötig) sind 16 Byte (`Uint8Array`); fehlt es, zieht die Bibliothek sie bei jedem Aufruf aus
+   `crypto.getRandomValues` (WebCrypto, kein `node:`); ein anderes `jti` (Länge, Art) ist `bad-options`. Wer ein `jti`
+   selbst vorgibt (Tests), darf es **nicht** für eine zweite Anfrage wiederverwenden: das Relay hielte sie für eine
+   Wiederholung. Das Ergebnis ist der fertige Kopfwert `v3.<kid>.<ts>.<jti>.<sig>`.
 
    `signRelayRequest` wirft nie und weist nie ab: auch für feindliche Proxys als Eingabe, als `privateKey` oder als
    `body` (werfendes `getPrototypeOf`/`get`) gibt es einen Code (`bad-options`/`bad-key`). Jede Eingabe wird einmal
@@ -311,8 +399,8 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    könnte ein rückdatiertes Token liefern, das besteht; `docs/grenzen.md`). Mit `minGenTime` und `now` gilt das
    Fenster [Senden − 60 s, jetzt + 5 min] (die Obergrenze lässt sich mit `maxSkewMs` enger fassen); die 60 s
    entsprechen `genTimeSlackMs` des Relays und decken die Uhrabweichung zwischen Dienst und App.
-3. Bei `401`: Schlüssel, Kennung und die Uhr der App prüfen (±60 s); ein Wiederholungsversuch mit demselben
-   Kopf wird ebenfalls mit `401` abgelehnt. **Uhrversatz beheben (genau einmal):** Das Relay gibt `Date` frei
+3. Bei `401`: Schlüssel, Kennung, Audience (genau die `RELAY_AUDIENCE` dieses Relays) und die Uhr der App prüfen (±60 s); ein Wiederholungsversuch mit demselben
+   Kopf (also demselben `jti`) wird ebenfalls mit `401` abgelehnt. **Uhrversatz beheben (genau einmal):** Das Relay gibt `Date` frei
    (`Access-Control-Expose-Headers`, auch bei `401`). Die App liest den Kopf, bildet
    `versatz = Date.parse(date) - Date.now()` und signiert **genau einmal** neu mit `nowMs = Date.now() + versatz`;
    `now` und `minGenTime` der Prüfung bildet sie dann ebenfalls mit der korrigierten Uhr. Schlägt auch dieser
@@ -328,6 +416,7 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
      privateKey: Uint8Array,
      keyId: string,
      hash: string, // base64url
+     audience: string, // die RELAY_AUDIENCE des Relays
    ): Promise<{ res: Response; offsetMs: number; sentMs: number }> {
      const path = '/v1/stamp/' + id;
      const body = new TextEncoder().encode(JSON.stringify({ hash }));
@@ -340,6 +429,7 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
          path,
          body,
          nowMs: sentMs,
+         audience,
        });
        if (!signed.ok) throw new Error(signed.reason);
        const res = await fetch(relay + path, {
@@ -356,13 +446,13 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
    }
    ```
 
-   `Date` hat nur ganze Sekunden: der Versatz ist auf etwa 1 s genau, das Fenster von ±60 s ist weit genug. Nach der
-   Korrektur ist `ts` ein anderer, die Nachricht also keine Wiederholung. Ein erneutes Signieren **innerhalb
-   derselben Sekunde** mit unveränderter Uhr ergäbe dieselbe Nachricht (Wiederholung, `401`): bei `502`/`504` daher
-   **mindestens 1 s warten** (siehe unten). **Eine weitere Ursache:** Der Kopf trägt die Zeit nur in ganzen
-   Sekunden; zwei Anfragen mit demselben Pfad und demselben Körper in derselben Sekunde ergeben dieselbe
-   Nachricht und die zweite wird als Wiederholung abgelehnt (`401`). Nach `502`/`504` (die Anfrage wurde
-   angenommen) deshalb **mindestens 1 s warten**, bevor man erneut signiert und sendet. Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder
+   `Date` hat nur ganze Sekunden: der Versatz ist auf etwa 1 s genau, das Fenster von ±60 s ist weit genug (die
+   Millisekunden von `ts` ändern daran nichts: die App darf den Versatz auf die Sekunde runden). Jeder neue Kopf hat ein
+   eigenes `jti`; ein erneutes Signieren, auch in derselben Millisekunde und mit unveränderter Uhr, ergibt deshalb eine
+   **neue** Anfrage und keine Wiederholung: nach `502`/`504` (die Anfrage wurde angenommen) und nach `401` braucht man
+   **nicht** zu warten, bevor man erneut signiert und sendet (früher mussten es wegen der Sekunden-Auflösung mindestens
+   1 s sein). Nur ein **bereits gesendeter** Kopf darf nicht noch einmal gesendet werden (derselbe Kopf ist dasselbe `jti`).
+   Bei `429`: `Retry-After` (Sekunden) lesen und erst dann wieder
    fragen. Bei `502`/`504`/Netzwerkfehler: später
    noch einmal versuchen oder einen anderen Dienst nehmen; ein Fehlschlag ist kein Beweis für etwas.
 
@@ -375,62 +465,11 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
 
 ### Der Client der Bibliothek
 
-`createRelayClient` (`src/lib/client.ts`) setzt die Schritte oben um. Er benutzt keinen globalen `fetch`:
-`fetch` und die **monotone** Uhr `now` (z. B. `performance.now()`) werden übergeben. Nichts wirft; Fehler sind
-Codes mit englischem `detail`.
-
-```ts
-const client = createRelayClient({
-  relay: 'https://relay.example',
-  fetch: (url, init) => fetch(url, init),
-  now: () => performance.now(),
-  trusted: new Map([['freetsa', [freetsaRootPem]]]), // Kennung → Anker (PEM), die Entscheidung des Aufrufers
-  wallNow: () => Date.now(), // Zeit im signierten Kopf und `Retry-After` als HTTP-Datum
-  auth: { privateKey, keyId: 'app-1' }, // PKCS#8-Bytes oder CryptoKey; ohne `auth` unsigniert (RELAY_AUTH=off)
-  timeoutMs: 80_000, // für das neue Relay: siehe „Latenz und Fristen“
-});
-const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime, serial, verified, batch? }>
-const solo = await client.stamp(sha256, { mode: 'solo' }); // nur Schlüssel der Art 2 im Sammelbetrieb
-```
-
-1. Der Hash (SHA-256, 32 Byte) geht als `{"hash": "<base64url>"}` an `POST /v1/stamp/<id>` (mit `mode: 'solo'` als
-   `{"hash": "…", "mode": "solo"}`; `mode` gilt je Aufruf oder für den ganzen Client, der Aufruf gewinnt); ohne
-   Anmeldedaten, Referrer, Zwischenspeicher und Weiterleitung; Frist `timeoutMs` (Vorgabe 20 s, für das Relay mit
-   Wartezeiten zu kurz: im Einzelbetrieb mindestens `RELAY_MAX_WAIT_MS` + 17 s, im Sammelbetrieb dazu Fenster und
-   Kette, siehe „Latenz und Fristen“). `GET /v1/services` liefert die Kennungen (immer **unsigniert**); nur vertraute
-   werden gefragt, höchstens drei nacheinander.
-2. **Anmeldung (`auth`):** Mit `auth: { privateKey, keyId }` trägt jeder `POST` den Kopf `X-Zeitstempel-Auth`, von
-   `signRelayRequest` über **genau die gesendeten Bytes** des Körpers berechnet, mit `nowMs = wallNow() + Versatz`
-   (`wallNow` ist dann Pflicht, sonst `bad-options` ohne Aufruf). Ein Fehler beim Signieren (`bad-key`, `bad-key-id`,
-   `unsupported-signature` …) kommt unverändert zurück; gesendet wird dann nichts. Bei `401` liest der Client `Date`:
-   weicht es um mehr als `clockFixMs` (30 s) von der eigenen Uhr ab, merkt er den Versatz und signiert und sendet
-   **genau einmal** neu (der Versatz gilt auch für spätere Aufrufe); sonst und nach dem zweiten `401` ist das Ergebnis
-   `relay-unauthorized`. Ebenso `403` (z. B. `solo-not-allowed`); `detail` nennt Status und Code des Relays. Gewählt
-   wurde `auth` (Schlüssel und Kennung) statt eines Rückrufs zum Signieren, weil der Client die Zeit im Kopf selbst
-   korrigieren muss; der Schlüssel geht nur an `signRelayRequest`, nie in eine Anfrage oder ein Ergebnis. Ein
-   `CryptoKey` (auch nicht extrahierbar) wird unverändert benutzt.
-3. Bei `200` wird die Antwort strikt gelesen (`parseRelayAnswer`: genau die fünf Felder, im Sammelbetrieb dazu
-   `batch` mit genau `v`, `size`, `index`, `salt`, `path`; `accuracyMs` darf Bruchteile haben), die Kennung muss die
-   gefragte sein. Ohne `batch` wird das Token mit `verifyTimestampToken` gegen Hash und Anker geprüft, **mit** `batch`
-   mit `verifyBatchedTimestamp` (Token, Hash, Beleg, Anker); die Seriennummer wird mit der des Tokens verglichen.
-   Maßgeblich sind `genTime` und `serial` der eigenen Prüfung. Ein Beleg auf eine Solo-Anfrage ist
-   `relay-bad-response`. Das Ergebnis trägt dann `batch`: **Token und Beleg zusammen aufbewahren**, das Token allein
-   beweist den Hash nicht (der Dienst stempelte den Abdruck des Baums), später prüfbar mit
-   `verifyBatchedTimestamp({ token, hash, batch }, anker)`. Geprüft wird ohne `expectedNonce` (die Nonce wählt das
-   Relay) und ohne `minGenTime` (die Frische prüft das Relay mit ±60 s; wer sie selbst prüfen will, ersetzt `verify`
-   bzw. `verifyBatched`).
-4. Bei `429` (auf `GET /v1/services` ebenso wie auf `POST /v1/stamp/<id>`) liest der Client `Retry-After` und
-   sendet bis dahin **nichts**; `pausedForMs()` nennt den Rest. Erlaubt sind ganze Sekunden oder ein
-   HTTP-Datum (RFC 9110); ein Datum wird nur ausgewertet, wenn `wallNow` (Millisekunden seit Epoche) übergeben
-   wurde: Sekunden = aufgerundet (Datum − `wallNow()`). Fehlt der Header, ist er ungültig, ist das Datum
-   vergangen oder fehlt `wallNow`: 60 s; sonst mindestens 1 s und höchstens 3600 s. Die Pause selbst wird auf
-   der monotonen Uhr gemessen; springt diese zurück (Pause länger als das Höchste), wird sie vergessen. Bei
-   `502`/`504`, Netzwerkfehler und Fristüberschreitung (`relay-timeout`) eines Dienstes kommt der nächste
-   Dienst; sind alle (höchstens drei) durch, ist das Ergebnis der letzte Fehler (`relay-unreachable` oder
-   `relay-timeout`). Schlägt schon `GET /v1/services` fehl, endet der Aufruf sofort. Andere Status (auch `503 busy`)
-   sind `relay-refused`.
-5. Bezahlte Dienste (`upstream` im Körper) kann der Client noch nicht: ein Dienst mit Quelle `client` ist mit ihm
-   nicht nutzbar.
+Seit 2026-11-25 gibt es **einen** Client: `createRelayClient` aus dem Paketexport `zeitstempel/client`
+(`src/client/`), beschrieben in [`docs/client.md`](client.md) (Optionen, Fehler, Fristen, Belegformat `evidence` v1,
+`verifyEvidence`, Failover, Uhrabgleich). Er setzt die Schritte oben um (Anmeldung v3 mit `audience` und `jti`,
+`minGenTime` Pflicht). Der frühere Client im Hauptexport (`src/lib/client.ts`, Anmeldung v2) ist entfernt; der
+Hauptexport `zeitstempel` enthält keinen Netzwerkcode.
 
 Adressen des Relays (`src/lib/relayAddress.ts`, rein, nichts wirft): `parseRelayList(text)` liest eine Liste
 aus Kommas (z. B. eine Build-Variable) und behält nur gültige Adressen, getrimmt und ohne Doppelte;
@@ -438,24 +477,6 @@ aus Kommas (z. B. eine Build-Variable) und behält nur gültige Adressen, getrim
 keine Anmeldedaten, keine Leerzeichen, höchstens 200 Zeichen); `relayOrigin(adresse)` liefert die Herkunft
 (für eine Content-Security-Policy `connect-src`) oder `null`; `relayUsable(einstellung, erlaubt)` ist wahr,
 wenn die Einstellung nicht leer ist und genau eine erlaubte Adresse.
-
-Fehlercodes des Clients: `relay-unreachable`, `relay-timeout`, `relay-refused`, `relay-unauthorized`,
-`relay-bad-response`, `relay-rate-limited`, `no-trusted-service`, `bad-hash`, `bad-options`, die Codes von
-`signRelayRequest` und die der Prüfung (`imprint-mismatch`, `bad-batch`, `signature-invalid`, `untrusted-chain` …),
-unverändert durchgereicht.
-
-| Name                  | Wert  | Bedeutung                                                       |
-| --------------------- | ----- | --------------------------------------------------------------- |
-| `timeoutMs`           | 20000 | Vorgabe der Frist eines Aufrufs (`timeoutMs` der Optionen)      |
-| `defaultRetrySeconds` | 60    | Pause nach 429 ohne brauchbares `Retry-After`                   |
-| `maxRetrySeconds`     | 3600  | Längste Pause nach dem Wort des Relays                          |
-| `maxServicesTried`    | 3     | Dienste, die bei Ausfall nacheinander versucht werden           |
-| `maxServices`         | 32    | Längste gelesene Dienstliste                                    |
-| `maxSerialChars`      | 64    | Längste Seriennummer (Hex-Zeichen)                              |
-| `maxTokenChars`       | 12288 | Längstes Token (base64url-Zeichen)                              |
-| `clockFixMs`          | 30000 | Abweichung von `Date` nach 401, ab der einmal neu signiert wird |
-
-(`CLIENT_LIMITS` in `src/lib/client.ts`.)
 
 Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 
@@ -468,12 +489,14 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | 400    | `bad-upstream`                                                                  | `upstream` passt nicht zum Dienst: vorhanden, wo der Dienst keines nimmt (Quelle `relay`, keine `auth`), fehlend, wo die App eines liefern muss, falsche Form, Zeichen oder Länge (nur nach bestandener Anmeldung)                                                                                                                                                                                                                                                                                            |
 | 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich                                                                                                                                                                                                                                                                                                                                                                                     |
 | 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 403    | `service-not-allowed`                                                           | Der Schlüssel trägt `services` (Schlüsseldatei Version 3) und der angefragte Dienst steht nicht darin; kommt **sofort** nach der Anmeldung, vor jeder Arbeit: kein Fenster, kein Platz, kein Warten, kein Budget verbraucht, kein Eintrag im Wiederholungsspeicher; nur die Zähler `serviceDenied` und `refused` kennen es                                                                                                                                                                                    |
 | 403    | `solo-not-allowed`                                                              | Ein Schlüssel der Art 1 (oder ohne Art 2) verlangte `mode: "solo"` (nur im Sammelbetrieb; kommt **sofort** nach der Prüfung der Form des Körpers (`415`, `400 bad-hash`, `bad-mode`, `bad-upstream` gehen vor), vor jeder Arbeit: kein Fenster, kein Platz, kein Warten, kein Budget verbraucht; nur die Zähler `soloDenied` und `refused` kennen es)                                                                                                                                                         |
 | 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 413    | `too-large`                                                                     | Körper über dem Limit (Verbindung wird geschlossen); kommt vor der Signaturprüfung, nennt nur das öffentliche Limit                                                                                                                                                                                                                                                                                                                                                                                           |
 | 415    | `unsupported-media-type`                                                        | weder JSON noch `application/octet-stream`                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 429    | `rate-limited`                                                                  | Limit erreicht (auch je Schlüssel, auch Speicher gegen Wiederholung voll); `Retry-After` in Sekunden                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 429    | `key-share`                                                                     | Nur der Anteil dieser Schlüsselkennung am Dienstbudget (`RELAY_KEY_SHARE`) ist erreicht; `Retry-After` in Sekunden; nichts verbraucht; zählt `shareDenied`                                                                                                                                                                                                                                                                                                                                                    |
 | 500    | `internal`                                                                      | Unerwarteter Fehler im Relay (ohne Einzelheiten nach außen)                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | 502    | `upstream-failed`, `upstream-too-large`, `upstream-refused`, `upstream-invalid` | Dienst nicht erreichbar, zu große oder unpassende Antwort, ungültiges Token (`reason`; auch `time-too-old`/`time-in-future`)                                                                                                                                                                                                                                                                                                                                                                                  |
 | 503    | `shutting-down`                                                                 | Das Relay wird beendet; die Anfrage wartete (im Sammelbetrieb in einem Fenster oder auf einen Platz, im Einzelbetrieb auf den Mindestabstand) und ist nicht gestempelt, die App versucht es später neu                                                                                                                                                                                                                                                                                                        |
@@ -574,7 +597,8 @@ mindestens `RELAY_BATCH_MS=15000`). Die Startzeile im Protokoll nennt dann `batc
 - Eine **sofort** abgewiesene Anfrage (`401`, `400`, `415`, `429`, das `403 solo-not-allowed` und das `503 busy` bei voller Tabelle der Identitäten
   oder voller Solo-Warteschlange) kommt nie in ein Fenster und kostet kein Budget. Eine **angenommene** Anfrage hat das
   Budget dagegen verbraucht, auch wenn sie nach dem Warten `503 busy` oder beim Beenden `503 shutting-down` bekommt (das
-  Budget wird bei der Annahme verbraucht und nicht zurückgegeben; so auch im Abschnitt „Schlüsselarten und Solo-Stempel“).
+  Budget wird bei der Annahme verbraucht und zurückgegeben, wenn nichts an den Dienst ging: `503 busy` und `503 shutting-down`
+  geben es zurück, ein Fehler beim Dienst nicht; siehe „Abbruch während des Wartens“ und den Abschnitt „Schlüsselarten und Solo-Stempel“).
 - Der Wiederholungsspeicher gegen abgespielte Köpfe und die Prüfung der Frische arbeiten unverändert.
 - **Zähler:** `stamped` zählt die Stempel, die der Dienst gegeben hat (im Sammelbetrieb einen je Fenster), und es gibt
   `batched`, die Zahl der mit einem Beleg beantworteten Anfragen. Beides sind reine Summen. Ein Fehler im Fenster zählt
@@ -755,6 +779,7 @@ const header = await signRelayRequest({
   path,
   body: new TextEncoder().encode(body),
   nowMs: Date.now(),
+  audience, // die RELAY_AUDIENCE des Relays
 }); // Result<string>: der Wert des Kopfes X-Zeitstempel-Auth
 ```
 
@@ -787,8 +812,8 @@ Solo-Stempel gibt es **nur für die Schlüsselart 2**.
    geprüft und es gibt keinen `403`. Die Prüfung gilt nur im Sammelbetrieb (dort gibt es den Unterschied zwischen Beleg
    im Fenster und direktem Stempel).
 4. **Budget und Zähler** einer angenommenen Solo-Anfrage der Art 2 wie bisher **einmal je Anfrage**: `perMinuteTotal`,
-   `perMinutePerKey` und das Solo-Limit je Schlüssel (`soloPerMinutePerKey`) werden bei der Annahme verbraucht (auch wenn
-   sie später `503 busy` bekommt). Das Dienstbudget braucht der Stempel selbst.
+   `perMinutePerKey` und das Solo-Limit je Schlüssel (`soloPerMinutePerKey`) werden bei der Annahme verbraucht (kommt später `503 busy`
+   oder `shutting-down`, ohne dass ein Aufruf an den Dienst ging, werden sie zurückgegeben). Das Dienstbudget braucht der Stempel selbst.
 5. **Latenz und Fristen:** ein Solo der Art 2 antwortet sofort, wenn ein Platz frei ist und der Mindestabstand eingehalten
    ist, sonst nach dem Warten (höchstens `RELAY_MAX_WAIT_MS`; der Abstand, auch hinter wartenden Fenstern, liegt darin).
    Frist der App und Lese-Timeout des Proxys: Wartegrenze + 17 s (der Abstand liegt innerhalb der Wartegrenze).
@@ -857,8 +882,8 @@ Solo-Stempel der Art 2; **der Rest wartet**.
 - Die 60 s der Anmeldung (Zeitfenster der Signatur) und die ±60 s der Frischeprüfung des Tokens werden von der
   Wartezeit nicht berührt: sie werden beim Eingang beziehungsweise beim Senden an den Dienst gemessen.
 - `perMinuteTotal` (60) und `perMinutePerKey` (20) bleiben **unverändert** und zählen jede angenommene Anfrage, auch eine
-  Solo-Anfrage und auch eine, die später `503 busy` bekommt (das Budget wird bei der Annahme verbraucht und nicht
-  zurückgegeben). Mit den mitgelieferten Diensten (zusammen 24 Plätze je Minute) kann ein Schlüssel, der mehrere Dienste
+  Solo-Anfrage und auch eine, die später `503 busy` bekommt (das Budget wird bei der Annahme verbraucht und
+  zurückgegeben, wenn nichts an den Dienst ging). Mit den mitgelieferten Diensten (zusammen 24 Plätze je Minute) kann ein Schlüssel, der mehrere Dienste
   nutzt, `perMinutePerKey` (20) erreichen; `perMinuteTotal` (60) wird nicht erreicht. Das Solo-Limit je Schlüssel (4)
   liegt unter `perMinutePerKey` (20), die Grenzen kollidieren also nicht.
 - **Kapazität:** ein Solo-Stempel der Art 2 kostet einen ganzen Platz. Mit FreeTSA (12 Plätze je Minute) und abwechselnder Vergabe
@@ -878,15 +903,19 @@ Solo-Stempel der Art 2; **der Rest wartet**.
 Nur Summen, nichts je Schlüssel, nichts von der Anfrage (Variante A). Sie erscheinen in `relay.stats()` und in der
 Zeile `counts` erst, wenn sie zum ersten Mal gezählt wurden:
 
-| Zähler            | Bedeutung                                                                                                             |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `solo`            | Solo-Stempel, die der Dienst gegeben hat (zählt auch in `stamped`)                                                    |
-| `soloDenied`      | Solo-Anfragen der Art 1 (oder ohne Schlüssel), die sofort `403 solo-not-allowed` bekamen (auch unter `refused`)       |
-| `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                        |
-| `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal |
-| `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)         |
+| Zähler            | Bedeutung                                                                                                                                           |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `solo`            | Solo-Stempel, die der Dienst gegeben hat (zählt auch in `stamped`)                                                                                  |
+| `soloDenied`      | Solo-Anfragen der Art 1 (oder ohne Schlüssel), die sofort `403 solo-not-allowed` bekamen (auch unter `refused`)                                     |
+| `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                                                      |
+| `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal                               |
+| `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)                                       |
+| `keyRevoked`      | Anfragen mit **gültiger Signatur** eines gesperrten Schlüssels (`"revoked": true`); Antwort `401`, wie bei unbekannter Kennung                      |
+| `keyExpired`      | Anfragen mit gültiger Signatur eines Schlüssels nach seinem `notAfter`; Antwort `401`, wie bei unbekannter Kennung                                  |
+| `serviceDenied`   | Anfragen eines Schlüssels mit `services`, der einen anderen Dienst verlangte: `403 service-not-allowed` (auch unter `refused`)                      |
+| `shareDenied`     | Anfragen, die nur wegen des Anteils der Kennung am Dienstbudget `429 key-share` bekamen (`RELAY_KEY_SHARE`; auch unter `refused`); nie je Schlüssel |
 
-`busy` und `solo-not-allowed` stehen außerdem unter `refused` wie jeder Fehlercode.
+`busy`, `solo-not-allowed` und `key-share` stehen außerdem unter `refused` wie jeder Fehlercode.
 
 ### Schlüsseldatei laufend lesen
 
@@ -907,14 +936,60 @@ bliebe ein gesperrter Schlüssel gültig). Das Lesen ist billig: die Datei ist h
 - **Neuer Schlüssel:** gilt ab dem Übernehmen. **Entfernter Schlüssel:** ist **sofort** ungültig, sobald das Relay die
   Datei neu gelesen hat (jede Anfrage prüft gegen den aktuellen Satz; das Neulesen geschieht nach spätestens
   `keyFileCheckMs`, auch wenn Änderungszeit, Größe und Inode gleich geblieben sind); das ist der Weg, einen Schlüssel
-  zu **sperren**. Auch eine geänderte Art (`solo`) gilt sofort.
-- **Ungültige Datei** (kein JSON, Regelverstoß, halb geschrieben, verschwunden): der **alte Satz bleibt aktiv**,
-  `keyReloadFailed` zählt, es wird nichts aus der Datei protokolliert. Schon beim nächsten Nachsehen wird es erneut
+  zu **sperren**. Auch eine geänderte Art (`solo`) und eine geänderte `services`-Liste gelten sofort für **neue** Anfragen (`403`). Eine schon angenommene, wartende
+  Anfrage wird beim Stempeln noch einmal geprüft (siehe die Grenzen der Anmeldung, Widerruf eines Schlüssels: entfernt, gesperrt, abgelaufen, `services` ohne den Dienst, Solo ohne Art 2) und bekommt `401`
+  (auch bei geänderter `services`/`solo`, nicht `403`); ein schon laufender Aufruf beim Dienst wird fertig. Wird eine Kennung mit **anderem öffentlichen Schlüssel** neu eingetragen, gilt für die wartende Anfrage der neue Eintrag nicht anders als der alte: sie wird nicht erneut gegen die Signatur geprüft.
+- **Ungültige Datei** (kein JSON, Regelverstoß, halb geschrieben, **gelöscht oder unlesbar**): der **alte Satz bleibt aktiv**
+  (auch bei einer gelöschten Datei: nicht „kein Schlüssel“, sondern der letzte gültige Satz),
+  `keyReloadFailed` zählt, es wird nichts aus der Datei protokolliert. **Alle sperren** geht also nicht durch Löschen der
+  Datei, sondern mit einer **ausdrücklich leeren Liste** (`"keys": []`, Abschnitt „Schlüsseldatei Version 3“). Schon beim nächsten Nachsehen wird es erneut
   versucht (eine halb geschriebene Datei wird so bald gelesen, wie sie fertig ist).
 - **Zähler, Wiederholungsspeicher und Solo-Zähler bleiben** beim Neulesen erhalten.
 - **Das Relay schreibt nie in die Schlüsseldatei.** Sie gehört dem Betreiber; schreiben soll man sie atomar (neue Datei
   schreiben, dann umbenennen).
 - Gilt nur mit `RELAY_KEYS_FILE` (nicht mit `RELAY_AUTH=off`).
+
+### Schlüsseldatei Version 3: Sperren, Ablauf, Dienste, eigene Grenze
+
+`{"version": 3, "restartAfter"?: …, "keys": [{"id", "publicKey", "solo"?, "revoked"?, "notAfter"?, "services"?, "perMinute"?}]}`.
+Version 2 bleibt lesbar und gilt unverändert; **die vier neuen Felder in einer Version-2-Datei sind ein Lesefehler**
+(`v3-field-in-v2-file in keys[i]`). Alles ist streng gelesen wie bisher: keine unbekannten Felder, keine Doppelten, in
+Fehlern der Eintragsindex `keys[i]` und nie Inhalt. `restartAfter` und `solo` gelten in beiden Versionen.
+
+| Feld        | Form                                                   | Wirkung                                                                                                                                                                                                                      |
+| ----------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `revoked`   | Boolesch (`true`/`false`, nichts sonst)                | Der Schlüssel bleibt in der Datei, wird aber abgewiesen: **dasselbe `401` wie bei unbekannter Kennung**, kein Hinweis an den Aufrufer. Zähler `keyRevoked`                                                                   |
+| `notAfter`  | Ganze Zahl, Unix-Sekunden (1000000000 bis 99999999999) | Ab diesem Zeitpunkt wie gesperrt (`jetzt >= notAfter * 1000`, **Wanduhr des Relays**): `401`, Zähler `keyExpired`. Eine Millisekunde davor gilt der Schlüssel noch                                                           |
+| `services`  | Liste von 1 bis 16 verschiedenen Dienstkennungen       | Der Schlüssel darf nur diese Dienste nutzen, sonst `403 service-not-allowed`. Jede Kennung muss in `services.json` stehen (auch ein Dienst, den dieses Relay nicht anbietet), sonst Lesefehler `services-unknown in keys[i]` |
+| `perMinute` | Ganze Zahl 1 bis `perMinutePerKey` (20)                | Eigene Minutengrenze dieses Schlüssels anstelle von `perMinutePerKey` (`429` mit `Retry-After` darüber); andere Schlüssel bleiben unberührt. Größere Werte: Lesefehler `per-minute`                                          |
+
+**Reihenfolge der Prüfung** (jede Stufe vor der Arbeit der nächsten): Form des Kopfes und Zeit, dann **eine** Signaturprüfung
+(auch für unbekannte, gesperrte und abgelaufene Kennungen; bei unbekannter gegen einen Scheinschlüssel, bei gesperrter und
+abgelaufener gegen den echten, in jedem Fall genau eine), dann die Entscheidung über den Schlüssel, dann Wiederholungsschutz,
+Form des Körpers, `services`, Schlüsselart, Budgets. Ein unbekannter, ein gesperrter und ein abgelaufener Schlüssel
+bekommen **dieselbe Antwort** (Status, Körper, Kopfzeilen) und tun **dieselbe Arbeit**; die Antwortzeit verrät nichts.
+`keyRevoked` und `keyExpired` zählen nur Anfragen mit **gültiger Signatur** (das Raten einer Kennung zählt nicht), global,
+nie je Schlüssel, und jede Abweisung steht außerdem unter `refused['unauthorized']`. Das `403 service-not-allowed` kommt
+erst nach gültiger Anmeldung, **vor jeder Arbeit** (wie `solo-not-allowed`): kein Platz, kein Fenster, kein Warten, kein
+Budget, kein Wiederholungseintrag.
+
+**Neulesen:** Ein Wechsel auf `"revoked": true` (oder ein geänderter Wert der anderen Felder) wirkt beim nächsten Blick
+auf die Datei, **spätestens `keyFileCheckMs` (5 s) nach dem Speichern**. Zähler, Wiederholungsspeicher und die Zeiten
+je Schlüssel bleiben (ein neues `perMinute` zählt gegen die schon gezählten Zeiten).
+
+**Leere Liste (`"keys": []`):** gilt in Version 2 und 3 als **gültig** und bedeutet „niemand darf“. Beim **Neulesen** sind
+danach alle Schlüssel ungültig (jeder Aufruf `401`), und das Relay schreibt eine Zeile `warning`
+(„… keinen Schlüssel …: kein Schlüssel = niemand darf“). Beim **Start** ist die leere Liste zulässig, aber das Relay warnt
+mit derselben deutlichen Zeile (ein Relay ohne Schlüssel ist fast immer ein Versehen). Eine **fehlende** Liste (`keys`
+nicht vorhanden oder kein Array) ist weiter ungültig.
+
+**Gelöschte, unlesbare oder ungültige Datei:** der alte Satz bleibt aktiv (`keyReloadFailed`), auch wenn die Datei gelöscht
+wurde. Wer alle sperren will, **schreibt** eine Datei mit leerer Liste (atomar), er löscht sie nicht. Abläufe für den
+Betrieb (sperren, entsperren, Notfall, Rotation mit `notAfter`): `docs/betrieb.md`.
+
+**Sperren und Entsperren:** `"revoked": true` setzen (der Eintrag bleibt als Spur in der Datei, die Kennung bleibt belegt);
+entsperren: das Feld entfernen oder auf `false` setzen, der Schlüssel gilt ab dem nächsten Blick wieder. Ein neues
+Schlüsselpaar braucht eine **neue** Kennung.
 
 ### `restartAfter`: einmaliger sauberer Neustart
 
@@ -984,10 +1059,11 @@ const header = await signRelayRequest({
   path,
   body: new TextEncoder().encode(body),
   nowMs: Date.now(),
+  audience,
 });
 ```
 
-`signRelayRequest` bleibt unverändert: die App baut den Körper selbst und signiert ihn. **`upstream` steht im signierten
+`signRelayRequest` bleibt (bis auf `audience` und das `jti`) unverändert: die App baut den Körper selbst und signiert ihn. **`upstream` steht im signierten
 Körper**, ist also durch die Signatur gebunden: ein nachträglich geänderter, hinzugefügter oder entfernter Wert ändert den
 Körper-Hash und endet mit `401` (Tests belegen es). Ohne gültigen Relay-Schlüssel gibt es weiterhin keine Anfrage und
 damit auch keine Weitergabe von Zugangsdaten.
@@ -1104,7 +1180,7 @@ einen Stub über http gilt die Anleitung oben.
 
 Zeitpunkt und Netzadresse des Aufrufers (wie jeder Server), den **Hash** (im Sammelbetrieb zusätzlich die Salze, die es
 zieht, und die Bäume; sie bleiben im Speicher, bis das Fenster beantwortet ist) und den Kopf `X-Zeitstempel-Auth`
-(Kennung, Zeit, Signatur), nie Inhalte und nie den privaten Schlüssel. Es schreibt **nichts** über Anfragen ins Protokoll:
+(Kennung, Zeit, `jti`, Signatur), nie Inhalte und nie den privaten Schlüssel. Es schreibt **nichts** über Anfragen ins Protokoll:
 keine Adresse, keinen Hash, kein Token, keine Kennung, keine Signatur. Alle fünf Minuten steht eine
 Zeile mit Zählern im Protokoll (Anzahl gestempelter Anfragen und Zahl der Ablehnungen je Art). Die
 Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); das ist Sache des Betreibers.
@@ -1121,7 +1197,7 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `windowMs`              | 60000  | Zeitfenster der Zähler                                                                                                                                              |
 | `perMinutePerKey`       | 20     | Anfragen je Minute für eine Schlüsselkennung (ein Drittel)                                                                                                          |
 | `authWindowSeconds`     | 60     | Erlaubter Zeitunterschied (Sekunden) der Anfrage zur Relay-Uhr                                                                                                      |
-| `authReplayEntries`     | 512    | Obergrenze gemerkter Nachrichten (real höchstens 180); voll: `429`                                                                                                  |
+| `authReplayEntries`     | 512    | Obergrenze gemerkter Köpfe, je ein Eintrag (Kennung, `jti`) (real höchstens 180); voll: `429`                                                                       |
 | `authReplayKeyShare`    | 0.5    | Anteil des Speichers, den eine Kennung höchstens hält                                                                                                               |
 | `genTimeSlackMs`        | 60000  | Token-Zeit: höchstens so weit vor dem Zeitpunkt der Anfrage und so weit hinter der Relay-Uhr (`time-too-old`, `time-in-future`)                                     |
 | `maxOrigins`            | 16     | Zahl der einstellbaren Herkünfte                                                                                                                                    |
@@ -1141,6 +1217,8 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `maxWaitDefaultMs`      | 30000  | `RELAY_MAX_WAIT_MS`: Wert ohne Angabe                                                                                                                               |
 | `maxWaitMinMs`          | 1000   | `RELAY_MAX_WAIT_MS`: kleinster Wert                                                                                                                                 |
 | `maxWaitMaxMs`          | 60000  | `RELAY_MAX_WAIT_MS`: größter Wert (Proxy- und Client-Fristen im Einzelbetrieb mindestens Wartegrenze + 17 s, im Sammelbetrieb Wartegrenze + Fenster + Kette + 17 s) |
+| `keyShareMin`           | 10     | `RELAY_KEY_SHARE`: kleinster Wert in Prozent                                                                                                                        |
+| `keyShareMax`           | 100    | `RELAY_KEY_SHARE`: größter Wert und Wert ohne Angabe (100 = aus)                                                                                                    |
 | `upstreamUserMax`       | 64     | Zugangsdaten der App: längster Benutzername bei `basic` (druckbares ASCII, ohne `:`)                                                                                |
 | `upstreamPasswordMax`   | 128    | längstes Passwort bei `basic` (druckbares ASCII)                                                                                                                    |
 | `upstreamTokenMax`      | 384    | längstes Token bei `bearer` und `header` (druckbares ASCII ohne Leerzeichen, `"` und `\`)                                                                           |
@@ -1255,10 +1333,11 @@ Was jede Einrichtung leisten muss:
   den App-Schlüssel nur dieser Schicht gehören. Ein Limit je Adresse ersetzt keinen Schutz vor einem ausgelesenen
   Schlüssel: Sperren heißt, den Schlüssel aus der Datei zu entfernen („Schlüsseldatei laufend lesen“); dann sind auch alle
   ehrlichen Besucher der App ausgesperrt, bis die App einen neuen Schlüssel hat.
-- **Genau eine Relay-Instanz je Schlüsseldatei.** Die Signatur bindet Methode, Pfad, Zeit und Körper, **nicht den Host**:
-  derselbe Kopf wird von einer zweiten Instanz mit derselben Schlüsseldatei ebenfalls angenommen (nachgestellt: `200`, dann
-  `401` an der ersten, `200` an der zweiten). Jede Instanz hat eigene Budgets (`perMinuteTotal`, `perMinutePerKey`, Dienstbudget)
-  und einen eigenen Wiederholungsspeicher; zwei Instanzen verdoppeln also die Budgets und lassen einen abgefangenen Kopf
+- **Genau eine Relay-Instanz je Schlüsseldatei und Audience.** Die Signatur bindet Methode, Pfad, Audience, Zeit, `jti` und
+  Körper, **nicht den Host**: haben zwei Instanzen mit derselben Schlüsseldatei **dieselbe** `RELAY_AUDIENCE`, wird derselbe
+  Kopf von beiden angenommen (`200`, dann `401` an der ersten, `200` an der zweiten); haben sie **verschiedene**, gilt er nur
+  bei der gemeinten (`401` bei der anderen). Jede Instanz hat eigene Budgets (`perMinuteTotal`, `perMinutePerKey`, Dienstbudget)
+  und einen eigenen Wiederholungsspeicher; zwei Instanzen verdoppeln also die Budgets und lassen bei gleicher Audience einen abgefangenen Kopf
   zweimal gelten. Wer mehr Last oder Ausfallsicherheit braucht, nimmt **getrennte Schlüsseldateien** (andere Schlüsselkennungen
   je Instanz) oder einen Proxy, der alle Anfragen eines Schlüssels an dieselbe Instanz leitet. Test- und Produktivschlüssel
   gehören nicht in dieselbe Datei. Ein Neustart (auch `restartAfter`) leert den Wiederholungsspeicher.
@@ -1376,7 +1455,7 @@ gehört auch hier nur auf den Pfad `/v1/stamp/*` (Matcher `@stamp path /v1/stamp
   Uhr, ein Dienst oder jemand auf der Strecke betrügt) oder ein Token mit Schaltsekunde (`docs/grenzen.md`). Das
   verdient eine Warnung, nicht nur eine Zahl im Protokoll; die Einzelheiten (`reason`) stehen nur in der Antwort an den
   Aufrufer, nicht im Protokoll.
-- **Relay- und App-Stand müssen zusammenpassen.** Die Kopfform (`v2`), die Kennungen der Dienste (`services.json`), die
+- **Relay- und App-Stand müssen zusammenpassen.** Die Kopfform (`v3`, mit Audience), die Kennungen der Dienste (`services.json`), die
   Anker und die Regeln der Prüfung (hier: die Zeitgrenzen) gehören zu einem Stand. Wird das Relay oder `services.json`
   aktualisiert, die App gleich mitnehmen (und umgekehrt): eine App mit alten Ankern meldet `untrusted-chain`, ein Relay
   mit alten Ankern `upstream-invalid`; eine App ohne `minGenTime` prüft die Frische nicht, auch wenn das Relay es tut.

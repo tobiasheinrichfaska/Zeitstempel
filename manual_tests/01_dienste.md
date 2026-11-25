@@ -76,8 +76,8 @@ npm run relay`). Das Relay lauscht nur auf `127.0.0.1` und warnt beim Start auf 
    ```
 
 2. Eine Schlüsseldatei **außerhalb des Repos** (oder mit einem Namen, den `.gitignore` abdeckt, z. B.
-   `relay-keys.json`) anlegen: `{"version": 2, "keys": [<Zeile 2>]}`.
-3. `RELAY_KEYS_FILE=relay-keys.json RELAY_SERVICES=freetsa,sectigo RELAY_ORIGINS=http://localhost:5178 npm run relay`
+   `relay-keys.json`) anlegen: `{"version": 2, "keys": [<Zeile 2>]}` (Version 3 nur für die neuen Felder `revoked`, `notAfter`, `services`, `perMinute`).
+3. `RELAY_KEYS_FILE=relay-keys.json RELAY_AUDIENCE=http://localhost:8080 RELAY_SERVICES=freetsa,sectigo RELAY_ORIGINS=http://localhost:5178 npm run relay`
    starten.
 4. Im Browser `http://localhost:8080/health` öffnen.
 5. Unsignierten POST senden (wie oben, Adresse `http://localhost:8080/v1/stamp/freetsa`).
@@ -87,5 +87,5 @@ npm run relay`). Das Relay lauscht nur auf `127.0.0.1` und warnt beim Start auf 
 - Schritt 4 wie in Weg a.
 - Schritt 5 antwortet `401` mit `{"error":"unauthorized"}`: ohne den Kopf `X-Zeitstempel-Auth` gibt es keinen Stempel,
   und nichts ging an den Dienst. Einen signierten Aufruf macht `npm run probe -- --service freetsa --relay
-http://localhost:8080` mit `RELAY_PRIVATE_KEY` und `RELAY_KEY_ID` in der Umgebung (das ist ein echter Stempel,
+http://localhost:8080` mit `RELAY_PRIVATE_KEY`, `RELAY_KEY_ID` und `RELAY_AUDIENCE` (gleicher Wert wie beim Relay) in der Umgebung (das ist ein echter Stempel,
   also die Wartezeit von einer Minute beachten).

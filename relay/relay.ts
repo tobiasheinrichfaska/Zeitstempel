@@ -24,7 +24,7 @@ import {
 } from './credentials.ts';
 import { isAuthHeaderName } from '../src/lib/services.ts';
 import { publicKeyObject, type RelayKey } from './keys.ts';
-import { RELAY_LIMITS, WAIT_TOLERANCE_MS } from './limits.ts';
+import { AUTH_START_SLACK_MS, RELAY_LIMITS, WAIT_TOLERANCE_MS } from './limits.ts';
 import { UpstreamError, type Upstream } from './upstream.ts';
 
 /** A service together with its trust anchors (PEM text), as the relay needs it. */
@@ -48,6 +48,11 @@ export interface RelayOptions {
    * (local development only; there is no default, so it cannot be forgotten).
    */
   keys: readonly RelayKey[] | 'off';
+  /**
+   * The name of this relay as the signed head must carry it (`RELAY_AUDIENCE`): printable ASCII without a space, 1 to 128
+   * characters. Required when `keys` is a list (a relay with keys and no audience does not start); not used with `'off'`.
+   */
+  audience?: string;
   /** Size of the replay cache (default `RELAY_LIMITS.authReplayEntries`); a parameter for tests. */
   authReplayEntries?: number;
   /** The ECDSA check (default `node:crypto` verify); a parameter so a test can count the verifications. */
@@ -80,12 +85,22 @@ export interface RelayOptions {
   upstreamAuth?: ReadonlyMap<string, UpstreamCredentials>;
   /** Identities (credentials of the app) known at once per service (default `RELAY_LIMITS.upstreamIdentitiesMax`); a parameter for tests. */
   upstreamIdentities?: number;
+  /**
+   * `RELAY_KEY_SHARE`: the share of a service's budget per minute (whole percent, 10 to 100, default 100 = off) that ONE key
+   * may use at one lane (service and identity): at most `max(1, floor(budget * share / 100))` admitted requests per
+   * sliding minute, then `429 key-share`. Single operation: every request; collecting operation: the solo stamps (a window
+   * is one slot for all its hashes). Only with authentication (a request without a key id has no share).
+   */
+  keyShare?: number;
 }
 
 /** A parsed `X-Zeitstempel-Auth` header whose form and time are fine; the signature is not yet checked. */
 interface Auth {
   kid: string;
+  /** Unix milliseconds, as signed. */
   ts: number;
+  /** The head's own identifier as written (22 characters, canonical base64url of 16 bytes). */
+  jti: string;
   signature: Uint8Array;
 }
 
@@ -104,13 +119,23 @@ export interface RelayStats {
   keyReloads?: number;
   keyReloadFailed?: number;
   keyFileWritable?: number;
+  /** Requests signed (validly) with a revoked key (`"revoked": true`), answered 401 like an unknown key; present once counted; global, never per key. */
+  keyRevoked?: number;
+  /** Requests signed (validly) with a key past its `notAfter`, answered 401 like an unknown key; present once counted; global, never per key. */
+  keyExpired?: number;
+  /** Requests of a key whose `services` does not name the service: `403 service-not-allowed`; present once counted. */
+  serviceDenied?: number;
+  /** Requests refused with `429 key-share` (only the share of the key at a service was reached); present once counted; global, never per key. */
+  shareDenied?: number;
 }
 
 const JSON_TYPE = 'application/json';
 /** Response headers a browser page may read: Retry-After (429) and Date (the relay's clock, for a 401 from clock skew). */
 const EXPOSED_HEADERS = 'Retry-After, Date';
-const AUTH_FORM = /^v2\.([a-z][a-z0-9-]{0,31})\.(0|[1-9][0-9]{0,11})\.([A-Za-z0-9_-]{86})$/;
-const AUTH_PREFIX = 'zeitstempel-auth-v2';
+const AUTH_FORM =
+  /^v3\.([a-z][a-z0-9-]{0,31})\.([1-9][0-9]{11,14})\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{86})$/;
+const AUTH_PREFIX = 'zeitstempel-auth-v3';
+const AUDIENCE_FORM = /^[\x21-\x7e]{1,128}$/;
 /** The member sets of a JSON body (sorted, joined by a comma): `hash`, plus `mode` and `upstream` when given. */
 const BODY_KEYS = ['hash', 'hash,mode', 'hash,upstream', 'hash,mode,upstream'];
 const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
@@ -144,7 +169,10 @@ export interface Relay {
    * (identities, budget times, last calls, lanes of the planner, gates of single operation). Their number must stay
    * limited: an expired identity leaves none behind.
    */
-  heldForTests: () => Record<'known' | 'windows' | 'lastCall' | 'lanes' | 'gates', number>;
+  heldForTests: () => Record<
+    'known' | 'windows' | 'lastCall' | 'lanes' | 'gates' | 'shares',
+    number
+  >;
 }
 
 export function createRelay(options: RelayOptions): Relay {
@@ -204,25 +232,60 @@ export function createRelay(options: RelayOptions): Relay {
   // lane key (the service id; for credentials of the client `<id>#<digest>`) → times of the service's requests/slots in the window
   const windows = new Map<string, number[]>();
   const keyWindows = new Map<string, number[]>(); // key id → request times in the window (memory only)
+  // `RELAY_KEY_SHARE`: per (key id, lane) the times of the admitted requests in the window (memory only, never output).
+  // Entries whose times are all expired are dropped at every admission: the table holds the keys and lanes active in the last window.
+  const keyShare = options.keyShare ?? 100;
+  if (!(Number.isInteger(keyShare) && keyShare >= 10 && keyShare <= 100)) {
+    throw new Error('relay keyShare is invalid'); // at start, no content
+  }
+  const shares = new Map<string, number[]>();
   let total: number[] = [];
   const buildKeys = (keys: readonly RelayKey[]) => {
     const byId = new Map<string, KeyObject>();
     const solo = new Set<string>();
+    const revoked = new Set<string>();
+    const notAfter = new Map<string, number>(); // key id -> Unix seconds
+    const services = new Map<string, ReadonlySet<string>>(); // key id -> the only services it may use
+    const perMinute = new Map<string, number>(); // key id -> own limit per minute
     for (const k of keys) {
       const key = publicKeyObject(k.publicKey);
       if (key === null) throw new Error('relay key is not a valid P-256 public key'); // no content
       if (byId.has(k.id)) throw new Error('relay key ids must be unique'); // no content
       byId.set(k.id, key);
       if (k.solo === true) solo.add(k.id);
+      if (k.revoked === true) revoked.add(k.id);
+      if (k.notAfter !== undefined) {
+        if (!Number.isInteger(k.notAfter)) throw new Error('relay key notAfter is invalid');
+        notAfter.set(k.id, k.notAfter);
+      }
+      if (k.services !== undefined) services.set(k.id, new Set(k.services));
+      if (k.perMinute !== undefined) {
+        if (
+          !Number.isInteger(k.perMinute) ||
+          k.perMinute < 1 ||
+          k.perMinute > RELAY_LIMITS.perMinutePerKey
+        ) {
+          throw new Error('relay key perMinute is invalid'); // no content
+        }
+        perMinute.set(k.id, k.perMinute);
+      }
     }
-    return { byId, solo };
+    return { byId, solo, revoked, notAfter, services, perMinute };
   };
   const initial = options.keys === 'off' ? buildKeys([]) : buildKeys(options.keys);
   let keyById = initial.byId; // replaced as a whole when the key file is reloaded
   let soloKids = initial.solo; // key type 2: may ask for a solo stamp
+  let revokedKids = initial.revoked; // refused like an unknown key (401)
+  let notAfterKids = initial.notAfter; // key id -> Unix seconds: from then on refused like a revoked key
+  let servicesOfKid = initial.services; // key id -> the only services it may use (absent: all)
+  let perMinuteOfKid = initial.perMinute; // key id -> own limit per minute (absent: `perMinutePerKey`)
   const authRequired = options.keys !== 'off';
+  const audience = options.audience ?? '';
+  if (authRequired && !AUDIENCE_FORM.test(audience)) {
+    throw new Error('relay: audience missing or invalid'); // no content
+  }
   const doVerify = options.verifySignature ?? verifySignatureNode;
-  // Heads signed before this process started are refused (the replay cache is empty after a restart,
+  // Heads signed (their `ts`, milliseconds) before this process started are refused (the replay cache is empty after a restart,
   // so an old head could otherwise be replayed once more within its window).
   // Only ever lowered (on every request, see parseAuth), never recomputed upwards: a start clock that ran
   // ahead and is corrected later drops it once to the first corrected time.
@@ -234,11 +297,13 @@ export function createRelay(options: RelayOptions): Relay {
   const dummyKey: KeyObject | null = authRequired
     ? generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey
     : null;
-  // A signed request is remembered by the digest of its signed message (with the key id), NOT by the
-  // signature: ECDSA is malleable (for a valid (r, s) the pair (r, n - s) is valid for the same message),
-  // so a cache on signatures would let the twin pass as new. Value: the time (ms) until which a replay
-  // could still pass the window, and the key id it belongs to.
-  const replay = new Map<string, { until: number; kid: string }>();
+  // A signed request is remembered by its key id and its `jti` (16 random bytes the app makes per request, signed with
+  // the rest), NOT by the signature: ECDSA is malleable (for a valid (r, s) the pair (r, n - s) is valid for the same
+  // message), so a cache on signatures would let the twin pass as new; the twin carries the same `jti`. Value: the time (ms) until which a replay
+  // could still pass the window, the same moment on the monotonic clock (`monoUntil`: a wall clock that ran ahead and is set
+  // back must not make an entry forget a head whose window comes back; an entry goes only when BOTH clocks say it is over),
+  // and the key id it belongs to.
+  const replay = new Map<string, { until: number; monoUntil: number; kid: string }>();
   const replayMax = options.authReplayEntries ?? RELAY_LIMITS.authReplayEntries;
   const replayMaxPerKey = Math.max(1, Math.ceil(replayMax * RELAY_LIMITS.authReplayKeyShare));
   const windowMs = RELAY_LIMITS.authWindowSeconds * 1000;
@@ -255,7 +320,7 @@ export function createRelay(options: RelayOptions): Relay {
   // A replay can arrive with its head at the edge of the window and its body up to the request
   // timeout later: an entry must outlive `ts + window` by that much.
   const keepMs = windowMs + RELAY_LIMITS.requestTimeoutMs;
-  const inWindow = (ts: number): boolean => Math.abs(options.now() - ts * 1000) <= windowMs;
+  const inWindow = (ts: number): boolean => Math.abs(options.now() - ts) <= windowMs;
 
   function countOnce(kind: string): void {
     stats.refused[kind] = (stats.refused[kind] ?? 0) + 1;
@@ -309,7 +374,7 @@ export function createRelay(options: RelayOptions): Relay {
     forService: boolean | 'defer' = true,
     /** A solo stamp: it also has to keep the minimum distance to the last call of the service (`slotMs` counts it). */
     forSolo = false,
-  ): { wait: number | null; slotMs: number; spend: () => void } {
+  ): { wait: number | null; slotMs: number; spend: () => void; unspend: () => void } {
     const now = tick();
     // Times in the future (the clock was set back) count as `now`: a jump back must not lock the budget
     // for the length of the jump, and the wait stays within one window.
@@ -335,8 +400,9 @@ export function createRelay(options: RelayOptions): Relay {
       booked.length >= ownLimit ? Math.max(1, bw - (now - booked[booked.length - ownLimit]!)) : 0;
     const slotMs = forSolo ? Math.max(countMs, spacingMs(laneKey, minIntervalMs, now)) : countMs;
     if (forService === true && own.length >= ownLimit) waits.push(until(own, ownLimit));
-    if (kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey) {
-      waits.push(until(mine, RELAY_LIMITS.perMinutePerKey));
+    const keyLimit = kid === null ? 0 : (perMinuteOfKid.get(kid) ?? RELAY_LIMITS.perMinutePerKey);
+    if (kid !== null && mine.length >= keyLimit) {
+      waits.push(until(mine, keyLimit));
     }
     return {
       wait: waits.length === 0 ? null : Math.max(...waits),
@@ -349,11 +415,67 @@ export function createRelay(options: RelayOptions): Relay {
         }
         if (kid !== null) mine.push(now);
       },
+      // nothing was sent to the service after all: the count comes back
+      unspend: () => {
+        removeOne(total, now);
+        if (forService === true) removeOne(windows.get(laneKey), now);
+        if (kid !== null) removeOne(keyWindows.get(kid), now);
+      },
+    };
+  }
+
+  /** Takes one entry with this value (the newest) out of a list of times; nothing when it is gone already. */
+  function removeOne(list: number[] | undefined, value: number): void {
+    const at = list?.lastIndexOf(value) ?? -1;
+    if (at >= 0) list!.splice(at, 1);
+  }
+
+  /**
+   * The share of one key at one lane (`RELAY_KEY_SHARE`): the seconds to wait when the key has used its part of the lane's
+   * budget in the last window, and `spend`. A look writes nothing. Null at 100 (off).
+   */
+  function shareBudget(
+    laneKey: string,
+    kid: string,
+    minIntervalMs: number,
+  ): { wait: number | null; spend: () => void; unspend: () => void } | null {
+    if (keyShare >= 100) return null;
+    const now = tick();
+    const id = `${kid}|${laneKey}`;
+    const times = (shares.get(id) ?? []).filter((t) => now - t < bw).map((t) => Math.min(t, now));
+    const laneLimit = Math.max(1, Math.floor(bw / minIntervalMs));
+    const limit = Math.max(1, Math.floor((laneLimit * keyShare) / 100));
+    return {
+      wait:
+        times.length >= limit
+          ? Math.max(1, Math.ceil((bw - (now - times[times.length - limit]!)) / 1000))
+          : null,
+      spend: () => {
+        times.push(now);
+        shares.set(id, times);
+        for (const [other, list] of shares) {
+          if (
+            other !== id &&
+            (list.length === 0 || now - Math.min(list[list.length - 1]!, now) >= bw)
+          ) {
+            shares.delete(other);
+          }
+        }
+      },
+      unspend: () => {
+        removeOne(shares.get(id), now);
+        // an empty list is no list (nothing would ever age it out)
+        if (shares.get(id)?.length === 0) shares.delete(id);
+      },
     };
   }
 
   /** The solo requests of one key in the last window: the seconds to wait when the limit is reached, and `spend`. Memory only. */
-  function soloBudget(kid: string): { wait: number | null; spend: () => void } {
+  function soloBudget(kid: string): {
+    wait: number | null;
+    spend: () => void;
+    unspend: () => void;
+  } {
     const now = tick();
     const times = (soloWindows.get(kid) ?? [])
       .filter((t) => now - t < bw)
@@ -366,6 +488,7 @@ export function createRelay(options: RelayOptions): Relay {
           ? Math.max(1, Math.ceil((bw - (now - times[times.length - limit]!)) / 1000))
           : null,
       spend: () => void times.push(now),
+      unspend: () => removeOne(soloWindows.get(kid), now),
     };
   }
 
@@ -379,18 +502,21 @@ export function createRelay(options: RelayOptions): Relay {
     if (typeof value !== 'string') return null;
     const m = AUTH_FORM.exec(value);
     if (!m) return null;
-    const signature = fromBase64Url(m[3]!);
+    const signature = fromBase64Url(m[4]!);
     if (!signature || signature.length !== 64) return null;
+    // The `jti` is the cache key: only the one canonical spelling of 16 bytes counts (22 characters leave 4 spare bits).
+    const jtiBytes = fromBase64Url(m[3]!);
+    if (!jtiBytes || jtiBytes.length !== 16 || toBase64Url(jtiBytes) !== m[3]) return null;
     const ts = Number(m[2]);
     if (!inWindow(ts)) return null;
     // Signed before this process started (`startMs` is the lowest clock value seen so far).
-    if (ts * 1000 < startMs - 1000) return null;
-    return { kid: m[1]!, ts, signature };
+    if (ts < startMs - AUTH_START_SLACK_MS) return null;
+    return { kid: m[1]!, ts, jti: m[3]!, signature };
   }
 
   /**
    * Checks the ECDSA signature over method, path, time and body (same work for an unknown id: it is
-   * checked against the dummy key). Returns the cache id of the signed message, or null when refused.
+   * checked against the dummy key). Returns the cache id (key id and `jti`), or null when refused.
    */
   function checkSignature(
     auth: Auth,
@@ -399,7 +525,7 @@ export function createRelay(options: RelayOptions): Relay {
     body: Uint8Array,
   ): string | null {
     const key = keyById.get(auth.kid);
-    const message = `${AUTH_PREFIX}\n${method}\n${path}\n${auth.ts}\n${createHash('sha256').update(body).digest('hex')}`;
+    const message = `${AUTH_PREFIX}\n${method}\n${path}\n${audience}\n${auth.ts}\n${auth.jti}\n${createHash('sha256').update(body).digest('hex')}`;
     let valid: boolean;
     try {
       valid = doVerify(
@@ -411,15 +537,44 @@ export function createRelay(options: RelayOptions): Relay {
     } catch {
       valid = false;
     }
-    // Always exactly one verification, known id or not; the id decides only afterwards.
+    // Always exactly one verification, known id or not, revoked or not, expired or not; the id decides only afterwards.
     if (!(valid && key !== undefined)) return null;
-    return `${auth.kid}:${createHash('sha256').update(message).digest('hex')}`;
+    // A revoked or expired key is refused with the same 401 and after the same work as an unknown one; only the
+    // global counters know (a valid signature of that key: not a guess at an id), never a number per key.
+    if (revokedKids.has(auth.kid)) {
+      stats.keyRevoked = (stats.keyRevoked ?? 0) + 1;
+      return null;
+    }
+    const until = notAfterKids.get(auth.kid);
+    if (until !== undefined && options.now() >= until * 1000) {
+      stats.keyExpired = (stats.keyExpired ?? 0) + 1;
+      return null;
+    }
+    return `${auth.kid}:${auth.jti}`;
+  }
+
+  /**
+   * Is the key of a request that waited no longer valid (removed from the file, revoked, past `notAfter`)? Looked at when the
+   * request is stamped, so a change of the file reaches the requests that were admitted before it. Counted like at the door.
+   */
+  function lapsed(kid: string): boolean {
+    if (!keyById.has(kid)) return true;
+    if (revokedKids.has(kid)) {
+      stats.keyRevoked = (stats.keyRevoked ?? 0) + 1;
+      return true;
+    }
+    const until = notAfterKids.get(kid);
+    if (until !== undefined && options.now() >= until * 1000) {
+      stats.keyExpired = (stats.keyExpired ?? 0) + 1;
+      return true;
+    }
+    return false;
   }
 
   /** Read only: has a request with this signed message been admitted before (and not yet expired)? */
   function seen(id: string): boolean {
     const entry = replay.get(id);
-    return entry !== undefined && entry.until >= options.now();
+    return entry !== undefined && (entry.until >= options.now() || entry.monoUntil >= mono());
   }
 
   /**
@@ -429,32 +584,42 @@ export function createRelay(options: RelayOptions): Relay {
    */
   function cacheWait(kid: string): number | null {
     const now = options.now();
-    let soonest = Infinity;
+    const monoNow = mono();
+    let soonest = Infinity; // milliseconds until the first entry goes
     let soonestOwn = Infinity;
     let own = 0;
     for (const [id, entry] of replay) {
-      if (entry.until < now) {
+      if (entry.until < now && entry.monoUntil < monoNow) {
         replay.delete(id);
         continue;
       }
       // An entry never lives longer than `keepMs` past the newest head the window lets in; a longer
-      // remainder means the clock was set back, and the wait stays within that bound.
-      const until = Math.min(entry.until, now + windowMs + keepMs);
-      soonest = Math.min(soonest, until);
+      // remainder means the clock was set back, and the wait stays within that bound. It lives as long as the later
+      // of the two clocks says.
+      const left = Math.min(
+        Math.max(entry.until - now, entry.monoUntil - monoNow),
+        windowMs + keepMs,
+      );
+      soonest = Math.min(soonest, left);
       if (entry.kid === kid) {
         own += 1;
-        soonestOwn = Math.min(soonestOwn, until);
+        soonestOwn = Math.min(soonestOwn, left);
       }
     }
     const waits: number[] = [];
-    if (own >= replayMaxPerKey) waits.push(Math.max(1, Math.ceil((soonestOwn - now) / 1000)));
-    if (replay.size >= replayMax) waits.push(Math.max(1, Math.ceil((soonest - now) / 1000)));
+    if (own >= replayMaxPerKey) waits.push(Math.max(1, Math.ceil(soonestOwn / 1000)));
+    if (replay.size >= replayMax) waits.push(Math.max(1, Math.ceil(soonest / 1000)));
     return waits.length === 0 ? null : Math.max(...waits);
   }
 
   /** Writes a request down; only after `seen` said no and `cacheWait` said null, in the same step. */
   function remember(id: string, auth: Auth): void {
-    replay.set(id, { until: auth.ts * 1000 + keepMs, kid: auth.kid });
+    const until = auth.ts + keepMs;
+    replay.set(id, {
+      until,
+      monoUntil: mono() + Math.max(0, until - options.now()),
+      kid: auth.kid,
+    });
   }
 
   /** The client went away while its body was coming: nobody is left to answer. */
@@ -564,6 +729,13 @@ export function createRelay(options: RelayOptions): Relay {
     // Solo stamps exist for key type 2 only (a direct stamp at once, with a slot of its own). A key of type 1 (or no key)
     // that asks for one is refused here, before any work: no window, no slot, no wait, no entry in the tree, no
     // identity, and no total or key budget spent (like `bad-mode`); only the counters know it.
+    // A key that names its services (`services` in the key file) may use only those: refused before any work, like
+    // the solo case: no window, no slot, no budget and no replay entry spent; only the counters know it.
+    const allowed = auth === null ? undefined : servicesOfKid.get(auth.kid);
+    if (allowed !== undefined && !allowed.has(service.id)) {
+      stats.serviceDenied = (stats.serviceDenied ?? 0) + 1;
+      return send(res, 403, { error: 'service-not-allowed' }, origin);
+    }
     const direct = wantsSolo && auth !== null && soloKids.has(auth.kid);
     if (wantsSolo && !direct) {
       stats.soloDenied = (stats.soloDenied ?? 0) + 1;
@@ -590,7 +762,11 @@ export function createRelay(options: RelayOptions): Relay {
     );
     const cache = auth ? cacheWait(auth.kid) : null;
     const soloNow = wantsSolo && auth ? soloBudget(auth.kid) : null;
-    const waits = [budgetNow.wait, cache, soloNow?.wait ?? null].filter(
+    // The share of the key at this lane (off at 100): every request in single operation, only the solo stamps in collecting
+    // operation (a window is one slot for all its hashes: joining it takes none).
+    const shareNow =
+      auth !== null && (!batch || direct) ? shareBudget(lk, auth.kid, service.minIntervalMs) : null;
+    const waits = [budgetNow.wait, cache, soloNow?.wait ?? null, shareNow?.wait ?? null].filter(
       (w): w is number => w !== null,
     );
     // The slot of the service is not free within the longest wait: the old 429 (waiting is for a short squeeze only)
@@ -602,6 +778,11 @@ export function createRelay(options: RelayOptions): Relay {
     const gateMs = batch ? 0 : gateWaitMs(lk, service.minIntervalMs);
     if (gateMs > maxWaitMs) waits.push(Math.max(1, Math.ceil(gateMs / 1000)));
     if (waits.length > 0) {
+      // only the share says no: its own code (the same 429 with Retry-After; nothing is spent either way)
+      if (shareNow?.wait != null && waits.length === 1) {
+        stats.shareDenied = (stats.shareDenied ?? 0) + 1;
+        return send(res, 429, { error: 'key-share' }, origin, { 'Retry-After': String(waits[0]) });
+      }
       return send(res, 429, { error: 'rate-limited' }, origin, {
         'Retry-After': String(Math.max(...waits)),
       });
@@ -618,6 +799,30 @@ export function createRelay(options: RelayOptions): Relay {
     }
     budgetNow.spend();
     soloNow?.spend();
+    shareNow?.spend();
+    // a request that is not sent to the service after all (it gave up, was busy, the relay ended, its key lapsed while it
+    // waited) gives the count back; the replay entry stays (the head was seen)
+    const refund = (): void => {
+      budgetNow.unspend();
+      soloNow?.unspend();
+      shareNow?.unspend();
+    };
+    // Still allowed: the key itself (`lapsed`), and what the door looked at: its `services` and, for a solo stamp, its type.
+    // A change of the file reaches a waiting request as a 401 (like a removed key).
+    const valid = (): boolean => {
+      if (auth === null) return true;
+      if (lapsed(auth.kid)) return false;
+      const only = servicesOfKid.get(auth.kid);
+      if (only !== undefined && !only.has(service.id)) {
+        stats.serviceDenied = (stats.serviceDenied ?? 0) + 1;
+        return false;
+      }
+      if (direct && !soloKids.has(auth.kid)) {
+        stats.soloDenied = (stats.soloDenied ?? 0) + 1;
+        return false;
+      }
+      return true;
+    };
     if (auth && signedId !== null) remember(signedId, auth);
     const entry = tracked ? touchIdentity(lk, service) : null;
     if (entry) entry.pending += 1;
@@ -626,15 +831,22 @@ export function createRelay(options: RelayOptions): Relay {
         // The answer comes when the window is closed and the service has answered (the 5 s request deadline
         // is over by now: it only governs the reading of the request).
         const reply = joinsOpen
-          ? await joinOpen(open, hash)
-          : await enqueue(service, lk, creds, hash, direct);
+          ? await joinOpen(open, hash, valid)
+          : await enqueue(service, lk, creds, hash, direct, valid);
+        if (reply.unsent) refund();
         if (res.destroyed) return countAborted(req, res);
         return send(res, reply.status, reply.body, origin, reply.headers);
       }
-      const got = await spaced(service, lk, hash, creds, () => res.destroyed);
+      const got = await spaced(service, lk, hash, creds, () => res.destroyed, valid);
       // the client gave up while the request waited for its time: the service was not called for it
-      if (got === 'gone') return countAborted(req, res);
-      if (!got.ok) return send(res, got.status, got.body, origin, got.headers);
+      if (got === 'gone') {
+        refund();
+        return countAborted(req, res);
+      }
+      if (!got.ok) {
+        if (got.unsent) refund();
+        return send(res, got.status, got.body, origin, got.headers);
+      }
       stats.stamped += 1;
       return send(res, 200, stampBody(service, got), origin);
     } finally {
@@ -701,6 +913,7 @@ export function createRelay(options: RelayOptions): Relay {
         lastCall.delete(key);
         lanes.delete(key);
         gates.delete(key);
+        for (const id of shares.keys()) if (id.endsWith(`|${key}`)) shares.delete(id);
         continue;
       }
       count += 1;
@@ -745,6 +958,8 @@ export function createRelay(options: RelayOptions): Relay {
         status: number;
         body: { error: string; reason?: string };
         headers?: Record<string, string>;
+        /** Nothing was sent to the service for this request (busy, shutting down, key lapsed): what it spent comes back. */
+        unsent?: true;
       };
 
   /**
@@ -821,7 +1036,7 @@ export function createRelay(options: RelayOptions): Relay {
   }
   interface GateWait {
     timer: ReturnType<typeof setTimeout> | null;
-    resolve: (how: 'go' | 'busy' | 'closing' | 'gone') => void;
+    resolve: (how: 'go' | 'busy' | 'closing' | 'gone' | 'lapsed') => void;
   }
   const gates = new Map<string, Gate>();
 
@@ -844,6 +1059,7 @@ export function createRelay(options: RelayOptions): Relay {
     hash: Uint8Array,
     creds: UpstreamCredentials | undefined,
     aborted: () => boolean,
+    valid: () => boolean,
   ): Promise<Obtained | 'gone'> {
     const m = service.minIntervalMs;
     let g = gates.get(key);
@@ -866,10 +1082,10 @@ export function createRelay(options: RelayOptions): Relay {
     const giveBack = (): void => {
       if (gate.next === at + m) gate.next = at;
     };
-    const how = await new Promise<'go' | 'busy' | 'closing' | 'gone'>((resolve) => {
+    const how = await new Promise<'go' | 'busy' | 'closing' | 'gone' | 'lapsed'>((resolve) => {
       const entry: GateWait = { timer: null, resolve };
       gate.waiting.add(entry);
-      const finish = (h: 'go' | 'busy' | 'closing' | 'gone'): void => {
+      const finish = (h: 'go' | 'busy' | 'closing' | 'gone' | 'lapsed'): void => {
         gate.waiting.delete(entry);
         entry.timer = null;
         resolve(h);
@@ -879,6 +1095,11 @@ export function createRelay(options: RelayOptions): Relay {
         if (aborted()) {
           giveBack();
           return finish('gone');
+        }
+        // the key may have been revoked or removed while the request waited: no call for it
+        if (!valid()) {
+          giveBack();
+          return finish('lapsed');
         }
         // the distance to the call that was made last, as it really was (a timer may fire late or a bit early)
         const due = Math.max(at, gate.last + m);
@@ -899,12 +1120,17 @@ export function createRelay(options: RelayOptions): Relay {
       };
       entry.timer = setTimeout(look, Math.ceil(at - start));
     });
-    if (how === 'closing') return { ok: false, status: 503, body: { error: 'shutting-down' } };
+    if (how === 'closing') {
+      return { ok: false, status: 503, body: { error: 'shutting-down' }, unsent: true };
+    }
     if (how === 'gone') return 'gone';
+    if (how === 'lapsed')
+      return { ok: false, status: 401, body: { error: 'unauthorized' }, unsent: true };
     if (how === 'busy') {
       return {
         ok: false,
         status: 503,
+        unsent: true,
         body: { error: 'busy' },
         headers: { 'Retry-After': String(Math.max(1, Math.ceil((gate.next - mono()) / 1000))) },
       };
@@ -918,11 +1144,16 @@ export function createRelay(options: RelayOptions): Relay {
     status: number;
     body: unknown;
     headers?: Record<string, string>;
+    /** Nothing was sent to the service for this request: what it spent comes back. */
+    unsent?: true;
   }
   interface Waiting {
     hash: Uint8Array;
     resolve: (reply: Reply) => void;
+    /** Is its key still valid? Looked at again when it is stamped. */
+    valid: () => boolean;
   }
+  const LAPSED: Reply = { status: 401, body: { error: 'unauthorized' }, unsent: true };
   interface Window {
     service: RelayService;
     /** The lane (service and identity) this window belongs to; windows of different credentials are never merged. */
@@ -1051,9 +1282,9 @@ export function createRelay(options: RelayOptions): Relay {
   }
 
   /** A request joins a window that is open (it takes no slot: the window has one). */
-  function joinOpen(w: Window, hash: Uint8Array): Promise<Reply> {
+  function joinOpen(w: Window, hash: Uint8Array, valid: () => boolean): Promise<Reply> {
     return new Promise((resolve) => {
-      w.waiting.push({ hash, resolve });
+      w.waiting.push({ hash, resolve, valid });
       if (w.waiting.length >= batch!.max) closeWindow(w); // full: the next request waits for a slot
     });
   }
@@ -1083,10 +1314,18 @@ export function createRelay(options: RelayOptions): Relay {
     creds: UpstreamCredentials | undefined,
     hash: Uint8Array,
     solo: boolean,
+    valid: () => boolean,
   ): Promise<Reply> {
     return new Promise((resolve) => {
       const lane = laneOf(key, service, creds);
-      const item: Queued = { hash, resolve, timer: null, deadline: tick() + maxWaitMs, solo };
+      const item: Queued = {
+        hash,
+        resolve,
+        valid,
+        timer: null,
+        deadline: tick() + maxWaitMs,
+        solo,
+      };
       item.timer = setTimeout(() => dropBusy(lane, item), maxWaitMs);
       (solo ? lane.solo : lane.normal).push(item);
       dispatch(lane);
@@ -1108,6 +1347,7 @@ export function createRelay(options: RelayOptions): Relay {
       status: 503,
       body: { error: 'busy' },
       headers: { 'Retry-After': String(Math.max(1, Math.ceil(waitMs / 1000))) },
+      unsent: true,
     });
     return true;
   }
@@ -1159,6 +1399,7 @@ export function createRelay(options: RelayOptions): Relay {
   /** A direct stamp of one hash (key type 2, no tree, no `batch` in the answer). */
   function stampSolo(lane: Lane, item: Waiting): void {
     const done = async (): Promise<void> => {
+      if (!item.valid()) return item.resolve(LAPSED); // its key lapsed while it waited: no call
       const got = await obtain(lane.service, item.hash, lane.creds);
       if (!got.ok) return item.resolve({ status: got.status, body: got.body });
       stats.stamped += 1;
@@ -1265,7 +1506,13 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** One window: salts, tree, one stamp for the imprint, and a receipt for each waiting request. */
   async function flush(w: Window): Promise<void> {
-    const waiting = w.waiting;
+    // a request whose key lapsed while the window was open is out of the tree (and answered 401); nothing left, no call
+    const waiting = w.waiting.filter((x) => {
+      if (x.valid()) return true;
+      x.resolve(LAPSED);
+      return false;
+    });
+    if (waiting.length === 0) return;
     const entries = waiting.map((x) => {
       const salt = options.random(32);
       if (salt.length !== 32) throw new Error('random source gave the wrong length');
@@ -1307,12 +1554,12 @@ export function createRelay(options: RelayOptions): Relay {
     for (const w of [...openWindows.values()]) {
       openWindows.delete(w.key);
       if (w.timer !== null) clearTimeout(w.timer);
-      answerAll(w.waiting, { status: 503, body: { error: 'shutting-down' } });
+      answerAll(w.waiting, { status: 503, body: { error: 'shutting-down' }, unsent: true });
     }
     for (const list of [...delayedWindows.values()]) {
       for (const d of list) {
         if (d.timer !== null) clearTimeout(d.timer);
-        answerAll(d.w.waiting, { status: 503, body: { error: 'shutting-down' } });
+        answerAll(d.w.waiting, { status: 503, body: { error: 'shutting-down' }, unsent: true });
       }
     }
     delayedWindows.clear();
@@ -1322,7 +1569,7 @@ export function createRelay(options: RelayOptions): Relay {
       const queued = [...lane.solo.splice(0), ...lane.normal.splice(0)];
       for (const q of queued) {
         if (q.timer !== null) clearTimeout(q.timer);
-        q.resolve({ status: 503, body: { error: 'shutting-down' } });
+        q.resolve({ status: 503, body: { error: 'shutting-down' }, unsent: true });
       }
     }
   }
@@ -1332,6 +1579,10 @@ export function createRelay(options: RelayOptions): Relay {
     const next = buildKeys(keys); // throws before anything changes
     keyById = next.byId;
     soloKids = next.solo;
+    revokedKids = next.revoked;
+    notAfterKids = next.notAfter;
+    servicesOfKid = next.services;
+    perMinuteOfKid = next.perMinute;
   }
 
   function noteKeyReload(applied: boolean): void {
@@ -1473,6 +1724,10 @@ export function createRelay(options: RelayOptions): Relay {
       ...(stats.keyReloads === undefined ? {} : { keyReloads: stats.keyReloads }),
       ...(stats.keyReloadFailed === undefined ? {} : { keyReloadFailed: stats.keyReloadFailed }),
       ...(stats.keyFileWritable === undefined ? {} : { keyFileWritable: stats.keyFileWritable }),
+      ...(stats.keyRevoked === undefined ? {} : { keyRevoked: stats.keyRevoked }),
+      ...(stats.keyExpired === undefined ? {} : { keyExpired: stats.keyExpired }),
+      ...(stats.serviceDenied === undefined ? {} : { serviceDenied: stats.serviceDenied }),
+      ...(stats.shareDenied === undefined ? {} : { shareDenied: stats.shareDenied }),
     }),
     close,
     setKeys,
@@ -1484,6 +1739,7 @@ export function createRelay(options: RelayOptions): Relay {
       lastCall: lastCall.size,
       lanes: lanes.size,
       gates: gates.size,
+      shares: shares.size,
     }),
   };
 }

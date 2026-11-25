@@ -15,6 +15,10 @@ relay-keys*.json
 # Local environment / editor
 .env
 .env.*
+# the filled-in settings of the relay (they may hold credentials of paid services); only the template is kept
+*.env
+deploy/relay.env
+!deploy/relay.env.example
 .vscode/
 .idea/
 *.wsb

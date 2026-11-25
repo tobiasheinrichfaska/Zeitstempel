@@ -85,7 +85,9 @@ describe('relay settings', () => {
       only: [],
       authOff: false,
       keysFile: '',
+      audience: '',
       batchMax: 128,
+      keyShare: 100,
     });
     expect(readSettings({})).toEqual({
       origins: [],
@@ -95,7 +97,9 @@ describe('relay settings', () => {
       only: [],
       authOff: false,
       keysFile: '',
+      audience: '',
       batchMax: 128,
+      keyShare: 100,
     });
     expect(readSettings({ RELAY_AUTH: 'off' }).authOff).toBe(true);
     // Befund 7: with authentication on, the default is loopback too; a wider address is the operator's decision

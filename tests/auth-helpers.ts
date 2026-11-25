@@ -1,5 +1,6 @@
 import {
   createHash,
+  randomBytes,
   createPrivateKey,
   generateKeyPairSync,
   sign,
@@ -35,9 +36,29 @@ export function makeTestKey(id: string): TestKey {
   };
 }
 
-/** The signed message of the specification, written out independently of the library. */
-export function authMessage(method: string, path: string, ts: number, body: Uint8Array): string {
-  return `zeitstempel-auth-v2\n${method}\n${path}\n${ts}\n${createHash('sha256').update(body).digest('hex')}`;
+/** The audience every test relay carries (`RELAY_AUDIENCE`), and the one a test head is made for unless it says otherwise. */
+export const TEST_AUDIENCE = 'https://relay.test';
+
+/** A fresh `jti`: 16 random bytes in base64url (22 characters). */
+export function newJti(): string {
+  return randomBytes(16).toString('base64url');
+}
+
+export interface HeadOptions {
+  audience?: string;
+  jti?: string;
+}
+
+/** The signed message of the specification (version 3), written out independently of the library. */
+export function authMessage(
+  method: string,
+  path: string,
+  tsMs: number,
+  body: Uint8Array,
+  jti: string,
+  audience: string = TEST_AUDIENCE,
+): string {
+  return `zeitstempel-auth-v3\n${method}\n${path}\n${audience}\n${tsMs}\n${jti}\n${createHash('sha256').update(body).digest('hex')}`;
 }
 
 /** The 64 bytes (r || s) node:crypto makes for the message (IEEE P1363, as WebCrypto does). */
@@ -45,7 +66,25 @@ export function nodeSignature(key: TestKey, message: string): Buffer {
   return sign('sha256', Buffer.from(message), { key: key.object, dsaEncoding: 'ieee-p1363' });
 }
 
-/** The header value, signed with node:crypto: independent of the library. */
+/** The header value with `ts` in Unix MILLISECONDS, signed with node:crypto: independent of the library. */
+export function nodeAuthHeaderMs(
+  key: TestKey,
+  kid: string,
+  method: string,
+  path: string,
+  tsMs: number,
+  body: Uint8Array,
+  options: HeadOptions = {},
+): string {
+  const jti = options.jti ?? newJti();
+  const sig = nodeSignature(key, authMessage(method, path, tsMs, body, jti, options.audience));
+  return `v3.${kid}.${tsMs}.${jti}.${sig.toString('base64url')}`;
+}
+
+/**
+ * The same, with `ts` in whole SECONDS (the many relay tests step their clock in seconds); the head carries `ts * 1000`.
+ * Every call has its own random `jti`, so two equal calls are two requests, not a replay.
+ */
 export function nodeAuthHeader(
   key: TestKey,
   kid: string,
@@ -53,9 +92,9 @@ export function nodeAuthHeader(
   path: string,
   ts: number,
   body: Uint8Array,
+  options: HeadOptions = {},
 ): string {
-  const sig = nodeSignature(key, authMessage(method, path, ts, body));
-  return `v2.${kid}.${ts}.${sig.toString('base64url')}`;
+  return nodeAuthHeaderMs(key, kid, method, path, ts * 1000, body, options);
 }
 
 const N = BigInt('0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551'); // order of P-256

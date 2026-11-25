@@ -16,7 +16,7 @@ import { createRelay, type RelayOptions, type RelayService } from '../relay/rela
 import { createRelayServer } from '../relay/server.ts';
 import { UpstreamError, type Upstream } from '../relay/upstream.ts';
 import type { RelayKey } from '../relay/keys.ts';
-import { makeTestKey, nodeAuthHeader } from './auth-helpers.ts';
+import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs } from './auth-helpers.ts';
 import { sha256 } from './helpers.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
@@ -149,6 +149,7 @@ async function start(
     // runs on the monotonic clock, which here follows the clock of the test (it moves it to let budgets expire)
     monotonicNow: over.batch || over.followClock ? () => clock.now : fastMonotonic(),
     keys: KEYS,
+    audience: TEST_AUDIENCE,
     upstreamAuth: over.upstreamAuth ?? RELAY_CREDS,
     ...(over.batch ? { batch: over.batch } : {}),
     ...(over.upstreamIdentities === undefined
@@ -169,12 +170,12 @@ async function start(
       const path = `/v1/stamp/${id}`;
       const text = typeof body === 'string' ? body : JSON.stringify(body);
       const key = o.key ?? KEY_A;
-      const head = nodeAuthHeader(
+      const head = nodeAuthHeaderMs(
         key,
         key.id,
         'POST',
         path,
-        Math.floor(clock.now / 1000) + (n++ % 30),
+        clock.now + (n++ % 30) * 1000,
         new TextEncoder().encode(o.signedText ?? text),
       );
       return fetch(base + path, {
@@ -584,14 +585,7 @@ describe('where the credentials come from: relay, client or either', () => {
     const raw = (id: string) => {
       const path = `/v1/stamp/${id}`;
       const bytes = sha256(`raw${n}`);
-      const head = nodeAuthHeader(
-        KEY_A,
-        KEY_A.id,
-        'POST',
-        path,
-        Math.floor(NOW / 1000) + n++,
-        bytes,
-      );
+      const head = nodeAuthHeaderMs(KEY_A, KEY_A.id, 'POST', path, NOW + n++ * 1000, bytes);
       return fetch(h.base + path, {
         method: 'POST',
         body: Buffer.from(bytes),
@@ -633,12 +627,12 @@ describe('the credentials are bound by the signature', () => {
     h = await start();
     const path = '/v1/stamp/paid-client';
     const text = JSON.stringify(withUpstream('r', { token: 't' }));
-    const head = nodeAuthHeader(
+    const head = nodeAuthHeaderMs(
       KEY_A,
       KEY_A.id,
       'POST',
       path,
-      Math.floor(NOW / 1000),
+      NOW,
       new TextEncoder().encode(text),
     );
     const send = () =>

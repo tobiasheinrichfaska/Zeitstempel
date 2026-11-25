@@ -173,6 +173,7 @@ describe('an expired identity leaves nothing behind in the tables of the relay',
       lastCall: 0,
       lanes: 0,
       gates: 1,
+      shares: 0,
     });
   });
 
@@ -197,6 +198,7 @@ describe('an expired identity leaves nothing behind in the tables of the relay',
       lastCall: 1,
       lanes: 1,
       gates: 0,
+      shares: 0,
     });
   });
 });

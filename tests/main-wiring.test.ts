@@ -1,18 +1,19 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { connect, createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { toBase64Url } from '../src/index.ts';
 import type { UpstreamCredentials } from '../relay/credentials.ts';
-import type { RelayKey } from '../relay/keys.ts';
+import { loadKeys, type RelayKey } from '../relay/keys.ts';
 import { buildRelayOptions, listenErrorMessage, readConfig, stopServer } from '../relay/main.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
+import { loadServices } from '../relay/load.ts';
 import type { RelayService } from '../relay/relay.ts';
 import { createRelayServer } from '../relay/server.ts';
 import type { Upstream } from '../relay/upstream.ts';
-import { makeTestKey, nodeAuthHeader, type TestKey } from './auth-helpers.ts';
+import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs, type TestKey } from './auth-helpers.ts';
 import { sha256 } from './helpers.ts';
 import { build, int, seq } from './token-builder.ts';
 import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
@@ -22,6 +23,7 @@ import { children, integerBytes, octets, parseDer } from '../src/lib/der.ts';
 // upstream, and the process part only sends requests that end before the service (bad hash after a good signature) or
 // that are answered by `close()` before their window is stamped.
 
+const SERVICES = loadServices();
 const SIGNER = build();
 const KEY_A = makeTestKey('app-a');
 const KEY_B = makeTestKey('app-b');
@@ -67,6 +69,7 @@ describe('buildRelayOptions: every setting reaches the relay', () => {
   const env = {
     RELAY_SERVICES: 'paid-relay',
     RELAY_KEYS_FILE: '/x/keys.json',
+    RELAY_AUDIENCE: TEST_AUDIENCE,
     RELAY_UPSTREAM_AUTH_PAID_RELAY: 'relay-user:relay-pass',
     RELAY_BATCH_MS: '30000',
   };
@@ -111,12 +114,12 @@ describe('buildRelayOptions: every setting reaches the relay', () => {
         body: text,
         headers: {
           'Content-Type': 'application/json',
-          'X-Zeitstempel-Auth': nodeAuthHeader(
+          'X-Zeitstempel-Auth': nodeAuthHeaderMs(
             key,
             key.id,
             'POST',
             path,
-            Math.floor(clock.now / 1000) + (n++ % 20),
+            clock.now + (n++ % 20) * 1000,
             new TextEncoder().encode(text),
           ),
         },
@@ -243,6 +246,7 @@ async function startMain(extra: Record<string, string> = {}): Promise<Proc> {
       PORT: String(port),
       RELAY_SERVICES: 'freetsa',
       RELAY_KEYS_FILE: keysPath,
+      RELAY_AUDIENCE: TEST_AUDIENCE,
       ...extra,
     },
   });
@@ -285,12 +289,12 @@ async function startMain(extra: Record<string, string> = {}): Promise<Proc> {
       body: text,
       headers: {
         'Content-Type': 'application/json',
-        'X-Zeitstempel-Auth': nodeAuthHeader(
+        'X-Zeitstempel-Auth': nodeAuthHeaderMs(
           key,
           key.id,
           'POST',
           path,
-          Math.floor(Date.now() / 1000),
+          Date.now(),
           new TextEncoder().encode(text),
         ),
       },
@@ -331,6 +335,104 @@ describe('relay/main.ts as a process', () => {
     p.child.kill('SIGTERM');
     expect((await p.exited).code).toBe(0);
   }, 45_000);
+
+  it('key file version 3: an empty list at the start warns clearly, a reload to revoked or to an empty list blocks within one look', async () => {
+    const text = (keys: unknown[]) => JSON.stringify({ version: 3, keys });
+    const e = (k: TestKey, more: Record<string, unknown> = {}) => ({
+      id: k.id,
+      publicKey: toBase64Url(k.publicKey),
+      ...more,
+    });
+    writeFileSync(keysPath, text([]), { mode: 0o600 });
+    const p = await startMain();
+    // the start with an expressly empty list is valid, with one clear warning line
+    const warn = () => p.err.filter((l) => l.includes('keinen Schlüssel'));
+    expect(warn()).toHaveLength(1);
+    expect(JSON.parse(warn()[0]!)).toMatchObject({ event: 'warning' });
+    expect(await p.probe(KEY_A)).toBe(401);
+    // a key is added: valid at the next look (the first look after the start did not warn a second time)
+    writeFileSync(keysPath, text([e(KEY_A), e(KEY_B)]));
+    expect(await until(async () => (await p.probe(KEY_B)) === 400, 15_000)).toBe(true);
+    expect(warn()).toHaveLength(1);
+    // B revoked: stops at the next look (at most 5 s), A stays
+    writeFileSync(keysPath, text([e(KEY_A), e(KEY_B, { revoked: true })]));
+    expect(await until(async () => (await p.probe(KEY_B)) === 401, 15_000)).toBe(true);
+    expect(await p.probe(KEY_A)).toBe(400);
+    // the list emptied: everybody is refused, one more warning line at the reload
+    writeFileSync(keysPath, text([]));
+    expect(await until(async () => (await p.probe(KEY_A)) === 401, 15_000)).toBe(true);
+    expect(await until(() => warn().length === 2, 8_000)).toBe(true);
+    // a deleted file keeps the (empty) set that is active, and nothing of the file is printed
+    unlinkSync(keysPath);
+    expect(
+      await until(() => p.err.some((l) => l.includes('ungültig oder nicht lesbar')), 15_000),
+    ).toBe(true);
+    expect(await p.probe(KEY_A)).toBe(401);
+    writeFileSync(keysPath, text([e(KEY_A)]));
+    expect(await until(async () => (await p.probe(KEY_A)) === 400, 15_000)).toBe(true);
+    p.child.kill('SIGTERM');
+    expect((await p.exited).code).toBe(0);
+  }, 90_000);
+
+  it('the reload knows the service ids too: an unknown id in `services` makes the file invalid and the old set stays', async () => {
+    const text = (keys: unknown[]) => JSON.stringify({ version: 3, keys });
+    const e = (k: TestKey, more: Record<string, unknown> = {}) => ({
+      id: k.id,
+      publicKey: toBase64Url(k.publicKey),
+      ...more,
+    });
+    writeFileSync(keysPath, text([e(KEY_A)]), { mode: 0o600 });
+    const p = await startMain();
+    expect(await p.probe(KEY_B)).toBe(401);
+    // B with a mistyped service id: without the known ids the reload would take it (and answer 403 service-not-allowed)
+    writeFileSync(keysPath, text([e(KEY_A), e(KEY_B, { services: ['freetsaa'] })]));
+    expect(
+      await until(() => p.err.some((l) => l.includes('ungültig oder nicht lesbar')), 15_000),
+    ).toBe(true);
+    expect(await p.probe(KEY_B)).toBe(401);
+    expect(await p.probe(KEY_A)).toBe(400);
+    writeFileSync(keysPath, text([e(KEY_A), e(KEY_B, { services: ['freetsa'] })]));
+    expect(await until(async () => (await p.probe(KEY_B)) === 400, 15_000)).toBe(true);
+    p.child.kill('SIGTERM');
+    expect((await p.exited).code).toBe(0);
+  }, 45_000);
+
+  it('readConfig: an empty list gives the warning, a services entry names only known service ids', () => {
+    const base = {
+      RELAY_ORIGINS: 'https://app.example',
+      RELAY_SERVICES: 'freetsa',
+      RELAY_KEYS_FILE: '/x/k.json',
+      RELAY_AUDIENCE: TEST_AUDIENCE,
+    };
+    const cfg = readConfig(
+      base,
+      () => SERVICES,
+      (p, known) => loadKeys(p, () => JSON.stringify({ version: 3, keys: [] }), known),
+    );
+    expect(cfg.keys).toEqual([]);
+    expect(cfg.warnings.join('\n')).toContain('kein Schlüssel = niemand darf');
+    const one = {
+      id: 'a',
+      publicKey: toBase64Url(makeTestKey('a').publicKey),
+      services: ['nosuch'],
+    };
+    expect(() =>
+      readConfig(
+        base,
+        () => SERVICES,
+        (p, known) => loadKeys(p, () => JSON.stringify({ version: 3, keys: [one] }), known),
+      ),
+    ).toThrow(/services-unknown in keys\[0\]/);
+    // the ids of services.json count, also the ones this relay does not offer (a key file may serve several relays)
+    const other = { ...one, services: ['sectigo'] };
+    expect(
+      readConfig(
+        base,
+        () => SERVICES,
+        (p, known) => loadKeys(p, () => JSON.stringify({ version: 3, keys: [other] }), known),
+      ).keys,
+    ).toHaveLength(1);
+  });
 
   it('a PORT that is not decimal ends the start with a German config-error line and exit code 1', async () => {
     const child = spawn(process.execPath, ['relay/main.ts'], {

@@ -10,18 +10,6 @@ export type { Failure, Reason, Result } from './result.ts';
 export { equalBytes, fromBase64, fromBase64Url, toBase64, toBase64Url, toHex } from './bytes.ts';
 export { readServices } from './services.ts';
 export type { Service, ServiceAuth, ServiceAuthSource } from './services.ts';
-export { CLIENT_LIMITS, createRelayClient, parseRelayAnswer, parseServiceList } from './client.ts';
-export type {
-  FetchInit,
-  FetchLike,
-  FetchResponse,
-  RelayAnswer,
-  RelayAuth,
-  RelayClient,
-  RelayClientOptions,
-  RelayStamp,
-  StampOptions,
-} from './client.ts';
 export {
   MAX_RELAY_ADDRESS_CHARS,
   isRelayAddress,

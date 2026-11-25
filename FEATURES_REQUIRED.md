@@ -21,7 +21,7 @@
 - [x] **Kein offener Proxy** — nur Kennungen aus `services.json`, Anfrage vom Relay gebaut
 - [x] **Herkunft** — nur konfigurierte Browser-Herkünfte
 - [x] **Relay lehnt Anfragen ohne gültige Signatur ab** — einheitlich `401` (`tests/relay.test.ts`, `tests/auth.test.ts`)
-- [x] **Wiederholung wird abgelehnt** — Replay-Cache auf den Digest der signierten Nachricht (`tests/relay.test.ts`)
+- [x] **Wiederholung wird abgelehnt** — Replay-Cache auf (Schlüsselkennung, `jti`) eines angenommenen Kopfes (Auth v3) (`tests/relay.test.ts`)
 - [x] **Schlüsseldatei streng gelesen** — nur öffentliche Schlüssel, jede Abweichung ein Fehler (`tests/relay-keys.test.ts`)
 - [x] **Sammelbetrieb** — ein Stempel je Fenster, Beleg je Anfrage, Fehler und Schließen beantworten alle (`tests/batch-relay.test.ts`; nur gegen einen Stub, nie gegen einen echten Dienst)
 - [x] **Schlüsselarten und Solo-Stempel** — Solo nur für Art 2 (Art 1 mit `mode: "solo"` sofort `403 solo-not-allowed`, vor jeder Arbeit, ohne Budget), `mode` durch die Signatur gebunden, Planer je Dienst (Solo belegt den Platz, abwechselnd, Mindestabstand `minIntervalMs` zwischen zwei Aufrufen eines Dienstes (im Sammelbetrieb für Solo und Fenster, im Einzelbetrieb für jeden Stempel), `503 busy` nach `RELAY_MAX_WAIT_MS`, Warteschlange und Solo-Limit je Schlüssel begrenzt) (`tests/solo.test.ts`, `tests/solo-spacing.test.ts`, `tests/solo-chain.test.ts`: Ketten wartender Fenster, Stillstand der Ereignisschleife; Frist der App: im Einzelbetrieb Wartegrenze + 17 s, im Sammelbetrieb Wartegrenze + Fenster + Kette + 17 s; nur gegen einen Stub)

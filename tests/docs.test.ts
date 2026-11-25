@@ -5,7 +5,7 @@ import * as lib from '../src/index.ts';
 import { DER_LIMITS } from '../src/lib/der.ts';
 import { BATCH_LIMITS } from '../src/lib/batch.ts';
 import { VERIFY_LIMITS } from '../src/lib/verify.ts';
-import { RELAY_LIMITS } from '../relay/limits.ts';
+import { AUTH_START_SLACK_MS, RELAY_LIMITS } from '../relay/limits.ts';
 
 const read = (name: string) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
 const model = read('data-model.html');
@@ -30,6 +30,8 @@ const REASONS: Record<lib.Reason, true> = {
   'bad-key-id': true,
   'bad-key-file': true,
   'bad-batch': true,
+  'bad-evidence': true,
+  'evidence-hash-mismatch': true,
   'too-large': true,
   malformed: true,
   'indefinite-length': true,
@@ -66,13 +68,6 @@ const REASONS: Record<lib.Reason, true> = {
   'not-a-ca': true,
   'untrusted-chain': true,
   'chain-too-long': true,
-  'relay-unreachable': true,
-  'relay-timeout': true,
-  'relay-refused': true,
-  'relay-bad-response': true,
-  'relay-rate-limited': true,
-  'relay-unauthorized': true,
-  'no-trusted-service': true,
 };
 
 describe('docs against the code', () => {
@@ -135,9 +130,6 @@ describe('docs against the code', () => {
       'fromBase64',
       'toHex',
       'equalBytes',
-      'createRelayClient',
-      'parseRelayAnswer',
-      'parseServiceList',
       'parseRelayList',
       'isRelayAddress',
       'relayOrigin',
@@ -169,10 +161,10 @@ describe('docs against the code', () => {
     sent.add('upstream-failed').add('upstream-timeout').add('upstream-too-large'); // `upstream-${kind}`
     for (const code of sent) expect(relayDoc, code).toContain(`\`${code}\``);
   });
-  it('relay.md lists every client limit with its value', () => {
-    for (const [name, value] of Object.entries(lib.CLIENT_LIMITS)) {
-      expect(relayDoc, name).toMatch(new RegExp(String.raw`\|\s*\`${name}\`\s*\|\s*${value}\s*\|`));
-    }
+  it('relay.md points to the one client (docs/client.md) and keeps no table of the removed one', () => {
+    expect(relayDoc).toContain('[`docs/client.md`](client.md)');
+    expect(relayDoc).not.toContain('src/lib/client.ts`)\n');
+    expect(relayDoc).not.toMatch(/\|\s*`maxServicesTried`/);
   });
   it('dienste.md lists every service of services.json', () => {
     const doc = read('dienste.md');
@@ -332,7 +324,8 @@ describe('owner decisions: roots as anchors, RELAY_SERVICES required, clock skew
     expect(doc).toContain('nowMs = Date.now() + versatz');
     expect(doc).toContain('genau einmal');
     expect(doc).toContain('liegt es am Schlüssel oder an der Kennung, nicht an der Uhr');
-    expect(doc).toContain('mindestens 1 s warten');
+    expect(doc).toContain('nicht** zu warten, bevor man erneut signiert');
+    expect(doc).not.toContain('mindestens 1 s warten');
     expect(relayDoc).toContain('stampWithClockFix');
   });
 });
@@ -582,7 +575,7 @@ describe('key types, solo stamps and the key file read again are written down wh
   });
   it('relay.md: one relay instance per key file, and the proxy limit per address stays far below the key budget', () => {
     const doc = flat(relayDoc);
-    expect(doc).toContain('**Genau eine Relay-Instanz je Schlüsseldatei.**');
+    expect(doc).toContain('**Genau eine Relay-Instanz je Schlüsseldatei und Audience.**');
     expect(doc).toContain('nicht den Host');
     expect(doc).toContain(
       '**Das Limit je Adresse muss deutlich unter dem Budget eines Schlüssels liegen.**',
@@ -749,13 +742,15 @@ describe('key files stay out of the repository', () => {
     expect(relayDoc).toContain('kein Geheimnis');
     expect(relayDoc).toContain('Unversehrtheit');
     expect(relayDoc).toContain('nicht schreibbar');
-    expect(relayDoc).toContain('v2.<kid>.<ts>.<sig>');
+    expect(relayDoc).toContain('v3.<kid>.<ts>.<jti>.<sig>');
+    expect(relayDoc).not.toContain('v2.<kid>.<ts>.<sig>');
     expect(relayDoc).toContain('bewusst nicht');
     expect(relayDoc).not.toContain('gleichwertige Geheimnisse');
     expect(relayDoc).not.toContain('0600 setzen');
   });
-  it('relay.md names the replay cache by message digest, the longest Retry-After and the uncounted 400/415', () => {
-    expect(relayDoc).toContain('Digest der signierten Nachricht');
+  it('relay.md names the replay cache by key id and jti, the longest Retry-After and the uncounted 400/415', () => {
+    expect(relayDoc).toContain('Gemerkt wird das Paar (Kennung, `jti`)');
+    expect(relayDoc).not.toContain('Digest der signierten Nachricht');
     expect(relayDoc).toContain('(r, n − s)');
     expect(relayDoc).toContain('längste');
     expect(relayDoc).toContain('Anfragen, die nicht zählen');
@@ -775,9 +770,31 @@ describe('key files stay out of the repository', () => {
     expect(read('grenzen.md')).toContain('ohne Nachkommastellen');
     expect(model).toContain('keine Nachkommastellen');
   });
+  it('version 3 of the head is written down: audience, jti, milliseconds, the start slack, the replay key; no v2 or digest left', () => {
+    for (const text of [
+      'RELAY_AUDIENCE',
+      'Audience',
+      '`jti`',
+      'Millisekunden',
+      'AUTH_START_SLACK_MS',
+      'zeitstempel-auth-v3',
+    ]) {
+      expect(relayDoc, text).toContain(text);
+    }
+    expect(relayDoc).not.toContain('zeitstempel-auth-v2');
+    expect(relayDoc).not.toContain('Unix-Sekunden, dezimal');
+    expect(AUTH_START_SLACK_MS).toBe(1000);
+    expect(readFileSync(new URL('../README.md', import.meta.url), 'utf8')).toMatch(/audience: '/);
+    expect(readFileSync(new URL('../docs/betrieb.md', import.meta.url), 'utf8')).toContain(
+      'RELAY_AUDIENCE',
+    );
+    expect(model).toContain('<code>jti</code>');
+  });
   it('data-model.html describes signRelayRequest with a private key and no deriveVerifier', () => {
     expect(model).toContain('privateKey');
-    expect(model).toContain('v2.');
+    expect(model).toContain('v3.');
+    expect(model).not.toContain('v2.&lt;kid&gt;');
+    expect(model).toContain('audience');
     expect(model).not.toContain('deriveVerifier');
   });
 });
@@ -851,6 +868,126 @@ describe('pathLenConstraint, the signer that is no CA, expectedPolicy and Reader
       '`ReaderError`',
     ]) {
       expect(readme, word).toContain(word);
+    }
+  });
+});
+
+describe('key file version 3 (revoked, empty list, notAfter, services, perMinute) is written down and tied to the code', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const betrieb = read('betrieb.md');
+  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const keysSource = readFileSync(new URL('../relay/keys.ts', import.meta.url), 'utf8');
+  it('relay.md: the section, every field, the error code, the counters and the rules', () => {
+    const doc = flat(relayDoc);
+    expect(relayDoc).toContain(
+      '### Schlüsseldatei Version 3: Sperren, Ablauf, Dienste, eigene Grenze',
+    );
+    for (const word of [
+      '`revoked`',
+      '`notAfter`',
+      '`services`',
+      '`perMinute`',
+      '`v3-field-in-v2-file in keys[i]`',
+      '**dasselbe `401` wie bei unbekannter Kennung**',
+      '**eine** Signaturprüfung',
+      '**ausdrücklich leeren Liste**',
+      '`"keys": []`',
+      'der alte Satz bleibt aktiv',
+      'spätestens `keyFileCheckMs` (5 s)',
+      '`services-unknown in keys[i]`',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+    expect(relayDoc).toMatch(/\|\s*403\s*\|\s*`service-not-allowed`/);
+    expect(source).toContain("error: 'service-not-allowed'");
+    for (const counter of ['keyRevoked', 'keyExpired', 'serviceDenied']) {
+      expect(relayDoc, counter).toMatch(new RegExp(String.raw`\|\s*\`${counter}\`\s*\|`));
+      expect(source, counter).toContain(`stats.${counter}`);
+    }
+  });
+  it('the reader accepts exactly the documented fields, and the scripts name the same flags', () => {
+    expect(keysSource).toContain(
+      "const ENTRY_V3 = ['notAfter', 'perMinute', 'revoked', 'services'];",
+    );
+    const script = readFileSync(new URL('../scripts/make-key.ts', import.meta.url), 'utf8');
+    for (const flag of ['--solo', '--not-after', '--services', '--per-minute']) {
+      expect(script, flag).toContain(flag);
+      expect(relayDoc, flag).toContain(flag);
+    }
+  });
+  it('betrieb.md: the emergency with revoked or an empty list replaces the placeholder; rotation with notAfter', () => {
+    const doc = flat(betrieb);
+    expect(doc).not.toContain('Wird mit der Schlüsseldatei v3 ergänzt');
+    for (const word of [
+      '`"revoked": true`',
+      '`{"version": 3, "keys": []}`',
+      '**Die Datei zu löschen reicht nicht:**',
+      '`keyRevoked`',
+      '`keyExpired`',
+      '`"notAfter": <Unix-Sekunden>`',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+  });
+  it('data-model.html: the fields, the code and the counters', () => {
+    for (const word of [
+      '<code>keys[i].revoked</code>',
+      '<code>keys[i].notAfter</code>',
+      '<code>keys[i].services</code>',
+      '<code>keys[i].perMinute</code>',
+      '<code>service-not-allowed</code> (403)',
+      '<code>keyRevoked</code>',
+      '<code>keyExpired</code>',
+      '<code>serviceDenied</code>',
+      'v3-field-in-v2-file',
+    ]) {
+      expect(model, word).toContain(word);
+    }
+  });
+});
+
+describe('RELAY_KEY_SHARE (share of one key at a service budget) is written down and tied to the code', () => {
+  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const betriebDoc = read('betrieb.md');
+  const flatText = (t: string) => t.replace(/\s+/g, ' ');
+  it('relay.md: the setting, the code, the counter and the limits', () => {
+    expect(relayDoc).toMatch(/\|\s*`RELAY_KEY_SHARE`\s*\|/);
+    expect(relayDoc).toMatch(/\|\s*429\s*\|\s*`key-share`/);
+    expect(source).toContain("error: 'key-share'");
+    expect(relayDoc).toMatch(/\|\s*`shareDenied`\s*\|/);
+    expect(source).toContain('stats.shareDenied');
+    for (const [name, value] of [
+      ['keyShareMin', RELAY_LIMITS.keyShareMin],
+      ['keyShareMax', RELAY_LIMITS.keyShareMax],
+    ] as const) {
+      expect(relayDoc, name).toMatch(new RegExp(String.raw`\|\s*\`${name}\`\s*\|\s*${value}\s*\|`));
+    }
+    const doc = flatText(relayDoc);
+    for (const word of [
+      'Anteil je Schlüssel am Dienstbudget',
+      'max(1, floor(Dienstbudget * Prozent / 100))',
+      '**Hashes in einem Fenster teilen sich einen Platz:**',
+      '(entschieden: nur Solo)',
+      '**auf der Wanduhr**',
+      'Die Abweisung verbraucht nichts',
+      '`RELAY_KEY_SHARE=50`',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+    expect(doc).not.toContain('Das Relay verteilt das Budget eines Dienstes nicht fair');
+  });
+  it('betrieb.md, relay.env.example and data-model.html name it', () => {
+    expect(flatText(betriebDoc)).toContain('`RELAY_KEY_SHARE=50`');
+    expect(betriebDoc).toContain('`shareDenied`');
+    expect(readFileSync(new URL('../deploy/relay.env.example', import.meta.url), 'utf8')).toContain(
+      '# RELAY_KEY_SHARE=50',
+    );
+    for (const word of [
+      '<code>RELAY_KEY_SHARE</code>',
+      '<code>key-share</code> (429)',
+      '<code>shareDenied</code>',
+    ]) {
+      expect(model, word).toContain(word);
     }
   });
 });
