@@ -835,3 +835,77 @@ describe('pathLenConstraint, the signer that is no CA, expectedPolicy and Reader
     }
   });
 });
+
+describe('key file version 3 (revoked, empty list, notAfter, services, perMinute) is written down and tied to the code', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const betrieb = read('betrieb.md');
+  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const keysSource = readFileSync(new URL('../relay/keys.ts', import.meta.url), 'utf8');
+  it('relay.md: the section, every field, the error code, the counters and the rules', () => {
+    const doc = flat(relayDoc);
+    expect(relayDoc).toContain(
+      '### Schlüsseldatei Version 3: Sperren, Ablauf, Dienste, eigene Grenze',
+    );
+    for (const word of [
+      '`revoked`',
+      '`notAfter`',
+      '`services`',
+      '`perMinute`',
+      '`v3-field-in-v2-file in keys[i]`',
+      '**dasselbe `401` wie bei unbekannter Kennung**',
+      '**eine** Signaturprüfung',
+      '**ausdrücklich leeren Liste**',
+      '`"keys": []`',
+      'der alte Satz bleibt aktiv',
+      'spätestens `keyFileCheckMs` (5 s)',
+      '`services-unknown in keys[i]`',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+    expect(relayDoc).toMatch(/\|\s*403\s*\|\s*`service-not-allowed`/);
+    expect(source).toContain("error: 'service-not-allowed'");
+    for (const counter of ['keyRevoked', 'keyExpired', 'serviceDenied']) {
+      expect(relayDoc, counter).toMatch(new RegExp(String.raw`\|\s*\`${counter}\`\s*\|`));
+      expect(source, counter).toContain(`stats.${counter}`);
+    }
+  });
+  it('the reader accepts exactly the documented fields, and the scripts name the same flags', () => {
+    expect(keysSource).toContain(
+      "const ENTRY_V3 = ['notAfter', 'perMinute', 'revoked', 'services'];",
+    );
+    const script = readFileSync(new URL('../scripts/make-key.ts', import.meta.url), 'utf8');
+    for (const flag of ['--solo', '--not-after', '--services', '--per-minute']) {
+      expect(script, flag).toContain(flag);
+      expect(relayDoc, flag).toContain(flag);
+    }
+  });
+  it('betrieb.md: the emergency with revoked or an empty list replaces the placeholder; rotation with notAfter', () => {
+    const doc = flat(betrieb);
+    expect(doc).not.toContain('Wird mit der Schlüsseldatei v3 ergänzt');
+    for (const word of [
+      '`"revoked": true`',
+      '`{"version": 3, "keys": []}`',
+      '**Die Datei zu löschen reicht nicht:**',
+      '`keyRevoked`',
+      '`keyExpired`',
+      '`"notAfter": <Unix-Sekunden>`',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+  });
+  it('data-model.html: the fields, the code and the counters', () => {
+    for (const word of [
+      '<code>keys[i].revoked</code>',
+      '<code>keys[i].notAfter</code>',
+      '<code>keys[i].services</code>',
+      '<code>keys[i].perMinute</code>',
+      '<code>service-not-allowed</code> (403)',
+      '<code>keyRevoked</code>',
+      '<code>keyExpired</code>',
+      '<code>serviceDenied</code>',
+      'v3-field-in-v2-file',
+    ]) {
+      expect(model, word).toContain(word);
+    }
+  });
+});

@@ -104,6 +104,12 @@ export interface RelayStats {
   keyReloads?: number;
   keyReloadFailed?: number;
   keyFileWritable?: number;
+  /** Requests signed (validly) with a revoked key (`"revoked": true`), answered 401 like an unknown key; present once counted; global, never per key. */
+  keyRevoked?: number;
+  /** Requests signed (validly) with a key past its `notAfter`, answered 401 like an unknown key; present once counted; global, never per key. */
+  keyExpired?: number;
+  /** Requests of a key whose `services` does not name the service: `403 service-not-allowed`; present once counted. */
+  serviceDenied?: number;
 }
 
 const JSON_TYPE = 'application/json';
@@ -208,18 +214,42 @@ export function createRelay(options: RelayOptions): Relay {
   const buildKeys = (keys: readonly RelayKey[]) => {
     const byId = new Map<string, KeyObject>();
     const solo = new Set<string>();
+    const revoked = new Set<string>();
+    const notAfter = new Map<string, number>(); // key id -> Unix seconds
+    const services = new Map<string, ReadonlySet<string>>(); // key id -> the only services it may use
+    const perMinute = new Map<string, number>(); // key id -> own limit per minute
     for (const k of keys) {
       const key = publicKeyObject(k.publicKey);
       if (key === null) throw new Error('relay key is not a valid P-256 public key'); // no content
       if (byId.has(k.id)) throw new Error('relay key ids must be unique'); // no content
       byId.set(k.id, key);
       if (k.solo === true) solo.add(k.id);
+      if (k.revoked === true) revoked.add(k.id);
+      if (k.notAfter !== undefined) {
+        if (!Number.isInteger(k.notAfter)) throw new Error('relay key notAfter is invalid');
+        notAfter.set(k.id, k.notAfter);
+      }
+      if (k.services !== undefined) services.set(k.id, new Set(k.services));
+      if (k.perMinute !== undefined) {
+        if (
+          !Number.isInteger(k.perMinute) ||
+          k.perMinute < 1 ||
+          k.perMinute > RELAY_LIMITS.perMinutePerKey
+        ) {
+          throw new Error('relay key perMinute is invalid'); // no content
+        }
+        perMinute.set(k.id, k.perMinute);
+      }
     }
-    return { byId, solo };
+    return { byId, solo, revoked, notAfter, services, perMinute };
   };
   const initial = options.keys === 'off' ? buildKeys([]) : buildKeys(options.keys);
   let keyById = initial.byId; // replaced as a whole when the key file is reloaded
   let soloKids = initial.solo; // key type 2: may ask for a solo stamp
+  let revokedKids = initial.revoked; // refused like an unknown key (401)
+  let notAfterKids = initial.notAfter; // key id -> Unix seconds: from then on refused like a revoked key
+  let servicesOfKid = initial.services; // key id -> the only services it may use (absent: all)
+  let perMinuteOfKid = initial.perMinute; // key id -> own limit per minute (absent: `perMinutePerKey`)
   const authRequired = options.keys !== 'off';
   const doVerify = options.verifySignature ?? verifySignatureNode;
   // Heads signed before this process started are refused (the replay cache is empty after a restart,
@@ -335,8 +365,9 @@ export function createRelay(options: RelayOptions): Relay {
       booked.length >= ownLimit ? Math.max(1, bw - (now - booked[booked.length - ownLimit]!)) : 0;
     const slotMs = forSolo ? Math.max(countMs, spacingMs(laneKey, minIntervalMs, now)) : countMs;
     if (forService === true && own.length >= ownLimit) waits.push(until(own, ownLimit));
-    if (kid !== null && mine.length >= RELAY_LIMITS.perMinutePerKey) {
-      waits.push(until(mine, RELAY_LIMITS.perMinutePerKey));
+    const keyLimit = kid === null ? 0 : (perMinuteOfKid.get(kid) ?? RELAY_LIMITS.perMinutePerKey);
+    if (kid !== null && mine.length >= keyLimit) {
+      waits.push(until(mine, keyLimit));
     }
     return {
       wait: waits.length === 0 ? null : Math.max(...waits),
@@ -411,8 +442,19 @@ export function createRelay(options: RelayOptions): Relay {
     } catch {
       valid = false;
     }
-    // Always exactly one verification, known id or not; the id decides only afterwards.
+    // Always exactly one verification, known id or not, revoked or not, expired or not; the id decides only afterwards.
     if (!(valid && key !== undefined)) return null;
+    // A revoked or expired key is refused with the same 401 and after the same work as an unknown one; only the
+    // global counters know (a valid signature of that key: not a guess at an id), never a number per key.
+    if (revokedKids.has(auth.kid)) {
+      stats.keyRevoked = (stats.keyRevoked ?? 0) + 1;
+      return null;
+    }
+    const until = notAfterKids.get(auth.kid);
+    if (until !== undefined && options.now() >= until * 1000) {
+      stats.keyExpired = (stats.keyExpired ?? 0) + 1;
+      return null;
+    }
     return `${auth.kid}:${createHash('sha256').update(message).digest('hex')}`;
   }
 
@@ -564,6 +606,13 @@ export function createRelay(options: RelayOptions): Relay {
     // Solo stamps exist for key type 2 only (a direct stamp at once, with a slot of its own). A key of type 1 (or no key)
     // that asks for one is refused here, before any work: no window, no slot, no wait, no entry in the tree, no
     // identity, and no total or key budget spent (like `bad-mode`); only the counters know it.
+    // A key that names its services (`services` in the key file) may use only those: refused before any work, like
+    // the solo case: no window, no slot, no budget and no replay entry spent; only the counters know it.
+    const allowed = auth === null ? undefined : servicesOfKid.get(auth.kid);
+    if (allowed !== undefined && !allowed.has(service.id)) {
+      stats.serviceDenied = (stats.serviceDenied ?? 0) + 1;
+      return send(res, 403, { error: 'service-not-allowed' }, origin);
+    }
     const direct = wantsSolo && auth !== null && soloKids.has(auth.kid);
     if (wantsSolo && !direct) {
       stats.soloDenied = (stats.soloDenied ?? 0) + 1;
@@ -1332,6 +1381,10 @@ export function createRelay(options: RelayOptions): Relay {
     const next = buildKeys(keys); // throws before anything changes
     keyById = next.byId;
     soloKids = next.solo;
+    revokedKids = next.revoked;
+    notAfterKids = next.notAfter;
+    servicesOfKid = next.services;
+    perMinuteOfKid = next.perMinute;
   }
 
   function noteKeyReload(applied: boolean): void {
@@ -1473,6 +1526,9 @@ export function createRelay(options: RelayOptions): Relay {
       ...(stats.keyReloads === undefined ? {} : { keyReloads: stats.keyReloads }),
       ...(stats.keyReloadFailed === undefined ? {} : { keyReloadFailed: stats.keyReloadFailed }),
       ...(stats.keyFileWritable === undefined ? {} : { keyFileWritable: stats.keyFileWritable }),
+      ...(stats.keyRevoked === undefined ? {} : { keyRevoked: stats.keyRevoked }),
+      ...(stats.keyExpired === undefined ? {} : { keyExpired: stats.keyExpired }),
+      ...(stats.serviceDenied === undefined ? {} : { serviceDenied: stats.serviceDenied }),
     }),
     close,
     setKeys,

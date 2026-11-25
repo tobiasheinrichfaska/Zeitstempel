@@ -223,7 +223,9 @@ describe('docs/betrieb.md', () => {
       expect(betrieb, h).toContain(h);
     for (const w of ['npm run spike', 'npm run probe', 'Restart=always', 'Slew'])
       expect(betrieb, w).toContain(w);
-    expect(betrieb).toMatch(/\*\*Wird mit der Schlüsseldatei v3 ergänzt\.\*\*/);
+    expect(betrieb).not.toContain('Wird mit der Schlüsseldatei v3 ergänzt');
+    expect(betrieb).toContain('### Notfall mit Schlüsseldatei Version 3');
+    expect(betrieb).toContain('Rotation mit Ablaufzeit (Schlüsseldatei Version 3)');
     expect(betrieb).toMatch(/\*\*Genau eine Instanz\*\*/);
     expect(betrieb).toContain('alle 5 s neu');
     expect(betrieb).toContain('nur statisch geprüft');

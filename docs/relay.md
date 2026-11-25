@@ -192,9 +192,10 @@ abbrechen. Die Zähler `unauthorized`, `rate-limited` usw. bleiben davon unberü
 
 **Pipelining mit Müll:** Wer mehrere Anfragen hintereinander schickt (pipelined) und danach Müll nachschickt, bekommt nur die `400` und verliert die Antwort der laufenden Anfrage (wie bei Node).
 
-**Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`.
+**Schlüsseldatei** (Pfad aus `RELAY_KEYS_FILE`): `{"version": 2, "keys": [{"id": "app-1", "publicKey": "<base64url>"}]}`
+(Version 3 mit weiteren Feldern je Eintrag: „Schlüsseldatei Version 3“ unten).
 `publicKey` ist der **unkomprimierte Punkt** (65 Byte: `04 || X || Y`) als base64url ohne `=`. Streng gelesen: genau
-diese Felder, 1 bis 64 Schlüssel, `id` nach dem Muster, der Punkt muss **auf der Kurve P-256 liegen** (sonst
+diese Felder, 0 bis 64 Schlüssel (eine ausdrücklich leere Liste ist gültig und sperrt alle, siehe unten), `id` nach dem Muster, der Punkt muss **auf der Kurve P-256 liegen** (sonst
 `public-key-point`), keine doppelte `id`, kein doppelter Schlüssel. Die Datei enthält **keine Geheimnisse**, gehört
 aber **nicht ins Repository** (`.gitignore` kennt `relay-keys*.json`, `*.keys.json` und `*keys*.json`): sie ist
 Konfiguration des Betreibers, und ein privater Schlüssel soll nie neben ihr liegen. Sie wird vom Betreiber verwaltet
@@ -209,7 +210,10 @@ Datei ersetzen. Verzeichnis und Eigentümer sind Sache des Betreibers. Doppelte 
 **Schlüssel erzeugen** (im geklonten Repository): `node scripts/make-key.ts <kennung>` (gleichwertig:
 `npm run -s make-key -- <kennung>`) schreibt in zwei Zeilen auf die Konsole (und in keine Datei) den **privaten**
 Schlüssel (PKCS#8, base64url; gehört nur der App, geheim halten) und den Eintrag `{id, publicKey}` für die
-Schlüsseldatei; ein Hinweis dazu geht auf stderr. Beispiel (gekürzt):
+Schlüsseldatei; ein Hinweis dazu geht auf stderr. Optionale Schalter machen weitere Felder des Eintrags (Version 3):
+`--solo`, `--not-after <unix>`, `--services a,b`, `--per-minute N` (Beispiel: `node scripts/make-key.ts app-1 --not-after
+1900000000 --services freetsa --per-minute 5`); falsche Werte enden mit Exit 2 und ohne Ausgabe, die Datei schreibt das
+Skript nie. Beispiel (gekürzt):
 
 ```text
 $ node scripts/make-key.ts app-1
@@ -217,12 +221,13 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg…        <- Zeile 1: privater 
 {"id":"app-1","publicKey":"BAsY3mTq0…"}                  <- Zeile 2: Eintrag für die Schlüsseldatei
 ```
 
-Zeile 2 kommt in `keys` der Schlüsseldatei: `{"version": 2, "keys": [<Zeile 2>]}`. `npm run probe` liest `RELAY_PRIVATE_KEY` (der private Schlüssel,
+Zeile 2 kommt in `keys` der Schlüsseldatei: `{"version": 2, "keys": [<Zeile 2>]}` (mit `notAfter`, `services` oder
+`perMinute` in der Zeile: `"version": 3`). `npm run probe` liest `RELAY_PRIVATE_KEY` (der private Schlüssel,
 base64url) und `RELAY_KEY_ID` aus der Umgebung und signiert damit.
 
 **Grenze:** Der private Schlüssel liegt in der App. Eine Web-App, die ihn im Browser hält, kann ihn nicht vor ihren
 eigenen Besuchern verbergen; der Schlüssel schützt das Relay vor fremden Apps und Skripten, nicht vor den Nutzern
-einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus der Datei, Relay neu starten).
+einer Seite, die ihn ausliefert. Er lässt sich pro App widerrufen (Eintrag aus der Datei entfernen oder mit `"revoked": true` sperren; wirkt nach spätestens 5 s, kein Neustart).
 **Aussperren:** Die Dienst-Zähler gelten **global**, nicht je Kennung. Mit den mitgelieferten Diensten (je 4
 Anfragen je Minute bei 15 s) sperrt ein einziger gültiger Schlüssel mit 4 Anfragen in einer Minute einen Dienst für
 alle anderen Kennungen bis zum Ende des Zeitfensters (bei FreeTSA mit 5 s: 12 Anfragen). `perMinuteTotal` (60) wird mit
@@ -384,6 +389,7 @@ Fehler sind `{"error": "<code>"}`; bei 502 mit `reason` aus der Prüfung:
 | 400    | `bad-upstream`                                                                  | `upstream` passt nicht zum Dienst: vorhanden, wo der Dienst keines nimmt (Quelle `relay`, keine `auth`), fehlend, wo die App eines liefern muss, falsche Form, Zeichen oder Länge (nur nach bestandener Anmeldung)                                                                                                                                                                                                                                                                                            |
 | 401    | `unauthorized`                                                                  | Auth-Fehler: Kopf `X-Zeitstempel-Auth` fehlt oder ist ungültig (Form, Zeit, Kennung, Signatur, Wiederholung); einheitlich                                                                                                                                                                                                                                                                                                                                                                                     |
 | 403    | `origin-not-allowed`                                                            | Aufruf aus einem Browser von einer nicht konfigurierten Herkunft                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 403    | `service-not-allowed`                                                           | Der Schlüssel trägt `services` (Schlüsseldatei Version 3) und der angefragte Dienst steht nicht darin; kommt **sofort** nach der Anmeldung, vor jeder Arbeit: kein Fenster, kein Platz, kein Warten, kein Budget verbraucht, kein Eintrag im Wiederholungsspeicher; nur die Zähler `serviceDenied` und `refused` kennen es                                                                                                                                                                                    |
 | 403    | `solo-not-allowed`                                                              | Ein Schlüssel der Art 1 (oder ohne Art 2) verlangte `mode: "solo"` (nur im Sammelbetrieb; kommt **sofort** nach der Prüfung der Form des Körpers (`415`, `400 bad-hash`, `bad-mode`, `bad-upstream` gehen vor), vor jeder Arbeit: kein Fenster, kein Platz, kein Warten, kein Budget verbraucht; nur die Zähler `soloDenied` und `refused` kennen es)                                                                                                                                                         |
 | 404    | `unknown-service`, `not-found`                                                  | Dienst oder Pfad nicht vorhanden                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | 405    | `method-not-allowed`                                                            | `/v1/stamp/…` nur mit POST                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -794,13 +800,16 @@ Solo-Stempel der Art 2; **der Rest wartet**.
 Nur Summen, nichts je Schlüssel, nichts von der Anfrage (Variante A). Sie erscheinen in `relay.stats()` und in der
 Zeile `counts` erst, wenn sie zum ersten Mal gezählt wurden:
 
-| Zähler            | Bedeutung                                                                                                             |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `solo`            | Solo-Stempel, die der Dienst gegeben hat (zählt auch in `stamped`)                                                    |
-| `soloDenied`      | Solo-Anfragen der Art 1 (oder ohne Schlüssel), die sofort `403 solo-not-allowed` bekamen (auch unter `refused`)       |
-| `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                        |
-| `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal |
-| `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)         |
+| Zähler            | Bedeutung                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `solo`            | Solo-Stempel, die der Dienst gegeben hat (zählt auch in `stamped`)                                                             |
+| `soloDenied`      | Solo-Anfragen der Art 1 (oder ohne Schlüssel), die sofort `403 solo-not-allowed` bekamen (auch unter `refused`)                |
+| `keyReloads`      | Neulesen der Schlüsseldatei, das übernommen wurde (das erste Lesen nach dem Start zählt nicht)                                 |
+| `keyReloadFailed` | Neulesen, das verworfen wurde (ungültige oder verschwundene Datei, der alte Satz bleibt); je Zustand der Datei einmal          |
+| `keyFileWritable` | Die Schlüsseldatei wurde für Gruppe oder Andere schreibbar (je Wechsel des Zustands einmal; nur eine Warnung)                  |
+| `keyRevoked`      | Anfragen mit **gültiger Signatur** eines gesperrten Schlüssels (`"revoked": true`); Antwort `401`, wie bei unbekannter Kennung |
+| `keyExpired`      | Anfragen mit gültiger Signatur eines Schlüssels nach seinem `notAfter`; Antwort `401`, wie bei unbekannter Kennung             |
+| `serviceDenied`   | Anfragen eines Schlüssels mit `services`, der einen anderen Dienst verlangte: `403 service-not-allowed` (auch unter `refused`) |
 
 `busy` und `solo-not-allowed` stehen außerdem unter `refused` wie jeder Fehlercode.
 
@@ -824,13 +833,57 @@ bliebe ein gesperrter Schlüssel gültig). Das Lesen ist billig: die Datei ist h
   Datei neu gelesen hat (jede Anfrage prüft gegen den aktuellen Satz; das Neulesen geschieht nach spätestens
   `keyFileCheckMs`, auch wenn Änderungszeit, Größe und Inode gleich geblieben sind); das ist der Weg, einen Schlüssel
   zu **sperren**. Auch eine geänderte Art (`solo`) gilt sofort.
-- **Ungültige Datei** (kein JSON, Regelverstoß, halb geschrieben, verschwunden): der **alte Satz bleibt aktiv**,
-  `keyReloadFailed` zählt, es wird nichts aus der Datei protokolliert. Schon beim nächsten Nachsehen wird es erneut
+- **Ungültige Datei** (kein JSON, Regelverstoß, halb geschrieben, **gelöscht oder unlesbar**): der **alte Satz bleibt aktiv**
+  (auch bei einer gelöschten Datei: nicht „kein Schlüssel“, sondern der letzte gültige Satz),
+  `keyReloadFailed` zählt, es wird nichts aus der Datei protokolliert. **Alle sperren** geht also nicht durch Löschen der
+  Datei, sondern mit einer **ausdrücklich leeren Liste** (`"keys": []`, Abschnitt „Schlüsseldatei Version 3“). Schon beim nächsten Nachsehen wird es erneut
   versucht (eine halb geschriebene Datei wird so bald gelesen, wie sie fertig ist).
 - **Zähler, Wiederholungsspeicher und Solo-Zähler bleiben** beim Neulesen erhalten.
 - **Das Relay schreibt nie in die Schlüsseldatei.** Sie gehört dem Betreiber; schreiben soll man sie atomar (neue Datei
   schreiben, dann umbenennen).
 - Gilt nur mit `RELAY_KEYS_FILE` (nicht mit `RELAY_AUTH=off`).
+
+### Schlüsseldatei Version 3: Sperren, Ablauf, Dienste, eigene Grenze
+
+`{"version": 3, "restartAfter"?: …, "keys": [{"id", "publicKey", "solo"?, "revoked"?, "notAfter"?, "services"?, "perMinute"?}]}`.
+Version 2 bleibt lesbar und gilt unverändert; **die vier neuen Felder in einer Version-2-Datei sind ein Lesefehler**
+(`v3-field-in-v2-file in keys[i]`). Alles ist streng gelesen wie bisher: keine unbekannten Felder, keine Doppelten, in
+Fehlern der Eintragsindex `keys[i]` und nie Inhalt. `restartAfter` und `solo` gelten in beiden Versionen.
+
+| Feld        | Form                                                   | Wirkung                                                                                                                                                                                                                      |
+| ----------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `revoked`   | Boolesch (`true`/`false`, nichts sonst)                | Der Schlüssel bleibt in der Datei, wird aber abgewiesen: **dasselbe `401` wie bei unbekannter Kennung**, kein Hinweis an den Aufrufer. Zähler `keyRevoked`                                                                   |
+| `notAfter`  | Ganze Zahl, Unix-Sekunden (1000000000 bis 99999999999) | Ab diesem Zeitpunkt wie gesperrt (`jetzt >= notAfter * 1000`, **Wanduhr des Relays**): `401`, Zähler `keyExpired`. Eine Millisekunde davor gilt der Schlüssel noch                                                           |
+| `services`  | Liste von 1 bis 16 verschiedenen Dienstkennungen       | Der Schlüssel darf nur diese Dienste nutzen, sonst `403 service-not-allowed`. Jede Kennung muss in `services.json` stehen (auch ein Dienst, den dieses Relay nicht anbietet), sonst Lesefehler `services-unknown in keys[i]` |
+| `perMinute` | Ganze Zahl 1 bis `perMinutePerKey` (20)                | Eigene Minutengrenze dieses Schlüssels anstelle von `perMinutePerKey` (`429` mit `Retry-After` darüber); andere Schlüssel bleiben unberührt. Größere Werte: Lesefehler `per-minute`                                          |
+
+**Reihenfolge der Prüfung** (jede Stufe vor der Arbeit der nächsten): Form des Kopfes und Zeit, dann **eine** Signaturprüfung
+(auch für unbekannte, gesperrte und abgelaufene Kennungen; bei unbekannter gegen einen Scheinschlüssel, bei gesperrter und
+abgelaufener gegen den echten, in jedem Fall genau eine), dann die Entscheidung über den Schlüssel, dann Wiederholungsschutz,
+Form des Körpers, `services`, Schlüsselart, Budgets. Ein unbekannter, ein gesperrter und ein abgelaufener Schlüssel
+bekommen **dieselbe Antwort** (Status, Körper, Kopfzeilen) und tun **dieselbe Arbeit**; die Antwortzeit verrät nichts.
+`keyRevoked` und `keyExpired` zählen nur Anfragen mit **gültiger Signatur** (das Raten einer Kennung zählt nicht), global,
+nie je Schlüssel, und jede Abweisung steht außerdem unter `refused['unauthorized']`. Das `403 service-not-allowed` kommt
+erst nach gültiger Anmeldung, **vor jeder Arbeit** (wie `solo-not-allowed`): kein Platz, kein Fenster, kein Warten, kein
+Budget, kein Wiederholungseintrag.
+
+**Neulesen:** Ein Wechsel auf `"revoked": true` (oder ein geänderter Wert der anderen Felder) wirkt beim nächsten Blick
+auf die Datei, **spätestens `keyFileCheckMs` (5 s) nach dem Speichern**. Zähler, Wiederholungsspeicher und die Zeiten
+je Schlüssel bleiben (ein neues `perMinute` zählt gegen die schon gezählten Zeiten).
+
+**Leere Liste (`"keys": []`):** gilt in Version 2 und 3 als **gültig** und bedeutet „niemand darf“. Beim **Neulesen** sind
+danach alle Schlüssel ungültig (jeder Aufruf `401`), und das Relay schreibt eine Zeile `warning`
+(„… keinen Schlüssel …: kein Schlüssel = niemand darf“). Beim **Start** ist die leere Liste zulässig, aber das Relay warnt
+mit derselben deutlichen Zeile (ein Relay ohne Schlüssel ist fast immer ein Versehen). Eine **fehlende** Liste (`keys`
+nicht vorhanden oder kein Array) ist weiter ungültig.
+
+**Gelöschte, unlesbare oder ungültige Datei:** der alte Satz bleibt aktiv (`keyReloadFailed`), auch wenn die Datei gelöscht
+wurde. Wer alle sperren will, **schreibt** eine Datei mit leerer Liste (atomar), er löscht sie nicht. Abläufe für den
+Betrieb (sperren, entsperren, Notfall, Rotation mit `notAfter`): `docs/betrieb.md`.
+
+**Sperren und Entsperren:** `"revoked": true` setzen (der Eintrag bleibt als Spur in der Datei, die Kennung bleibt belegt);
+entsperren: das Feld entfernen oder auf `false` setzen, der Schlüssel gilt ab dem nächsten Blick wieder. Ein neues
+Schlüsselpaar braucht eine **neue** Kennung.
 
 ### `restartAfter`: einmaliger sauberer Neustart
 

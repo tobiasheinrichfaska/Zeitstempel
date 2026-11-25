@@ -55,7 +55,7 @@ describe('relay key file reader', () => {
       ['extra field', file([{ id: 'a', publicKey: p, note: 'x' }])],
       ['extra top-level field', file([{ id: 'a', publicKey: p }], { more: 1 })],
       ['version 1 (HMAC file)', file([{ id: 'a', publicKey: p }], { version: 1 })],
-      ['no keys', file([])],
+      ['no key list', { version: 2 }],
       ['keys not an array', file([], { keys: {} })],
       ['not an object', []],
       ['null', null],
@@ -82,7 +82,7 @@ describe('relay key file reader', () => {
     const dup = file([keyOf('a'), keyOf('b'), keyOf('a')]);
     expect(readKeyFile(dup)).toMatchObject({ ok: false, detail: 'duplicate-id in keys[2]' });
     // a rule of the whole file has no index
-    expect(readKeyFile(file([]))).toMatchObject({ ok: false, detail: 'key-count' });
+    expect(readKeyFile(file([], { keys: {} }))).toMatchObject({ ok: false, detail: 'key-count' });
     expect(() => loadKeys('/x/keys.json', () => JSON.stringify(third))).toThrow(
       /\(bad-key-file: id in keys\[2\]\)/,
     );
@@ -106,7 +106,11 @@ describe('relay key file reader', () => {
     } catch (e) {
       expect((e as Error).message).not.toContain(secretish);
     }
-    expect(() => loadKeys('/x/keys.json', () => JSON.stringify(file([])))).toThrow(/bad-key-file/);
+    // an expressly empty list is valid (it blocks everybody, docs/relay.md); a missing list is not
+    expect(loadKeys('/x/keys.json', () => JSON.stringify(file([])))).toEqual([]);
+    expect(() => loadKeys('/x/keys.json', () => JSON.stringify({ version: 2 }))).toThrow(
+      /bad-key-file/,
+    );
     expect(loadKeys('/x/keys.json', () => JSON.stringify(file([keyOf('a')])))).toHaveLength(1);
   });
 });

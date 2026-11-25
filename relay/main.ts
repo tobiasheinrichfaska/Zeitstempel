@@ -28,7 +28,7 @@ import type { Server } from 'node:http';
 import { loadServices } from './load.ts';
 import type { ServiceAuth } from '../src/index.ts';
 import { credentialsFromText, type UpstreamCredentials } from './credentials.ts';
-import { keyFilePermissionWarning, loadKeys, type RelayKey } from './keys.ts';
+import { keyFilePermissionWarning, loadKeyFile, loadKeys, type RelayKey } from './keys.ts';
 import { createKeyWatcher } from './keywatch.ts';
 import type { RelayOptions, RelayService } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
@@ -221,15 +221,23 @@ export function readUpstreamAuth(
   return out;
 }
 
+/** Written at the start with an empty key list, and at a reload that leaves none. */
+export const EMPTY_KEYS_WARNING =
+  'Die Schlüsseldatei enthält keinen Schlüssel ("keys": []): das Relay weist jeden Aufruf mit 401 ab (kein Schlüssel = niemand darf)';
+
 /** Settings, the services to offer and the keys (or `'off'`), or a throw that names the problem. */
 export function readConfig(
   env: NodeJS.ProcessEnv,
   load: () => RelayService[] = loadServices,
-  readKeys: (path: string) => RelayKey[] = loadKeys,
+  readKeys: (path: string, knownServices: ReadonlySet<string>) => RelayKey[] = (path, known) =>
+    loadKeys(path, undefined, known),
   checkPermissions: (path: string) => string | null = keyFilePermissionWarning,
 ) {
   const settings = readSettings(env);
-  const services = chooseServices(load(), settings.only, settings.allowPlainHttp);
+  const all = load();
+  // every service of services.json (also the ones this relay does not offer): the ids a key's `services` may name
+  const knownServices: ReadonlySet<string> = new Set(all.map((s) => s.id));
+  const services = chooseServices(all, settings.only, settings.allowPlainHttp);
   // A window shorter than the interval a service asks for would call it more often than it wants.
   if (settings.batchMs !== undefined) {
     const tooShort = services.filter((s) => s.minIntervalMs > settings.batchMs!);
@@ -246,6 +254,7 @@ export function readConfig(
       services,
       upstreamAuth,
       keys: 'off' as const,
+      knownServices,
       warnings: [`auth off, loopback only (${settings.host})`],
     };
   }
@@ -254,9 +263,12 @@ export function readConfig(
       'RELAY_KEYS_FILE fehlt (ohne Schlüsseldatei startet das Relay nicht; nur für die lokale Entwicklung: RELAY_AUTH=off)',
     );
   }
-  const keys = readKeys(settings.keysFile);
+  const keys = readKeys(settings.keysFile, knownServices);
   const warning = checkPermissions(settings.keysFile);
-  return { settings, services, upstreamAuth, keys, warnings: warning === null ? [] : [warning] };
+  const warnings = warning === null ? [] : [warning];
+  // An expressly empty list is valid (nobody may stamp), but a start with it is almost always a mistake: say so clearly.
+  if (keys.length === 0) warnings.push(EMPTY_KEYS_WARNING);
+  return { settings, services, upstreamAuth, keys, knownServices, warnings };
 }
 
 /** The start line: port, services and whether requests are authenticated. No key data. */
@@ -422,12 +434,21 @@ function main(): void {
   };
   // The key file is read again while the relay runs (new keys count, removed ones stop at once); a
   // `restartAfter` in it ends the process once cleanly, a supervisor starts it again. The relay only reads the file.
+  let firstApply = true;
   const watcher =
     keys === 'off'
       ? null
       : createKeyWatcher({
           path: settings.keysFile,
-          apply: (list) => relay.setKeys(list),
+          load: (path) => loadKeyFile(path, undefined, config.knownServices),
+          apply: (list) => {
+            relay.setKeys(list);
+            // the first look only confirms what the start read (and warned about)
+            if (list.length === 0 && !firstApply) {
+              console.error(JSON.stringify({ event: 'warning', message: EMPTY_KEYS_WARNING }));
+            }
+            firstApply = false;
+          },
           now: () => Date.now(),
           startMs,
           onRestart: () => {

@@ -89,15 +89,16 @@ Alle fünf Minuten schreibt das Relay eine Zeile `{"event":"counts",…}` ins Pr
 zeitstempel-relay`; Docker: `docker logs`). Es sind **nur Summen**; Zähler erscheinen erst, wenn sie zum ersten Mal
 zählen. Die Fehlerarten stehen unter `refused`. Bedeutung: `relay.md`, „Zähler“ und „Budgets und Zähler“.
 
-| Zähler                                 | Normalwert             | Alarmkriterium                                                                                                                                                                                                        |
-| -------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refused.upstream-invalid`             | fehlt (0)              | **Jeder Anstieg.** Der Dienst liefert Token, die das Relay nicht annimmt: neue Zertifikatskette, veraltete Anker in `anchors/`, Uhr, ein Betrug auf der Strecke oder eine Schaltsekunde. Warnung, nicht nur eine Zahl |
-| `refused.upstream-too-old`             | fehlt (0)              | **Jeder Anstieg:** rückdatierte Token (`genTime` außerhalb ±60 s)                                                                                                                                                     |
-| `keyReloadFailed`                      | fehlt (0)              | **Jeder Anstieg:** die Schlüsseldatei ist ungültig, halb geschrieben oder verschwunden; der alte Satz bleibt aktiv, ein neuer oder entfernter Schlüssel wirkt **nicht**. Datei sofort prüfen                          |
-| `keyFileWritable`                      | fehlt (0)              | **Jeder Anstieg:** die Datei ist für Gruppe oder Andere schreibbar. Rechte korrigieren, die Datei auf fremde Einträge prüfen                                                                                          |
-| `refused.unauthorized`                 | klein                  | Dauerhaft hoch oder sprunghaft: Raten von Schlüsseln, falsche Uhr der App (±60 s, die Antwort trägt `Date`), ein Angriff auf die Anmeldung                                                                            |
-| `refused.rate-limited`, `refused.busy` | selten                 | Dauerhaft: das Dienstbudget (FreeTSA: 12 je Minute für alle Besucher) reicht nicht oder ein Besucher füllt es; Proxy-Limit und App prüfen                                                                             |
-| `stamped`                              | steigt mit der Nutzung | Bleibt 0 trotz Nutzung, oder `refused.upstream-failed` steigt: der Dienst ist nicht erreichbar                                                                                                                        |
+| Zähler                                 | Normalwert             | Alarmkriterium                                                                                                                                                                                                         |
+| -------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refused.upstream-invalid`             | fehlt (0)              | **Jeder Anstieg.** Der Dienst liefert Token, die das Relay nicht annimmt: neue Zertifikatskette, veraltete Anker in `anchors/`, Uhr, ein Betrug auf der Strecke oder eine Schaltsekunde. Warnung, nicht nur eine Zahl  |
+| `refused.upstream-too-old`             | fehlt (0)              | **Jeder Anstieg:** rückdatierte Token (`genTime` außerhalb ±60 s)                                                                                                                                                      |
+| `keyReloadFailed`                      | fehlt (0)              | **Jeder Anstieg:** die Schlüsseldatei ist ungültig, halb geschrieben oder verschwunden; der alte Satz bleibt aktiv, ein neuer oder entfernter Schlüssel wirkt **nicht**. Datei sofort prüfen                           |
+| `keyRevoked`, `keyExpired`             | fehlt (0)              | Anstieg: ein gesperrter oder abgelaufener Schlüssel wird noch benutzt (nur Anfragen mit gültiger Signatur): Missbrauch eines ausgelesenen Schlüssels, oder eine App, die noch nicht umgestellt ist (`notAfter` prüfen) |
+| `keyFileWritable`                      | fehlt (0)              | **Jeder Anstieg:** die Datei ist für Gruppe oder Andere schreibbar. Rechte korrigieren, die Datei auf fremde Einträge prüfen                                                                                           |
+| `refused.unauthorized`                 | klein                  | Dauerhaft hoch oder sprunghaft: Raten von Schlüsseln, falsche Uhr der App (±60 s, die Antwort trägt `Date`), ein Angriff auf die Anmeldung                                                                             |
+| `refused.rate-limited`, `refused.busy` | selten                 | Dauerhaft: das Dienstbudget (FreeTSA: 12 je Minute für alle Besucher) reicht nicht oder ein Besucher füllt es; Proxy-Limit und App prüfen                                                                              |
+| `stamped`                              | steigt mit der Nutzung | Bleibt 0 trotz Nutzung, oder `refused.upstream-failed` steigt: der Dienst ist nicht erreichbar                                                                                                                         |
 
 Zusätzlich von außen: `GET /health` (über den Proxy) alle 30 bis 60 s. **`/health` prüft keinen Dienst**: es meldet
 „gesund“, auch wenn FreeTSA ausfällt. Wer das wissen will, wertet `stamped` und `refused.upstream-failed` aus oder holt
@@ -121,6 +122,15 @@ sofort ungültig. **Kein Neustart nötig.** Eine ungültige Datei lässt den alt
 4. Wenn keine App mehr den alten Schlüssel nutzt, den **alten Eintrag entfernen** (wieder atomar). Ab dem nächsten Lesen
    sind Anfragen mit der alten Kennung `401`.
 
+**Rotation mit Ablaufzeit (Schlüsseldatei Version 3):** Statt den alten Eintrag von Hand zu entfernen, gibt man ihm schon
+beim Anlegen oder in Schritt 2 ein `"notAfter": <Unix-Sekunden>` (z. B. `node scripts/make-key.ts <kennung> --not-after
+<unix>`; die Datei schreibt man selbst). Ab diesem Zeitpunkt (Wanduhr des Relays, auf die Sekunde: `jetzt >= notAfter`)
+ist der Schlüssel wie gesperrt (`401`, Zähler `keyExpired`), ohne dass jemand daran denken muss. Der Ablauf liegt
+nach dem Termin, bis zu dem die App umgestellt sein soll (z. B. 30 Tage nach dem Anlegen des Nachfolgers); danach den toten
+Eintrag bei Gelegenheit entfernen. Ein steigendes `keyExpired` heißt: eine App nutzt noch den alten Schlüssel, `notAfter`
+verlängern (Datei ersetzen) oder die App umstellen. `services` und `perMinute` je Eintrag begrenzen zusätzlich, was ein
+ausgelesener Schlüssel anrichten kann (nur die Dienste der App, eine eigene Minutengrenze).
+
 ## Notfall: ein Schlüssel wurde ausgelesen
 
 Ein privater Schlüssel in einer Web-App ist für die Besucher der Seite lesbar (`relay.md`, „Zugangsschlüssel“): das
@@ -136,12 +146,22 @@ ist eine bekannte Grenze, keine Überraschung. Wurde er missbraucht oder verbrei
 4. Gelöst ist nur dieser Schlüssel; wer die Datei schreiben konnte, kann weitere Einträge gemacht haben: Datei Zeile für
    Zeile prüfen, Besitzer und Rechte prüfen.
 
-> **Wird mit der Schlüsseldatei v3 ergänzt.** Heute gilt: Ein Eintrag wird **entfernt**. **Die Liste vollständig zu
-> leeren wirkt heute nicht** (die Datei mit leerer Liste gilt als ungültig, der alte Satz bleibt aktiv:
-> `keyReloadFailed`). Mindestens ein anderer, gültiger Eintrag muss in der Datei bleiben; will man alle sperren, ersetzt
-> man sie durch einen frischen Schlüssel, dessen privaten Teil niemand hat, oder hält das Relay an. Eine spätere
-> Fassung der Schlüsseldatei (Sperrkennung `revoked`) ändert das; bis dahin gilt dieser Abschnitt nur in der
-> beschriebenen Form.
+### Notfall mit Schlüsseldatei Version 3 (schnell, ohne Eintrag zu löschen)
+
+Die Datei trägt `"version": 3` (Felder: `relay.md`, „Schlüsseldatei Version 3“).
+
+- **Ein Schlüssel:** dem Eintrag `"revoked": true` geben (atomar ersetzen). Spätestens **5 s** nach dem Speichern bekommt jede
+  Anfrage mit diesem Schlüssel `401`, genau wie bei einer unbekannten Kennung (kein Hinweis für den Angreifer); `keyRevoked`
+  zählt die Versuche mit gültiger Signatur. Der Eintrag bleibt in der Datei (Spur, die Kennung ist belegt). Die anderen
+  Schlüssel bleiben gültig. Entsperren: das Feld entfernen oder `false` setzen.
+- **Alle Schlüssel:** die Datei atomar durch `{"version": 3, "keys": []}` ersetzen. Ab dem nächsten Blick (höchstens 5 s) ist
+  **jeder** Aufruf `401`; das Relay schreibt dazu eine Zeile `warning` („kein Schlüssel = niemand darf“). Das ist die
+  Antwort auf „alles sperren“. **Die Datei zu löschen reicht nicht:** eine gelöschte, unlesbare oder ungültige Datei lässt den
+  letzten gültigen Satz aktiv (`keyReloadFailed` steigt), das ist beabsichtigt (ein Tippfehler darf das Relay nicht
+  stilllegen). Danach `counts` ansehen: `keyReloads` um 1 höher, `keyReloadFailed` unverändert.
+- **Prüfen, dass es wirkt:** mit dem gesperrten Schlüssel einen Stempel verlangen: `401`. `keyRevoked` steigt. Prozess
+  anhalten (`SIGTERM`) bleibt der letzte Weg, wenn die Datei nicht schreibbar ist.
+- Danach wie oben: neues Paar mit **neuer** Kennung erzeugen, App umstellen, den gesperrten Eintrag später entfernen.
 
 ## Neustart mit `restartAfter`
 
