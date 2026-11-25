@@ -230,9 +230,10 @@ describe('the audit fixes are written down where a reader looks (Befunde 1-12)',
     expect(relayDoc).toContain('**Caddy**');
     expect(doc).toContain('nicht gegen einen echten Proxy getestet');
     expect(doc).toContain('Einzelbetrieb mindestens 47 s');
-    expect(doc).toContain('proxy_read_timeout 70s;');
-    expect(doc).toContain('response_header_timeout 70s');
-    expect(doc).toContain('bei kleinem RELAY_BATCH_MAX 112 s (dann 115 s)');
+    expect(doc).toContain('proxy_read_timeout 130s;');
+    expect(doc).toContain('response_header_timeout 130s');
+    expect(doc).toContain('112 s beziehungsweise 122 s');
+    expect(doc).toContain('Sammelbetrieb FreeTSA 57 s');
     expect(relayDoc).toContain('X-Zeitstempel-Auth');
     expect(doc).toContain('soweit es um die Bindung an den Hash geht');
     for (const word of ['Frische', 'Verfügbarkeit', 'Vertraulichkeit des Hashes']) {
@@ -504,8 +505,18 @@ describe('key types, solo stamps and the key file read again are written down wh
     expect(RELAY_LIMITS.perMinuteTotal).toBe(60);
     expect(RELAY_LIMITS.batchMaxDefault).toBe(128);
     expect(RELAY_LIMITS.upstreamTimeoutMs + 7000).toBe(17_000);
-    expect(doc).toContain('30 + 5 + 15 + 17 = **67 s**');
+    // the examples: the window is at least minIntervalMs (the start refuses less), the chain is one distance (60 s at most)
+    expect(doc).toContain('30 + 5 + 5 + 17 = **57 s**');
+    expect(doc).toContain('30 + 15 + 15 + 17 = **77 s**');
     expect(doc).toContain('30 + 5 + 60 + 17 = **112 s**');
+    expect(doc).toContain('30 + 15 + 60 + 17 = **122 s**');
+    expect(doc).not.toContain('30 + 5 + 15 + 17');
+    // the tolerance of single operation is named in the text, its value lives in relay/limits.ts (not in RELAY_LIMITS)
+    expect(doc).toContain('`WAIT_TOLERANCE_MS` (50 ms');
+    expect(doc).toContain('Abbruch während des Wartens');
+    expect(doc).toContain('die Mengenzähler des Einzelbetriebs auf die monotone Uhr');
+    const limitsSource = readFileSync(new URL('../relay/limits.ts', import.meta.url), 'utf8');
+    expect(limitsSource).toContain('export const WAIT_TOLERANCE_MS = 50;');
     expect(flat(readme)).toContain('Kette der auf den Mindestabstand wartenden Fenster');
     const project = flat(readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8'));
     expect(project).toContain('`RELAY_MAX_WAIT_MS` + window + chain + 17 s');
