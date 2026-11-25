@@ -56,6 +56,7 @@ const REASONS: Record<lib.Reason, true> = {
   'signing-certificate-mismatch': true,
   'signature-invalid': true,
   'tsa-mismatch': true,
+  'policy-mismatch': true,
   'bad-pem': true,
   'bad-certificate': true,
   'weak-key': true,
@@ -793,5 +794,44 @@ describe('the package: what it ships can be reached', () => {
     expect(pkg.scripts['prepare']).toBe('node scripts/prepare.mjs');
     expect(pkg.scripts['build']).toMatch(/^node scripts\/clean-dist\.mjs && tsc /);
     expect(readme).toContain('## Installieren');
+  });
+});
+
+describe('pathLenConstraint, the signer that is no CA, expectedPolicy and ReaderError are written down', () => {
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const readme = flat(readFileSync(new URL('../README.md', import.meta.url), 'utf8'));
+  it('data-model.html: the option, the new code, the class and the wider meaning of two codes', () => {
+    expect(model).toContain('<tr><td>expectedPolicy</td>');
+    expect(model).toContain('<td>policy-mismatch</td>');
+    expect(model).toContain('<tr><td>ReaderError</td>');
+    expect(flat(model)).toContain('<code>pathLenConstraint</code>');
+    expect(flat(model)).toContain('selbst ausgestellte Zwischenzertifikate zählen nicht');
+  });
+  it('grenzen.md: rules 13 to 15 and the table rows say what was measured', () => {
+    const doc = flat(limitsDoc);
+    for (const word of [
+      '13. **`pathLenConstraint`**',
+      '14. **Der Signierer ist keine CA:**',
+      '15. **Erwartete Richtlinie (`expectedPolicy`, Option):**',
+      '`policy-mismatch`',
+      'path length constraint exceeded',
+      '`cA` TRUE allein nimmt OpenSSL **an**',
+      '**Der übergebene Anker zählt mit:**',
+    ]) {
+      expect(doc, word).toContain(word);
+    }
+    expect(limitsDoc).toMatch(/\|\s*F6\s*\|[^\n]*bad-certificate/);
+    expect(limitsDoc).toMatch(/\|\s*F7\s*\|[^\n]*chain-too-long/);
+    expect(limitsDoc).toMatch(/\|\s*F10\s*\|[^\n]*policy-mismatch/);
+  });
+  it('the README names expectedPolicy, pathLenConstraint and ReaderError', () => {
+    for (const word of [
+      '`expectedPolicy`',
+      '`policy-mismatch`',
+      '`pathLenConstraint`',
+      '`ReaderError`',
+    ]) {
+      expect(readme, word).toContain(word);
+    }
   });
 });

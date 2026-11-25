@@ -40,6 +40,12 @@ export interface Certificate {
   curveOid: string | null;
   /** From the extensions; null when the extension is absent. */
   isCa: boolean | null;
+  /**
+   * `pathLenConstraint` of the basicConstraints: how many non-self-issued intermediate CAs may follow this
+   * certificate on a path (RFC 5280 § 4.2.1.9). null: absent, or the certificate is no CA (a value next to
+   * cA FALSE is ignored).
+   */
+  pathLen: number | null;
   /** First byte of the keyUsage bit string (0x80 digitalSignature, 0x40 nonRepudiation, 0x04 keyCertSign). */
   keyUsage: number | null;
   eku: { oids: string[]; critical: boolean } | null;
@@ -116,6 +122,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
   bitStringBytes(spkiParts[1]!);
 
   let isCa: boolean | null = null;
+  let pathLen: number | null = null;
   let keyUsage: number | null = null;
   let eku: Certificate['eku'] = null;
   let subjectAltName: Uint8Array | null = null;
@@ -128,7 +135,19 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
     const bc = exts.get(OID.extBasicConstraints);
     if (bc) {
       const seq = children(expect(parseDer(bc.value), TAG.sequence));
-      isCa = seq.length > 0 && seq[0]!.tag === TAG.boolean ? boolean(seq[0]!) : false;
+      // BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint INTEGER (0..MAX) OPTIONAL }
+      let at = 0;
+      isCa = false;
+      if (seq[0]?.tag === TAG.boolean) {
+        isCa = boolean(seq[0]);
+        at = 1;
+      }
+      if (seq[at]?.tag === TAG.integer) {
+        const len = unsignedBytes(seq[at]!); // a negative value is unreadable
+        if (isCa) pathLen = len.length > 6 ? Number.MAX_SAFE_INTEGER : integerNumber(seq[at]!);
+        at += 1;
+      }
+      if (at !== seq.length) throw new ReaderError('bad-certificate'); // nothing else is in the schema
     }
     const ku = exts.get(OID.extKeyUsage);
     if (ku) {
@@ -168,6 +187,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
     keyOid,
     curveOid,
     isCa,
+    pathLen,
     keyUsage,
     eku,
     subjectAltName,

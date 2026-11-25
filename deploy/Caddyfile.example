@@ -1,0 +1,42 @@
+# Caddy vor dem Zeitstempel-Relay (Pilot: Einzelbetrieb, nur FreeTSA).
+# NICHT GEGEN EIN ECHTES Caddy GETESTET (in der Entstehungsumgebung war keines installiert); geprüft nur statisch
+# (tests/ops-templates.test.ts) und gegen docs/relay.md, "Betrieb hinter einem Reverse-Proxy". Vor dem Einsatz selbst
+# prüfen: caddy validate --config Caddyfile.
+#
+# WICHTIG: Caddy kann ohne Zusatzmodul KEIN Ratenlimit je Adresse und keine Verbindungsgrenze je Adresse. Ohne beides
+# fehlt der wichtigste Schutz (docs/relay.md): ein Modul wie caddy-ratelimit muss hinzugebaut werden (xcaddy), die
+# Zeilen dazu hängen von dessen Fassung ab und stehen hier nur als Gerüst (auskommentiert). Das Limit gehört NUR auf
+# /v1/stamp/* (Matcher @stamp), nicht auf Preflight, /health und /v1/services; 5 je Minute je Adresse.
+#
+# Fristen: Einzelbetrieb mindestens RELAY_MAX_WAIT_MS + 17 s = 47 s, hier 50 s (3 s Reserve). Sammelbetrieb
+# (RELAY_BATCH_MS gesetzt): 130s als sichere Obergrenze für die Vorgabe (docs/relay.md, "Latenz und Fristen").
+# TLS: Caddy holt und erneuert das Zertifikat für den Namen unten selbst (Name und Port 80/443 müssen erreichbar sein).
+# Genau eine Relay-Instanz je Schlüsseldatei: nur eine Adresse in reverse_proxy.
+
+relay.example {
+	@stamp path /v1/stamp/*
+
+	# Zusatzmodul nötig; Schreibweise je nach Fassung prüfen:
+	# rate_limit @stamp {
+	#     zone je_adresse {
+	#         key    {remote_host}
+	#         events 5
+	#         window 1m
+	#     }
+	# }
+
+	request_body {
+		max_size 1KB
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		# Pfad, Origin und X-Zeitstempel-Auth gehen unverändert durch; Verbindungen zum Relay hält Caddy von sich aus offen.
+		# X-Forwarded-For nicht als Vertrauensquelle ans Relay: das Relay kennt keine Adressen und wertet ihn nicht aus.
+		header_up -X-Forwarded-For
+		transport http {
+			dial_timeout            5s
+			# Einzelbetrieb: 30 s Wartegrenze + 17 s + 3 s Reserve. Sammelbetrieb stattdessen 130s.
+			response_header_timeout 50s
+		}
+	}
+}

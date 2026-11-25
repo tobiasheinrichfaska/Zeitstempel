@@ -74,12 +74,24 @@ export interface Opts {
   tstSerialRaw?: Uint8Array; // TSTInfo serial INTEGER content
   tsaCertOverride?: Uint8Array; // certificate sent in the token instead of the signer's
   caExts?: Uint8Array[]; // extra extensions of the root (trust anchor)
+  /** `pathLenConstraint` of the root's basicConstraints. */
+  rootPathLen?: number;
+  /** `pathLenConstraint` of each certificate of `deepChain` (I1 first; `undefined` = none). */
+  deepPathLens?: (number | undefined)[];
+  /**
+   * A self-issued intermediate (subject and issuer both `CA`, a new key, signed by the root's key: a key
+   * rollover) between the root and the signer.
+   */
+  rollover?: { pathLen?: number };
+  /** Policy OID of the TSTInfo (default 1.2.3.4). */
+  tstPolicy?: string;
   /** Puts an intermediate CA ("INT") between the root and the signer; the token carries it. */
   intermediate?: {
     extraExts?: Uint8Array[];
     validity?: [string, string]; // not-before, not-after (GeneralizedTime)
     noKeyCertSign?: boolean; // key usage without keyCertSign
     noBasicConstraints?: boolean; // no basicConstraints extension at all
+    pathLen?: number; // pathLenConstraint of its basicConstraints
     /** The root signs the intermediate with ecdsa-with-SHA1 (inner and outer algorithm, SHA-1 signature). */
     sha1Signed?: boolean;
   };
@@ -224,7 +236,16 @@ export function build(o: Opts = {}) {
     ca,
     ca,
     [
-      ext('2.5.29.19', true, o.rootNotCa ? seq() : seq(tlv(1, Uint8Array.of(0xff)))),
+      ext(
+        '2.5.29.19',
+        true,
+        o.rootNotCa
+          ? seq()
+          : seq(
+              tlv(1, Uint8Array.of(0xff)),
+              ...(o.rootPathLen === undefined ? [] : [int(o.rootPathLen)]),
+            ),
+      ),
       ext('2.5.29.15', true, tlv(3, Uint8Array.of(1, 0x04))),
       ...(o.caExts ?? []),
     ],
@@ -236,8 +257,24 @@ export function build(o: Opts = {}) {
   );
   const attacker = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const mid = o.rsa?.int ? rsaKey(o.rsa.int) : ec();
-  const caExts = (extra: Uint8Array[], isCa = true, keyCertSign = true, noBc = false) => [
-    ...(noBc ? [] : [ext('2.5.29.19', true, isCa ? seq(tlv(1, Uint8Array.of(0xff))) : seq())]),
+  const caExts = (
+    extra: Uint8Array[],
+    isCa = true,
+    keyCertSign = true,
+    noBc = false,
+    pathLen?: number,
+  ) => [
+    ...(noBc
+      ? []
+      : [
+          ext(
+            '2.5.29.19',
+            true,
+            isCa
+              ? seq(tlv(1, Uint8Array.of(0xff)), ...(pathLen === undefined ? [] : [int(pathLen)]))
+              : seq(),
+          ),
+        ]),
     ext('2.5.29.15', true, tlv(3, keyCertSign ? Uint8Array.of(1, 0x04) : Uint8Array.of(7, 0x80))),
     ...extra,
   ];
@@ -251,6 +288,7 @@ export function build(o: Opts = {}) {
       true,
       !o.intermediate?.noKeyCertSign,
       o.intermediate?.noBasicConstraints,
+      o.intermediate?.pathLen,
     ),
     Uint8Array.of(2),
     o.intermediate?.validity
@@ -281,7 +319,16 @@ export function build(o: Opts = {}) {
     let parentKey = ca;
     for (let j = 1; j <= o.deepChain; j += 1) {
       const k = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-      more.push(mkCert(`I${j}`, parentName, k, parentKey, caExts([]), Uint8Array.of(60 + j)));
+      more.push(
+        mkCert(
+          `I${j}`,
+          parentName,
+          k,
+          parentKey,
+          caExts([], true, true, false, o.deepPathLens?.[j - 1]),
+          Uint8Array.of(60 + j),
+        ),
+      );
       parentName = `I${j}`;
       parentKey = k;
     }
@@ -313,6 +360,20 @@ export function build(o: Opts = {}) {
     }
     tsaIssuer = 'L1';
     tsaIssuerKey = keys[0]!;
+  }
+  if (o.rollover) {
+    more.push(
+      mkCert(
+        'CA',
+        'CA',
+        mid,
+        ca,
+        caExts([], true, true, false, o.rollover.pathLen),
+        Uint8Array.of(120),
+      ),
+    );
+    tsaIssuer = 'CA';
+    tsaIssuerKey = mid;
   }
   for (let i = 0; i < (o.anchorTwins ?? 0); i += 1) {
     more.push(mkCert('CA', 'CA', ca, attacker, caExts([]), Uint8Array.of(100 + i)));
@@ -381,7 +442,7 @@ export function build(o: Opts = {}) {
     : [];
   const tst = seq(
     int(o.tstVersion ?? 1),
-    oidT('1.2.3.4'),
+    oidT(o.tstPolicy ?? '1.2.3.4'),
     o.tstImprintRaw ?? seq(seq(oidT('2.16.840.1.101.3.4.2.1')), octet(imprint)),
     tlv(2, o.tstSerialRaw ?? Uint8Array.of(9)),
     gt(o.genTime ?? '20260101000000Z'),

@@ -29,9 +29,10 @@ Stand: 2026-11-24. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
 7. Das Zeitstempel-Zertifikat erlaubt Zeitstempel (erweiterte Schlüsselverwendung mit genau dem einen Zweck
    `id-kp-timeStamping`, standardmäßig kritisch verlangt) und die Signatur-Verwendung. **Schlüsselverwendung
    (`keyUsage`):** verlangt wird nur, dass `digitalSignature` oder `nonRepudiation` gesetzt ist, wenn die
-   Erweiterung vorhanden ist; **zusätzliche Bits** (z. B. `keyEncipherment`, `keyAgreement`, `keyCertSign`,
-   `cRLSign`) neben `digitalSignature` werden angenommen. `openssl ts -verify` lehnt solche Zertifikate ab. Ob das
-   verschärft werden soll, ist eine Entscheidung des Besitzers (derzeit nicht).
+   Erweiterung vorhanden ist; **zusätzliche Bits** (z. B. `keyEncipherment`, `keyAgreement`, `cRLSign`) neben
+   `digitalSignature` werden angenommen. `openssl ts -verify` lehnt solche Zertifikate ab. Ob das
+   verschärft werden soll, ist eine Entscheidung des Besitzers (derzeit nicht). Ausnahme: `keyCertSign` und
+   `cA` TRUE beim Signierer, Punkt 14.
 8. Alle Zertifikate der Kette waren **zur bestätigten Zeit** (`genTime`) gültig und, wenn die Option `at` gegeben
    ist, **zusätzlich zu `at`** (beides, `at` ersetzt die `genTime` nicht; mit `at` ist ein Zertifikat, das nur zu
    `at` gültig war, abgelehnt: `certificate-not-valid-at-time`), kein Zertifikat der Kette (Anker ausgenommen) trägt eine
@@ -69,6 +70,38 @@ Stand: 2026-11-24. Die Bibliothek prüft ein Zeitstempel-Token nach RFC 3161. Di
     ob die Plattform einen kleinen Schlüssel überhaupt importiert). `minRsaBits: 0` schaltet sie aus. Schlüssel
     anderer Art (ECDSA) sind nicht betroffen. Der Exponent wird nicht beurteilt.
 
+13. **`pathLenConstraint`** (RFC 5280 § 4.2.1.9, § 6.1.4): Hat ein Zertifikat der Kette `basicConstraints` mit
+    `pathLenConstraint` n, dürfen unter ihm höchstens n Zwischen-CAs bis zum Zeitstempel-Zertifikat stehen, sonst
+    `chain-too-long`. Gezählt werden die Zwischenzertifikate zwischen dem Zertifikat und dem Signierer, **ohne den
+    Signierer** und ohne **selbst ausgestellte** Zwischenzertifikate (Name des Ausstellers gleich dem des Subjects,
+    z. B. ein Schlüsselwechsel; § 6.1.4 (l)). **Der übergebene Anker zählt mit:** ein Anker mit `pathLenConstraint` 0
+    erlaubt nur Zeitstempel-Zertifikate, die er selbst ausgestellt hat. Das ist gemessen: `openssl ts -verify` prüft
+    den Wert der Wurzel ebenso (Wurzel mit 0 und eine Zwischen-CA: `path length constraint exceeded`), und der
+    Anker beschränkt damit seine Kette, was der Aufrufer mit der Wahl des Ankers übernimmt (die Ausnahmen für
+    Anker bei kritischen Erweiterungen, erweiterter Schlüsselverwendung und RSA-Größe betreffen Dinge, die der Anker
+    nicht über andere sagt). Ein `pathLenConstraint` neben `cA` FALSE oder ohne `cA` wird ignoriert (das
+    Zertifikat ist keine CA, sonst scheitert es an `not-a-ca`); ein negativer Wert oder ein Element mehr in
+    `basicConstraints` macht das Zertifikat unlesbar (`bad-certificate`; ein Zusatzzertifikat im Token wird
+    übersprungen, ein Anker macht die Eingabe ungültig); ein Wert über 6 Byte gilt als „keine Grenze“. Das
+    Zeitstempel-Zertifikat selbst als Anker: es gibt keine Kette, kein Wert wird beurteilt.
+14. **Der Signierer ist keine CA:** Ein Zeitstempel-Zertifikat mit `basicConstraints` `cA` TRUE (mit oder ohne
+    `pathLenConstraint`) oder mit `keyCertSign` ist `bad-certificate`, außer der Aufrufer hat es selbst als Anker
+    übergeben (seine Entscheidung). Gemessen mit `openssl ts -verify` (3.0.13): `cA` TRUE allein nimmt OpenSSL **an**
+    (auch mit `pathLenConstraint`, kritisch oder nicht); `keyCertSign` neben `digitalSignature` lehnt es ab (wie jedes
+    zusätzliche Bit der Schlüsselverwendung, Punkt 7). Wir sind bei `cA` TRUE also **bewusst strenger**: ein
+    Zeitstempel-Signierer, der selbst Zertifikate ausstellen darf, ist kein Endnutzer-Zertifikat (RFC 3161 § 2.3,
+    RFC 5280 § 4.2.1.9), und ein Aussteller mit so einem Zertifikat öffnete jedem, der den Schlüssel hat, die
+    Möglichkeit, weitere Signierer unter derselben Kette auszustellen. Die vier aufgezeichneten Antworten und
+    die 40 von OpenSSL geschriebenen Token bestehen die Regel. Ein Signierer mit nur `keyCertSign` (ohne
+    `digitalSignature` und `nonRepudiation`) bleibt `bad-eku` (Punkt 7 kommt zuerst).
+15. **Erwartete Richtlinie (`expectedPolicy`, Option):** Ein OID-Text oder eine Liste von 1 bis 16 OID-Texten in
+    Punktschreibweise; die `policy` des TSTInfo muss genau (Textgleichheit, kein Präfix) einer davon sein, sonst
+    `policy-mismatch`. Ohne die Option wird die Richtlinie nur gemeldet. Gemessen: `openssl ts -verify -queryfile`
+    mit einer Anfrage, die `-tspolicy` nennt, vergleicht ebenso genau (`1.2.3` und `1.2.3.4.5` gegen `1.2.3.4`:
+    `policy mismatch`). Die Anfrage selbst nennt keine Richtlinie (`buildTimestampRequest` kennt kein `reqPolicy`);
+    wer eine Richtlinie fordert, prüft sie hier. Ein falscher Wert (Typ, leere oder zu lange Liste, kein OID in
+    kanonischer Punktschreibweise) ist `bad-options`.
+
 Punkt 9 ist **strenger als `openssl ts -verify`**, der eine solche Zwischen-CA annimmt; die Regel folgt der
 Praxis der Browser (Verschachtelung der erweiterten Schlüsselverwendung entlang der Kette). Eine Zwischen-CA nur
 für Codesignatur oder nur für Server-Authentifizierung kann also keinen Zeitstempel-Signierer ausstellen.
@@ -76,6 +109,7 @@ für Codesignatur oder nur für Server-Authentifizierung kann also keinen Zeitst
 **Strenger als `openssl ts -verify`** (jeweils eine falsche Ablehnung möglich, nie eine falsche Annahme):
 
 - Punkt 9 (erweiterte Schlüsselverwendung einer Zwischen-CA, s. o.).
+- **Punkt 14** (Signierer mit `cA` TRUE): openssl nimmt ihn an (gemessen, 3.0.13).
 - **Punkt 12** (`weak-key`): openssl nimmt auch RSA-512 an (gemessen, 3.0.13).
 - **TSTInfo (Punkt 11):** `ordering` FALSE ausdrücklich geschrieben, Milli-/Mikrosekunden 0 oder über 999, leere
   Erweiterungen `[1]`, `critical` FALSE ausdrücklich geschrieben und ein anderer Parameter als NULL beim
@@ -130,7 +164,7 @@ geprüft werden (wie in `tests/services-fixtures.test.ts`), bevor er in `service
 - Nullen am Ende des Sekundenbruchteils in `genTime`, Sekundenbruchteil in Zertifikatszeiten;
 - ein `tsa`-Feld, das nicht zum Signierer passt, auch bei anderer Reihenfolge der Namensteile (der Vergleich ist
   der vereinfachte von RFC 5280 § 7.1, nicht der volle);
-- RSA unter 2048 Bit (`minRsaBits`), eine Zwischen-CA mit fremder erweiterter Schlüsselverwendung;
+- RSA unter 2048 Bit (`minRsaBits`), eine Zwischen-CA mit fremder erweiterter Schlüsselverwendung, ein Signierer mit `cA` TRUE;
 - seit dem Audit vom 2026-11-24 ein Element zu viel in den oben genannten festen SEQUENCEs.
 
 Einen Schalter hat nur die RSA-Mindestgröße (`minRsaBits: 0`, oder den Signierer als Anker übergeben); die
@@ -158,10 +192,11 @@ Schnelltest (`npm run spike`).
   Relay antwortet dann `502 upstream-invalid` (Grund `bad-time`), und das Budget des Dienstes ist verbraucht (die
   Anfrage ging hinaus). Das ist bewusst so entschieden (keine Annahme eines Wertes, den `Date` nicht darstellen
   kann). Ob ein Dienst bei einer Schaltsekunde so stempelt, wurde nicht untersucht.
-- **Namens- und Pfadbeschränkungen** der Zertifikate (NameConstraints, pathLenConstraint) werden nicht
-  ausgewertet; die Länge der Kette ist begrenzt (höchstens 5 Zwischenzertifikate; `chainLength` höchstens 7, Anker eingerechnet).
-- **Zertifikatsrichtlinien** (Policy-OIDs): Die Richtlinie des Tokens wird gemeldet, aber nicht gegen eine
-  Erwartung geprüft.
+- **Namensbeschränkungen** der Zertifikate (NameConstraints) werden nicht ausgewertet (eine kritische ist
+  `bad-certificate`, eine nicht kritische wird ignoriert); `pathLenConstraint` wird ausgewertet (Punkt 13). Die Länge
+  der Kette ist begrenzt (höchstens 5 Zwischenzertifikate; `chainLength` höchstens 7, Anker eingerechnet).
+- **Zertifikatsrichtlinien** (Policy-OIDs **der Zertifikate**, `certificatePolicies`) werden nicht ausgewertet. Die
+  Richtlinie **des Tokens** (TSTInfo) wird gemeldet und mit `expectedPolicy` (Punkt 15) gegen eine Erwartung geprüft.
 - **Nicht unterstützt:** RSA-PSS, BER (nur DER), SHA-1 (nur als Zertifikats-Hash im Attribut `signingCertificate` (v1) angenommen; als Hash des Abdrucks oder der Signatur und überall sonst abgelehnt), andere
   Hashverfahren als SHA-256 für den Abdruck, Token ohne `certReq` (das Zeitstempel-Zertifikat muss im Token
   liegen). Das sind abgelehnte Fälle, keine stillen Annahmen.
@@ -203,11 +238,12 @@ Namen war ein solcher Fall (Token verformbar) und ist seit dem Audit vom 2026-11
 | F3  | RSA-512 und RSA-1024 als Signierer oder Zwischen-CA                                                                               | nimmt an (gemessen)                                                                   | `weak-key` (Vorgabe `minRsaBits` 2048; Anker ausgenommen)                                                          | **behoben**, bewusst strenger; der Exponent (z. B. e = 3) wird nicht beurteilt (Lücke)                                           |
 | F4  | Signierer mit `subjectKeyIdentifier` statt Aussteller und Seriennummer (SignerInfo Version 3)                                     | `ts -verify`: lehnt ab, kann die Form nicht lesen; `cms -verify`: nimmt an (gemessen) | nimmt an; Version und Form müssen zusammenpassen (`unsupported-version`), sonst wie F8                             | **behoben** (s. „Unterzeichner über `subjectKeyIdentifier`“); Unterschiede zu `cms -verify` gemessen, Tabelle dort               |
 | F5  | `cmsAlgorithmProtection` (RFC 8933)                                                                                               | nicht gemessen                                                                        | Attribut wird nie gelesen; nur die Teilregel „benannte Signatur-OID gegen `digestAlgorithm`“ (`signature-invalid`) | Lücke (klein)                                                                                                                    |
-| F6  | Signierer ist selbst eine CA (`cA` TRUE)                                                                                          | nimmt an (gemessen)                                                                   | nimmt an (gemessen)                                                                                                | Lücke, gleich                                                                                                                    |
-| F7  | `pathLenConstraint`, Namensbeschränkungen                                                                                         | prüft                                                                                 | nicht ausgewertet (Kette höchstens 5 Zwischenzertifikate, kritische Namensbeschränkung ist `bad-certificate`)      | **Lücke, nicht gebaut** (s. „Was NICHT geprüft wird“)                                                                            |
+| F6  | Signierer ist selbst eine CA (`cA` TRUE; `keyCertSign`)                                                                           | `cA` TRUE: nimmt an (gemessen); mit `keyCertSign`: lehnt ab (gemessen)                | `bad-certificate` (außer der Signierer ist selbst der Anker)                                                       | **behoben**, bei `cA` TRUE bewusst strenger (Punkt 14)                                                                           |
+| F7  | `pathLenConstraint` (Zwischen-CAs und Anker)                                                                                      | prüft (gemessen, auch den Wert der Wurzel)                                            | `chain-too-long`; selbst ausgestellte Zwischenzertifikate und der Signierer zählen nicht                           | **behoben** (Punkt 13); der Fall „selbst ausgestellt“ ist nur gegen die Regel des RFC getestet, OpenSSL baut die Kette nicht     |
+| F7  | Namensbeschränkungen (NameConstraints)                                                                                            | prüft                                                                                 | nicht ausgewertet (kritische ist `bad-certificate`, nicht kritische wird ignoriert)                                | **Lücke, nicht gebaut** (s. „Was NICHT geprüft wird“)                                                                            |
 | F8  | Zertifikat mit gleichem Aussteller und gleicher Seriennummer vor dem echten                                                       | lehnt ab (gemessen)                                                                   | `signing-certificate-mismatch` (nur Verfügbarkeit: das erste Treffer-Zertifikat wird genommen)                     | gleich; Verbesserung offen                                                                                                       |
 | F9  | Token ohne eingebettete Zertifikate                                                                                               | unterstützt                                                                           | nicht unterstützt (`signer-certificate-missing`)                                                                   | bewusst anders                                                                                                                   |
-| F10 | erwartete Policy / `reqPolicy`                                                                                                    | prüft                                                                                 | nur gemeldet                                                                                                       | Lücke                                                                                                                            |
+| F10 | erwartete Policy (Option `expectedPolicy`)                                                                                        | prüft gegen die Anfrage, genau (gemessen)                                             | `policy-mismatch`, genau (Punkt 15)                                                                                | **behoben**; `reqPolicy` in der Anfrage fehlt weiter (Lücke)                                                                     |
 | F11 | `signingTime` widerspricht `genTime`                                                                                              | –                                                                                     | `signingTime` wird nie gelesen                                                                                     | bewusst anders (kein Risiko, solange es nie ausgewertet wird)                                                                    |
 | F12 | SignedData-Version 1, ein Byte Anhang, BER mit unbestimmter Länge                                                                 | nimmt an (gemessen)                                                                   | `unsupported-version`, `trailing-bytes`, `indefinite-length`                                                       | **bewusst strenger** (nur DER); Verfügbarkeitsrisiko bei einem Dienst, der so stempelt (von Hand nur vier Dienste gesammelt)     |
 | F13 | `issuerSerial` im ESSCertID                                                                                                       | nicht gemessen                                                                        | nur der Hash wird verglichen                                                                                       | Lücke ohne Wirkung (der Hash bindet das Zertifikat)                                                                              |
@@ -225,8 +261,8 @@ Namen war ein solcher Fall (Token verformbar) und ist seit dem Audit vom 2026-11
 | –   | `signedAttrs` nicht in DER-Reihenfolge, so signiert                                                                               | vermutlich lehnt ab (nicht gemessen)                                                  | prüft die empfangenen Bytes                                                                                        | bewusst anders, nicht gemessen                                                                                                   |
 
 Bekannte Lücken, die **nicht** gebaut wurden (Entscheidung des Besitzers, solange kein Dienst sie braucht): die
-Auswertung von `pathLenConstraint` und Namensbeschränkungen, Brainpool-Kurven und Ed25519 als Signatur. Gebaut seit
-dem Vergleich: F4 (Signierer über `subjectKeyIdentifier`, `tests/ski-signer.test.ts`). Der Rest von F4, was nicht
+Auswertung von Namensbeschränkungen, Brainpool-Kurven und Ed25519 als Signatur. Gebaut seit dem Vergleich:
+F6 und F7 (`pathLenConstraint`, Signierer keine CA; `tests/chain-rules.test.ts`), F10 (`expectedPolicy`), F4 (Signierer über `subjectKeyIdentifier`, `tests/ski-signer.test.ts`). Der Rest von F4, was nicht
 gemessen ist: ein echter Dienst, der so stempelt (keiner der vier aufgezeichneten tut es; die Form ist nur mit eigenen
 Token und mit einem von OpenSSL geschriebenen `cms`-Token geprüft, nicht mit einem Zeitstempeldienst).
 

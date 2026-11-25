@@ -661,11 +661,13 @@ describe.skipIf(!canJudgeAtTime)('agreement with openssl ts -verify', () => {
       'untrusted-chain',
     ),
     // other measured differences (F6, F12, F14 and others of the benchmark)
+    // F6: openssl accepts a signer with cA=TRUE; we refuse it (the rows with more cases are in tests/chain-rules.test.ts)
     row(
       'the signer certificate is a CA itself (basicConstraints cA=TRUE)',
       { extraTsaExts: [ext('2.5.29.19', true, seq(bool(true)))] },
       true,
-      true,
+      false,
+      'bad-certificate',
     ),
     row('signer serial number 0', { serialRaw: Uint8Array.of(0) }, true, true),
     row(

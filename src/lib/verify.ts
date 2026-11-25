@@ -54,6 +54,14 @@ export interface VerifyOptions {
    * them). A finite number >= 0, else `bad-options`.
    */
   minRsaBits?: number;
+  /**
+   * The policy OID(s) the caller expects, in dotted notation (a string, or a non-empty array of at most 16
+   * strings): the `policy` of the TSTInfo must be one of them, else `policy-mismatch` (RFC 3161 § 2.4.1, the
+   * policy of the request). Compared as exact text: `1.2.3` does not match `1.2.3.4`. Not given: not checked.
+   * Anything else (another type, an empty or too long array, a text that is no OID in dotted notation):
+   * `bad-options`.
+   */
+  expectedPolicy?: string | readonly string[];
 }
 
 export interface VerifiedTimestamp {
@@ -226,6 +234,36 @@ interface OptionSnapshot {
   readonly expectedNonce: Uint8Array | undefined;
   readonly requireCriticalEku: boolean;
   readonly minRsaBits: number;
+  readonly expectedPolicy: readonly string[] | undefined;
+}
+
+const MAX_EXPECTED_POLICIES = 16;
+// dotted OID in canonical form: at least two arcs, no leading zeros, the first arc 0 to 2 (so the text of a
+// policy read from a token and the text given here are equal exactly when they name the same OID)
+const OID_TEXT = /^[012](?:\.(?:0|[1-9][0-9]{0,15})){1,31}$/;
+
+/** `expectedPolicy` as a frozen list of OID texts; a bad value is `bad-options`. Read by length and index, once each. */
+function readExpectedPolicy(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  let list: unknown[];
+  if (typeof value === 'string') list = [value];
+  else {
+    if (!Array.isArray(value)) throw new ReaderError('bad-options');
+    const count: unknown = (value as unknown[]).length;
+    if (typeof count !== 'number' || !Number.isInteger(count)) throw new ReaderError('bad-options');
+    if (count < 1 || count > MAX_EXPECTED_POLICIES) throw new ReaderError('bad-options');
+    list = [];
+    for (let i = 0; i < count; i += 1) list.push((value as unknown[])[i]);
+  }
+  for (const text of list) {
+    if (typeof text !== 'string' || text.length > 256 || !OID_TEXT.test(text)) {
+      throw new ReaderError('bad-options');
+    }
+    // first arcs 0 and 1 allow the second arc 0 to 39 only (X.690 § 8.19.4)
+    const [a, b] = text.split('.') as [string, string];
+    if (a !== '2' && Number(b) > 39) throw new ReaderError('bad-options');
+  }
+  return Object.freeze([...(list as string[])]);
 }
 
 /**
@@ -245,6 +283,7 @@ function checkOptions(options: unknown): OptionSnapshot {
     const nonce = read('expectedNonce');
     const critical = read('requireCriticalEku');
     const rsaBits = read('minRsaBits');
+    const policy = readExpectedPolicy(read('expectedPolicy'));
     const nowMs = now === undefined ? undefined : dateMs(now);
     const atMs = at === undefined ? undefined : dateMs(at);
     const minGenMs = minGen === undefined ? undefined : dateMs(minGen);
@@ -271,6 +310,7 @@ function checkOptions(options: unknown): OptionSnapshot {
       expectedNonce: nonceCopy,
       requireCriticalEku: critical ?? true,
       minRsaBits: rsaBits ?? DEFAULT_MIN_RSA_BITS,
+      expectedPolicy: policy,
     });
   };
   if (options === undefined) return snapshot(() => undefined);
@@ -398,6 +438,7 @@ function issuerFlaw(
   anchors: readonly Certificate[],
   times: readonly number[],
   minRsaBits: number,
+  below: number,
 ) {
   const isAnchor = anchors.some((a) => same(a.raw, issuer.raw));
   // no basicConstraints at all (an X.509 v1 root): a CA only when the caller handed it over as an anchor
@@ -406,6 +447,9 @@ function issuerFlaw(
   if (isCa !== true || (issuer.keyUsage !== null && (issuer.keyUsage & 0x04) === 0)) {
     return 'not-a-ca' as const;
   }
+  // pathLenConstraint (RFC 5280 § 4.2.1.9, § 6.1.4): at most that many non-self-issued intermediate CAs below
+  // it; a trust anchor's value counts too (`openssl verify` does the same, measured: the anchor limits its chain)
+  if (issuer.pathLen !== null && below > issuer.pathLen) return 'chain-too-long' as const;
   if (!validAt(issuer, times)) return 'certificate-not-valid-at-time' as const;
   if (issuer.unknownCritical && !isAnchor) {
     return 'bad-certificate' as const; // a trust anchor is the caller's decision, not checked
@@ -476,8 +520,11 @@ async function buildChain(
       : [];
     const usable: Certificate[] = [];
     const flawed: Flawed[] = [];
+    // intermediates between the signer and the candidate; a self-issued one (same name as issuer and subject:
+    // a key rollover) does not count (RFC 5280 § 6.1.4 (l))
+    const below = path.slice(1).filter((c) => !sameName(c.subject, c.issuer)).length;
     for (const candidate of named) {
-      const flaw = issuerFlaw(candidate, anchors, times, minRsaBits);
+      const flaw = issuerFlaw(candidate, anchors, times, minRsaBits, below);
       if (flaw) flawed.push({ candidate, flaw });
       else usable.push(candidate);
     }
@@ -518,7 +565,7 @@ async function buildChain(
  * imprint, nonce (when given), the CMS signature, the signing-certificate attribute, the key usage of
  * the signer, the validity of every certificate at the stamped time (and at `at`, when given), and a chain
  * that ends in one of the given trust anchors. The age of the token is checked only with `minGenTime`.
- * Revocation is NOT checked; name constraints and path length are not evaluated (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
+ * Revocation is NOT checked; name constraints are not evaluated (`pathLenConstraint` is) (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
  */
 export async function verifyTimestampToken(
   tokenBytes: Uint8Array,
@@ -576,6 +623,9 @@ async function verifyChecked(
       const want = trimZeros(opts.expectedNonce);
       if (!info.nonce || !same(info.nonce, want)) throw new ReaderError('nonce-mismatch');
     }
+    if (opts.expectedPolicy !== undefined && !opts.expectedPolicy.includes(info.policy)) {
+      throw new ReaderError('policy-mismatch');
+    }
     if (opts.now !== undefined && info.genTime > opts.now + opts.maxSkewMs) {
       throw new ReaderError('time-in-future');
     }
@@ -631,11 +681,20 @@ async function verifyChecked(
     ) {
       throw new ReaderError('bad-eku');
     }
-    if (signer.unknownCritical && !anchors.some((a) => same(a.raw, signer.raw))) {
+    const signerIsAnchor = anchors.some((a) => same(a.raw, signer.raw));
+    if (signer.unknownCritical && !signerIsAnchor) {
       throw new ReaderError('bad-certificate');
     }
     if (signer.keyUsage !== null && (signer.keyUsage & 0xc0) === 0)
       throw new ReaderError('bad-eku');
+    // the signer is an end entity: a certificate that is a CA (cA TRUE) or may sign certificates (keyCertSign)
+    // is refused, unless the caller handed it over as the trust anchor itself
+    if (
+      !signerIsAnchor &&
+      (signer.isCa === true || (signer.keyUsage !== null && (signer.keyUsage & 0x04) !== 0))
+    ) {
+      throw new ReaderError('bad-certificate');
+    }
     if (!validAt(signer, times)) throw new ReaderError('certificate-not-valid-at-time');
 
     // chain to a trust anchor

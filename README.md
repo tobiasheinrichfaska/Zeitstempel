@@ -51,7 +51,11 @@ Die Prüfung ist streng: Das Feld `tsa` des Tokens muss zum Zeitstempel-Zertifik
 Tokens wird als Schema gelesen (`bad-tst-info`), und ein RSA-Schlüssel unter 2048 Bit im Zeitstempel-Zertifikat oder in
 der Kette (`weak-key`; Anker ausgenommen) wird abgelehnt. Die Option `minRsaBits` (Zahl, Vorgabe 2048, 0 schaltet aus)
 ändert die Grenze. Wo das strenger oder lockerer ist als `openssl ts -verify`: `docs/grenzen.md`, Tabelle „Abgleich
-mit OpenSSL“. Der Unterzeichner darf im Token über Aussteller und Seriennummer (Version 1) oder über den
+mit OpenSSL“. Eine Zwischen-CA oder ein Anker mit `pathLenConstraint` begrenzt die Kette (`chain-too-long`), und ein
+Zeitstempel-Zertifikat, das selbst eine CA ist (`cA` oder `keyCertSign`), wird abgelehnt (`bad-certificate`), außer es
+ist selbst der Anker. Mit der Option `expectedPolicy` (OID-Text oder Liste von OID-Texten) muss die Richtlinie des Tokens
+eine der genannten sein (`policy-mismatch`; wie `openssl ts -verify` mit einer Anfrage, die eine Richtlinie nennt).
+`readToken`, `parseCertificate` und `parsePemCertificates` werfen `ReaderError` (aus dem Paket exportiert, für `instanceof`). Der Unterzeichner darf im Token über Aussteller und Seriennummer (Version 1) oder über den
 `subjectKeyIdentifier` seines Zertifikats (Version 3) genannt sein; ein Zertifikat ohne diese Erweiterung wird auf dem
 zweiten Weg nie gefunden (`docs/grenzen.md`, „Unterzeichner über `subjectKeyIdentifier`“; getestet nur mit eigenen
 Token und einem von OpenSSL geschriebenen, nicht mit einem echten Dienst).

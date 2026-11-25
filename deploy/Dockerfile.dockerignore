@@ -1,0 +1,30 @@
+# Ignorierliste für deploy/Dockerfile (BuildKit: <Dockerfile>.dockerignore hat Vorrang vor .dockerignore).
+# Das Dockerfile kopiert ohnehin nur package.json, services.json, anchors/, src/ und relay/; das hier hält den Rest
+# aus dem Bau-Kontext (und damit aus jedem Fehlgriff mit COPY).
+.git
+.github
+.gitignore
+.gitattributes
+node_modules
+dist
+coverage
+.tmp
+tests
+scripts
+docs
+manual_tests
+deploy
+*.md
+LICENSE*
+# lokale Konfiguration und Schlüsseldateien: nie in ein Image
+.env
+.env.*
+*.env
+relay.env
+relay-keys*.json
+*.keys.json
+*keys*.json
+*.pem.key
+*.log
+.vscode
+.idea

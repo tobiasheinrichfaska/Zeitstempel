@@ -38,6 +38,7 @@ export type Reason =
   | 'signing-certificate-mismatch'
   | 'signature-invalid'
   | 'tsa-mismatch'
+  | 'policy-mismatch'
   // certificates
   | 'bad-pem'
   | 'bad-certificate'
