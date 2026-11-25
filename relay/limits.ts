@@ -94,8 +94,10 @@ export const RELAY_LIMITS = {
    * Single operation: requests that may wait per service (and identity) for the minimum distance to the last call; a
    * further one gets `503 busy`. Not `soloQueueMax`: that one counts the solo requests of the collecting operation.
    * With the shipped services and the default wait of 30 s, a burst gets 7 requests a slot within the wait: the first
-   * calls at once, and 6 wait (30 s / 5 s = 6 distances for FreeTSA). So it bites only with a `minIntervalMs` below about
-   * 1.9 s at a 30 s wait (more than 16 distances), or below 3.75 s at the largest wait of 60 s.
+   * calls at once, and 6 wait (30 s / 5 s = 6 distances for FreeTSA). It counts per lane (service and identity), not
+   * per service. So it bites only when the 17th request (it needs 17 distances, `singleQueueMax + 1`) still fits into the
+   * wait: with a `minIntervalMs` of at most `maxWait / 17`, i.e. 30 s / 17 = 1.76 s at the default wait, 60 s / 17 =
+   * 3.53 s at the largest wait of 60 s.
    */
   singleQueueMax: 16,
   /** RELAY_MAX_WAIT_MS: value when not set (how long a request may wait for a free slot or, in single operation, for the minimum distance, then `503 busy`). */
@@ -135,6 +137,6 @@ export const RELAY_LIMITS = {
  * Single operation: how far past its deadline (`RELAY_MAX_WAIT_MS` after arrival) the call of a waiting request may lie
  * before it is `503 busy`. The door lets the last request through whose time is at the very limit, but every call before
  * it is a few milliseconds late (timers), and those delays add up along the chain: without this slack that last request
- * would wait the whole limit and then be refused without a stamp. Also the most by which a wait can exceed the limit.
+ * would wait the whole limit and then be refused without a stamp. Also the most by which a wait can exceed the limit: the time of the call itself counts (a loop that stood still is `503 busy`).
  */
 export const WAIT_TOLERANCE_MS = 50;

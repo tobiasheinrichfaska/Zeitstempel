@@ -100,13 +100,14 @@ describe('single operation: the minimum distance between two calls to one servic
     h.mono.offset += 5000; // the process stood still: everything that was due is late now
     const [r1, r2, r3] = await Promise.all([first, second, third]);
     expect(r1.status).toBe(200);
-    expect(r2.status).toBe(200); // late, but its own time had come
-    expect(r3.status).toBe(503); // the call before it was late, so its distance would pass the limit
+    // both timers fire at 5000, far past the limit of 1000 (+ the slack): the time of the call counts, not only the booked time
+    expect(r2.status).toBe(503);
+    expect(r3.status).toBe(503);
     expect(await r3.json()).toEqual({ error: 'busy' });
     expect(Number(r3.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
-    expect(h.calls).toHaveLength(2);
-    expect(h.stats().stamped).toBe(2);
-    expect(h.stats().refused['busy']).toBe(1);
+    expect(h.calls).toHaveLength(1);
+    expect(h.stats().stamped).toBe(1);
+    expect(h.stats().refused['busy']).toBe(2);
   });
 
   it('the waiting queue is limited per service: a further request is 503 busy at once, not stamped', async () => {

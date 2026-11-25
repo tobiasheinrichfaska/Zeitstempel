@@ -327,3 +327,111 @@ describe('F2: an identity is dropped on the monotonic clock, and not before its 
     expect(xs[1]!.mono - xs[0]!.mono).toBe(LONG);
   });
 });
+
+describe('Q4 F1: a loop that stood still does not stamp past the limit (the time of the call counts, not only the booked time)', () => {
+  let h: Harness;
+  afterEach(() => h.close());
+
+  /** a is called at once, b is booked one distance later; the monotonic clock jumps by `stall` before b's timer fires. */
+  async function stalled(stall: number): Promise<Response> {
+    h = await start({ batch: null, minIntervalMs: MIN, maxWaitMs: 1000, virtualMono: true });
+    const a = h.stamp(sha256('q-a'), { key: KEY_A });
+    await until(() => h.calls.length === 1);
+    const b = h.stamp(sha256('q-b'), { key: KEY_A }); // booked for T0 + 200, within the limit
+    await sleep(40); // b waits for its real timer (200 ms)
+    h.advance(stall); // the loop stood still: b's timer fires when the clock is already here
+    const rb = await b;
+    expect((await a).status).toBe(200);
+    return rb;
+  }
+
+  it('a stall past the limit and the slack: 503 busy with Retry-After, no call to the service', async () => {
+    const rb = await stalled(1000 + WAIT_TOLERANCE_MS + 1);
+    expect(rb.status).toBe(503);
+    expect(await rb.json()).toEqual({ error: 'busy' });
+    expect(Number(rb.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+    expect(h.calls).toHaveLength(1);
+    expect(h.stats()).toEqual({ stamped: 1, refused: { busy: 1 } });
+  });
+
+  it('a stall just within the limit and the slack: stamped, at least one distance after the call before', async () => {
+    const rb = await stalled(1000 + WAIT_TOLERANCE_MS);
+    expect(rb.status).toBe(200);
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]!.mono - h.calls[0]!.mono).toBe(1000 + WAIT_TOLERANCE_MS);
+    expect(h.stats()).toEqual({ stamped: 2, refused: {} });
+  });
+});
+
+describe('Q4 F1: collecting operation, a solo request that waits in the queue while the loop stood still', () => {
+  let h: Harness;
+  afterEach(() => h.close());
+
+  async function stalledSolo(stall: number): Promise<Response> {
+    h = await start({
+      batch: { windowMs: 300, max: 100 },
+      minIntervalMs: MIN,
+      maxWaitMs: 1000,
+      virtualMono: true,
+    });
+    const send = (name: string) => {
+      const x = sha256(name);
+      return h.stamp(x, { key: KEY_B, body: solo(x) });
+    };
+    const a = send('qs-a'); // a slot at once
+    await until(() => h.calls.length === 1);
+    const b = send('qs-b'); // waits for the distance (200 ms, a real timer)
+    await sleep(40);
+    h.advance(stall);
+    const rb = await b;
+    expect((await a).status).toBe(200);
+    return rb;
+  }
+
+  it('a stall past the limit and the slack: 503 busy, no call', async () => {
+    const rb = await stalledSolo(1000 + WAIT_TOLERANCE_MS + 1);
+    expect(rb.status).toBe(503);
+    expect(await rb.json()).toEqual({ error: 'busy' });
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('a stall just within the limit and the slack: stamped', async () => {
+    const rb = await stalledSolo(1000 + WAIT_TOLERANCE_MS);
+    expect(rb.status).toBe(200);
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]!.mono - h.calls[0]!.mono).toBe(1000 + WAIT_TOLERANCE_MS);
+  });
+});
+
+describe('Q4 F2: Retry-After of the full identity table follows the distance when it is longer than the budget window', () => {
+  let h: Harness;
+  afterEach(() => h.close());
+
+  it('minIntervalMs 120 s: the table of 3 is full, the fourth identity waits for the first to expire (110 s at 10 s, not 50 s)', async () => {
+    const LONG = 120_000;
+    h = await start({
+      batch: null,
+      bearer: true,
+      minIntervalMs: LONG,
+      maxWaitMs: 30_000,
+      virtualMono: true,
+      upstreamIdentities: 3,
+    });
+    const send = (name: string, token: string) => {
+      const x = sha256(name);
+      return h.stamp(x, { key: KEY_A, body: withToken(x, token) });
+    };
+    for (const [i, t] of ['tok-a', 'tok-b', 'tok-c'].entries()) {
+      expect((await send(`id-${i}`, t)).status).toBe(200);
+      h.advance(i === 2 ? 8000 : 1000); // a at 0, b at 1 s, c at 2 s, now 10 s
+    }
+    const full = await send('id-d', 'tok-d');
+    expect(full.status).toBe(503);
+    expect(await full.json()).toEqual({ error: 'busy' });
+    expect(Number(full.headers.get('retry-after'))).toBe(110); // 120 s kept - 10 s idle; the budget window (60 s) would say 50
+    h.advance(100_000); // 110 s: a is still within its 120 s
+    expect(Number((await send('id-d2', 'tok-d')).headers.get('retry-after'))).toBe(10);
+    h.advance(10_000); // 120 s: a has expired
+    expect((await send('id-d3', 'tok-d')).status).toBe(200);
+  });
+});

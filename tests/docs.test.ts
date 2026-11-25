@@ -514,6 +514,8 @@ describe('key types, solo stamps and the key file read again are written down wh
     // the tolerance of single operation is named in the text, its value lives in relay/limits.ts (not in RELAY_LIMITS)
     expect(doc).toContain('`WAIT_TOLERANCE_MS` (50 ms');
     expect(doc).toContain('Abbruch während des Wartens');
+    expect(doc).toContain('(16 Plätze je Spur, also je Dienst und Identität, nicht je Dienst)');
+    expect(doc).toContain('nicht nur der gebuchte');
     expect(doc).toContain('die Mengenzähler des Einzelbetriebs auf die monotone Uhr');
     const limitsSource = readFileSync(new URL('../relay/limits.ts', import.meta.url), 'utf8');
     expect(limitsSource).toContain('export const WAIT_TOLERANCE_MS = 50;');

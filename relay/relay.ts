@@ -884,7 +884,9 @@ export function createRelay(options: RelayOptions): Relay {
         const due = Math.max(at, gate.last + m);
         // the door lets the last one through at the very limit, and every call before it may be a few ms late
         // (timers): the sum of those delays must not cost the request the slot the door promised
-        if (due > deadline + WAIT_TOLERANCE_MS) {
+        // `t` counts too: a loop that stood still fires the timer long after `due`, and the call would then lie far
+        // past the limit although the time it booked was within it
+        if (Math.max(due, t) > deadline + WAIT_TOLERANCE_MS) {
           giveBack();
           return finish('busy');
         }
@@ -937,6 +939,9 @@ export function createRelay(options: RelayOptions): Relay {
   /** A request that waits for a slot of its service (not yet in a window, not yet stamped). */
   interface Queued extends Waiting {
     timer: ReturnType<typeof setTimeout> | null;
+    /** The monotonic time its wait ends (arrival + `maxWaitMs`); the timer of the wait is real and a loop that stood still fires it late. */
+    deadline: number;
+    solo: boolean;
   }
   /**
    * The planner of one service: requests that wait for a slot. A slot is one stamp of the service (the budget
@@ -1081,25 +1086,30 @@ export function createRelay(options: RelayOptions): Relay {
   ): Promise<Reply> {
     return new Promise((resolve) => {
       const lane = laneOf(key, service, creds);
-      const item: Queued = { hash, resolve, timer: null };
-      item.timer = setTimeout(() => {
-        const list = solo ? lane.solo : lane.normal;
-        const at = list.indexOf(item);
-        if (at < 0) return;
-        list.splice(at, 1);
-        const waitMs = Math.max(
-          slotWaitMs(key, service),
-          solo ? spacingMs(key, service.minIntervalMs, tick()) : 0,
-        );
-        resolve({
-          status: 503,
-          body: { error: 'busy' },
-          headers: { 'Retry-After': String(Math.max(1, Math.ceil(waitMs / 1000))) },
-        });
-      }, maxWaitMs);
+      const item: Queued = { hash, resolve, timer: null, deadline: tick() + maxWaitMs, solo };
+      item.timer = setTimeout(() => dropBusy(lane, item), maxWaitMs);
       (solo ? lane.solo : lane.normal).push(item);
       dispatch(lane);
     });
+  }
+
+  /** A request leaves the queue of its lane with `503 busy` (its wait is over); false when it is not in the queue any more. */
+  function dropBusy(lane: Lane, item: Queued): boolean {
+    const list = item.solo ? lane.solo : lane.normal;
+    const at = list.indexOf(item);
+    if (at < 0) return false;
+    list.splice(at, 1);
+    if (item.timer !== null) clearTimeout(item.timer);
+    const waitMs = Math.max(
+      slotWaitMs(lane.key, lane.service),
+      item.solo ? spacingMs(lane.key, lane.service.minIntervalMs, tick()) : 0,
+    );
+    item.resolve({
+      status: 503,
+      body: { error: 'busy' },
+      headers: { 'Retry-After': String(Math.max(1, Math.ceil(waitMs / 1000))) },
+    });
+    return true;
   }
 
   /**
@@ -1111,6 +1121,11 @@ export function createRelay(options: RelayOptions): Relay {
     const service = lane.service;
     if (lane.timer !== null) clearTimeout(lane.timer);
     lane.timer = null;
+    // a request whose wait is over (by the monotonic clock) gets no slot: after a stall the timer of this lane may fire
+    // before the timer of the wait, and the stamp would lie past the limit
+    const late = tick() - WAIT_TOLERANCE_MS;
+    for (const item of [...lane.solo, ...lane.normal])
+      if (item.deadline < late) dropBusy(lane, item);
     while (!closed && lane.solo.length + lane.normal.length > 0) {
       const countWait = slotWaitMs(lane.key, service);
       const soloWait = Math.max(countWait, spacingMs(lane.key, service.minIntervalMs, tick()));
