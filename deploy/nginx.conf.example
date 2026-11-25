@@ -12,6 +12,9 @@
 #    Sammelbetrieb (RELAY_BATCH_MS gesetzt): mindestens RELAY_MAX_WAIT_MS + Fenster + Kette + 17 s; 130 s ist die
 #    sichere Obergrenze für die Vorgabe (30 s Wartegrenze, kleinstes RELAY_BATCH_MAX: 112 s bis 125 s).
 #  - Genau eine Relay-Instanz je Schlüsseldatei: nur ein server-Eintrag im upstream-Block.
+#  - /metrics (RELAY_METRICS=1) NIE nach außen weitergeben: für das Relay hat jede Anfrage über diesen Proxy eine
+#    Loopback-Gegenstelle, es kann sie nicht von einem Aufruf aus dem Netz unterscheiden. Der Block "location ^~ /metrics"
+#    unten sperrt den Pfad; abgeholt wird direkt am Relay (curl http://127.0.0.1:8080/metrics auf dem Rechner).
 #  - X-Forwarded-For wird nicht ans Relay gegeben: das Relay kennt keine Adressen und wertet den Kopf nicht aus.
 
 # Der Preflight (OPTIONS) bekommt einen leeren Schlüssel: nginx begrenzt ihn nicht.
@@ -47,6 +50,11 @@ server {
     client_max_body_size   1k;              # das Relay lehnt mehr als 512 Byte ab
     client_header_timeout  6s;
     client_body_timeout    6s;
+
+    # Die Zähler des Relays gehören nicht ins Netz (Präfix ^~ fängt auch /metrics/… und kodierte Schreibweisen ab).
+    location ^~ /metrics {
+        return 404;
+    }
 
     # Alles außer dem Stempel: ohne Ratenlimit (Preflight, /health, /v1/services); die Verbindungsgrenze bleibt.
     location / {

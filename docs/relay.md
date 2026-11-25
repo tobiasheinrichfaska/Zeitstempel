@@ -37,6 +37,7 @@ Nutzungsbedingungen in `docs/dienste.md`: nur FreeTSA erlaubt die allgemeine Nut
 | `RELAY_UPSTREAM_AUTH_<ID>` | Zugangsdaten eines bezahlten Dienstes, die das Relay selbst hält (`<ID>`: Kennung in Großbuchstaben, `-` als `_`); `Benutzer:Passwort` bei `basic`, sonst das Token; **Pflicht** für einen gewählten Dienst mit Quelle `relay`, **freiwillig** bei `either`; siehe „Zugangsdaten zu bezahlten Diensten“                                                  | keine                                        |
 | `RELAY_MAX_WAIT_MS`        | Längste Wartezeit einer Anfrage in ms, ganze Zahl 1000 bis 60000: im Sammelbetrieb auf einen freien Platz beim Dienst, im Einzelbetrieb auf den Mindestabstand zum letzten Aufruf des Dienstes; danach `503 busy`; siehe „Schlüsselarten und Solo-Stempel“ und „Grenzen (`relay/limits.ts`)“                                                             | 30000                                        |
 | `RELAY_KEY_SHARE`          | Anteil in ganzen Prozent, 10 bis 100 (Vorgabe 100 = aus, nichts ändert sich): so viel vom Minutenbudget **eines Dienstes** darf **eine** Schlüsselkennung höchstens belegen; darüber `429 key-share`; leerer oder ungültiger Wert = Startabbruch; siehe „Anteil je Schlüssel am Dienstbudget“                                                            |
+| `RELAY_METRICS`            | `1` schaltet `GET /metrics` ein (Zähler und Messwerte im Textformat, nur für Verbindungen mit Loopback-Gegenstelle); `0` oder nicht gesetzt = aus, die Route gibt es dann nicht (`404 not-found` wie bei jeder unbekannten Route); ein leerer oder anderer Wert ist ein Startabbruch; siehe „Beobachtbarkeit (`/metrics`)“                               | aus                                          |
 
 **Bindung (geändert):** Ohne `RELAY_HOST` lauscht das Relay **nur auf `127.0.0.1`**, mit Schlüsseldatei ebenso wie mit
 `RELAY_AUTH=off`. Früher lauschte es mit Schlüsseldatei auf allen Adressen. Der Normalfall ist der Reverse-Proxy auf
@@ -1087,7 +1088,57 @@ Zugangsdaten spielen dabei keine Rolle und legen keine Identität an.
   mehreren Schlüsseln nicht). Falsche Zugangsdaten kosten einen Aufruf beim Dienst, der sie mit `401` ablehnt (`502
 upstream-refused`).
 
-### Was das Relay sieht
+### Beobachtbarkeit (`/metrics`)
+
+`GET /metrics` liefert Zähler und Messwerte im Textformat (Prometheus-Textformat 0.0.4, `Content-Type: text/plain;
+version=0.0.4`), nur **Summen und Messwerte**. **Aus**, solange `RELAY_METRICS=1` nicht gesetzt ist; dann gibt es die
+Route nicht (`404 not-found`, wie jede unbekannte Route).
+
+**Wann das Relay antwortet** (alles zusammen, sonst läuft die Anfrage durch die gewöhnlichen Regeln und endet in `404
+not-found`, ohne Hinweis, dass die Route besteht): `RELAY_METRICS=1`, Methode `GET`, Ziel genau `/metrics` (keine
+Abfrage, kein Schrägstrich am Ende, keine andere Schreibweise), **kein** `Origin`-Kopf (eine Seite im Browser darf es nicht
+lesen; mit `Origin` gelten die gewöhnlichen Regeln: `403 origin-not-allowed` oder `404`) und eine **Gegenstelle auf
+Loopback** (`127.0.0.0/8`, `::1`, die IPv4-abgebildete Form). Andere Methoden verhalten sich wie bei jeder unbekannten
+Route (`POST /metrics` ist `404`, `OPTIONS` ist der gewöhnliche Preflight). Die Antwort trägt keine CORS-Köpfe.
+
+**Grenze der Prüfung, ehrlich:** Das Relay sieht nur die Gegenstelle der TCP-Verbindung. Steht ein Reverse-Proxy auf
+**demselben Rechner** davor (der Normalfall), hat **jede** Anfrage über den Proxy eine Loopback-Gegenstelle, auch eine aus
+dem Internet. Das Relay kann sie nicht von einem Aufruf des Betreibers unterscheiden (`X-Forwarded-For` wertet es bewusst
+nicht aus). **Der Proxy darf `/metrics` deshalb nie nach außen weitergeben**: `deploy/nginx.conf.example` (`location ^~
+/metrics { return 404; }`) und `deploy/Caddyfile.example` (`handle @metrics { respond 404 }`) sperren den Pfad. Abgeholt wird
+direkt am Relay auf dem Rechner (`curl http://127.0.0.1:8080/metrics`, oder ein Sammler auf demselben Rechner). In einem
+Container mit `-p 127.0.0.1:8080:8080` ist die Gegenstelle die Adresse des Docker-Gateways, **nicht** Loopback: das Relay
+antwortet dann nicht; dort holt man die Zähler im Container ab (`docker exec`) oder wertet die Protokollzeile
+`counts` aus. Mit `RELAY_METRICS=1` und einer Bindung außerhalb von Loopback schreibt der Start eine Warnung.
+
+**Was darin steht** (jede Bezeichnung kommt aus einer geschlossenen Liste: Kennungen der angebotenen Dienste, Statuscodes,
+Ablehnungs-Codes des Relays; **keine** Schlüsselkennung, kein Hash, keine Adresse, kein Token, keine Signatur, kein Pfad
+einer Anfrage, nichts je Schlüssel):
+
+| Name                                                                                                                                   | Art    | Bedeutung                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `zeitstempel_relay_uptime_seconds`                                                                                                     | Gauge  | Sekunden seit dem Start (monotone Uhr)                                                                                                                                                                                                                                     |
+| `zeitstempel_stamps_total`                                                                                                             | Zähler | Stempel, die ein Dienst geliefert hat (im Sammelbetrieb einer je Fenster); `stats.stamped`                                                                                                                                                                                 |
+| `zeitstempel_batched_total`, `zeitstempel_solo_total`, `zeitstempel_solo_denied_total`                                                 | Zähler | Sammelbetrieb und Solo, siehe „Zähler“; 0, solange nichts gezählt wurde                                                                                                                                                                                                    |
+| `zeitstempel_refused_total{reason}`                                                                                                    | Zähler | Abgelehnte Anfragen je Code des Relays (`busy`, `rate-limited`, `key-share`, `unauthorized`, `upstream-failed`, `upstream-too-old`, `client-aborted`, `request-timeout` …); mehr als `metricsMaxReasons` Codes laufen unter `other` zusammen                               |
+| `zeitstempel_http_responses_total{status}`                                                                                             | Zähler | Gesendete Antworten je Statuscode (`none`: die Verbindung endete vor einer vollständigen Antwort; `other`: ein Code außerhalb der Liste der Statuscodes des Relays); `/metrics` selbst zählt hier nicht                                                                    |
+| `zeitstempel_stamp_responses_total{service,status}`                                                                                    | Zähler | Antworten auf Stempel-Anfragen je Dienst und Statuscode, darunter `429` und `503`. Das sind **beantwortete Anfragen**, keine Aufrufe beim Dienst (im Sammelbetrieb stempelt ein Aufruf viele Anfragen; die Zahl der Aufrufe ist `zeitstempel_stamps_total`, nur als Summe) |
+| `zeitstempel_stamp_inflight{service}`                                                                                                  | Gauge  | Stempel-Anfragen je Dienst in Bearbeitung: im Fenster, in der Warteschlange auf Platz und Mindestabstand, oder beim Dienst. **Näherung** der Warteschlangenlänge, nicht dasselbe (sie enthält auch die laufenden Aufrufe)                                                  |
+| `zeitstempel_service_last_success_age_seconds{service}`                                                                                | Gauge  | Sekunden (monotone Uhr) seit der letzten Stempel-Anfrage des Dienstes, die mit `200` beantwortet wurde; solange es keine gab, seit dem Start                                                                                                                               |
+| `zeitstempel_service_success_seen{service}`                                                                                            | Gauge  | 1, sobald der Dienst seit dem Start einmal mit `200` beantwortet wurde, sonst 0 (ohne ihn ist ein junger Prozess von einem Dienst ohne Erfolg nicht zu unterscheiden)                                                                                                      |
+| `zeitstempel_key_reloads_total`, `zeitstempel_key_reload_failed_total`, `zeitstempel_key_file_writable_total`                          | Zähler | Neulesen der Schlüsseldatei: angenommen, abgelehnt (der alte Satz bleibt), Datei für Gruppe oder Andere schreibbar geworden                                                                                                                                                |
+| `zeitstempel_key_revoked_total`, `zeitstempel_key_expired_total`, `zeitstempel_service_denied_total`, `zeitstempel_share_denied_total` | Zähler | Summen über alle Schlüssel (nie je Schlüssel), siehe „Schlüsseldatei Version 3“ und „Anteil je Schlüssel am Dienstbudget“                                                                                                                                                  |
+| `zeitstempel_metrics_scrapes_total`                                                                                                    | Zähler | Antworten dieses Endpunkts                                                                                                                                                                                                                                                 |
+
+**Nicht enthalten (noch nicht erreichbar, ohne das Relay zu ändern):** die Zahl der offenen Identitäten, die Größe des
+Wiederholungsspeichers, die wartenden Anfragen je Dienst genau (statt der Näherung `zeitstempel_stamp_inflight`) und der Unterschied zwischen der `genTime` des letzten
+Tokens und der Relay-Uhr. Dafür müsste `relay.stats()` (oder eine neue schreibgeschützte Methode) diese Werte liefern.
+
+Der Text ist begrenzt (`metricsMaxBytes`); die Zahl der Reihen ist durch die Liste der Dienste und `metricsMaxReasons`
+festgelegt, kein Aufrufer kann neue Bezeichnungen erzeugen. Alle Zähler beginnen nach jedem Neustart bei 0 (Speicher
+des Prozesses). Alarmkriterien: `docs/betrieb.md`, „Zähler beobachten“.
+
+## Was das Relay sieht
 
 Die Zugangsdaten der App (im signierten Körper, im Arbeitsspeicher, solange eine Anfrage, ein Fenster oder die Spur der
 Identität sie braucht) und beim Dienst den fertigen Kopf; **nie im Protokoll, nie in Zählern (`stats()`), nie in
@@ -1167,7 +1218,7 @@ Zeitpunkt und Netzadresse des Aufrufers (wie jeder Server), den **Hash** (im Sam
 zieht, und die Bäume; sie bleiben im Speicher, bis das Fenster beantwortet ist) und den Kopf `X-Zeitstempel-Auth`
 (Kennung, Zeit, `jti`, Signatur), nie Inhalte und nie den privaten Schlüssel. Es schreibt **nichts** über Anfragen ins Protokoll:
 keine Adresse, keinen Hash, kein Token, keine Kennung, keine Signatur. Alle fünf Minuten steht eine
-Zeile mit Zählern im Protokoll (Anzahl gestempelter Anfragen und Zahl der Ablehnungen je Art). Die
+Zeile mit Zählern im Protokoll (Anzahl gestempelter Anfragen und Zahl der Ablehnungen je Art); mit `RELAY_METRICS=1` zusätzlich `GET /metrics` (siehe „Beobachtbarkeit (`/metrics`)“), ebenfalls nur Summen und Messwerte. Die
 Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); das ist Sache des Betreibers.
 
 ## Grenzen (`relay/limits.ts`)
@@ -1212,6 +1263,8 @@ Netzadresse sieht allerdings die Infrastruktur davor (Hoster, Lastverteiler); da
 | `shutdownHardMs`        | 10000  | Beenden: spätestens nach dieser Zeit endet der Prozess mit Exit-Code 0, was auch noch offen ist                                                                     |
 | `keyFileCheckMs`        | 5000   | Abstand, in dem das Relay die Schlüsseldatei liest (SHA-256 des Inhalts) und ihre Schreibrechte prüft                                                               |
 | `keyFileMaxBytes`       | 65536  | Größte Schlüsseldatei, die das Relay liest (Bytes); größere und Nicht-Dateien (FIFO, Gerät, Verzeichnis) werden nicht gelesen                                       |
+| `metricsMaxBytes`       | 16384  | `/metrics`: größter Text; ein längerer wird an einem Zeilenende abgeschnitten und endet mit `# truncated`                                                           |
+| `metricsMaxReasons`     | 32     | `/metrics`: höchstens so viele verschiedene Ablehnungs-Codes als Bezeichnung; der Rest wird unter `other` summiert                                                  |
 
 Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzlich `60000 / minIntervalMs` Anfragen je Minute (bei 15 s: 4, bei FreeTSA mit 5 s: 12). `perMinuteTotal` und
 `minIntervalMs` sind zuerst ein **Mengenbudget je Minute**: Das Relay lässt höchstens so viele Anfragen durch, dass der

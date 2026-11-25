@@ -22,6 +22,10 @@
 //                            operation too); collecting operation: also a free slot of the service
 //   RELAY_KEY_SHARE          share of a service's budget per minute that ONE key may use at one service, whole percent
 //                            10 to 100 (default 100 = off; an empty value is invalid); then 429 key-share (docs/relay.md)
+//   RELAY_METRICS            "1" serves GET /metrics (counters and gauges, text format) to connections whose peer address is
+//                            loopback; "0" or not set: off, the route does not exist (404). An empty or any other value
+//                            ends the start. Behind a proxy on the same host EVERY request has a loopback peer: the proxy
+//                            must not pass /metrics on (docs/relay.md, "Beobachtbarkeit")
 //   RELAY_UPSTREAM_AUTH_<ID>  credentials of a paid service that the relay holds itself (<ID>: the service id in capitals,
 //                            '-' as '_'); `user:password` for basic, the token for bearer and header; mandatory for a
 //                            chosen service with `auth.source` "relay", optional for "either", refused for the others
@@ -151,6 +155,11 @@ export function readSettings(env: NodeJS.ProcessEnv) {
       );
     }
   }
+  // /metrics: strictly read; not set or 0 is off, 1 is on, anything else (also empty) ends the start.
+  const metricsRaw = env.RELAY_METRICS;
+  if (metricsRaw !== undefined && metricsRaw !== '0' && metricsRaw !== '1') {
+    throw new Error('RELAY_METRICS: ungültig (nur 1 oder 0; nicht gesetzt = aus)');
+  }
   return {
     origins,
     port,
@@ -160,6 +169,7 @@ export function readSettings(env: NodeJS.ProcessEnv) {
     batchMax,
     maxWaitMs,
     keyShare,
+    metrics: metricsRaw === '1',
     allowPlainHttp: env.RELAY_ALLOW_PLAIN_HTTP === '1',
     only,
     authOff,
@@ -294,6 +304,11 @@ export function readConfig(
   const keys = readKeys(settings.keysFile, knownServices);
   const warning = checkPermissions(settings.keysFile);
   const warnings = warning === null ? [] : [warning];
+  if (settings.metrics && !LOOPBACK_HOSTS.includes(settings.host ?? '')) {
+    warnings.push(
+      'RELAY_METRICS=1 bei einer Bindung außerhalb von Loopback: /metrics antwortet nur Verbindungen, deren Gegenstelle Loopback ist (ein Proxy auf demselben Rechner zählt dazu und darf /metrics nicht weitergeben)',
+    );
+  }
   // An expressly empty list is valid (nobody may stamp), but a start with it is almost always a mistake: say so clearly.
   if (keys.length === 0) warnings.push(EMPTY_KEYS_WARNING);
   return { settings, services, upstreamAuth, keys, knownServices, warnings };
@@ -351,8 +366,10 @@ export function listenErrorMessage(
 export function serverLimits(settings: {
   host: string | undefined;
   keepAliveMs?: number | undefined;
+  metrics?: boolean | undefined;
 }) {
   return {
+    ...(settings.metrics === true ? { metrics: true } : {}),
     ...(settings.host === undefined ? {} : { host: settings.host }),
     ...(settings.keepAliveMs === undefined ? {} : { keepAliveMs: settings.keepAliveMs }),
   };

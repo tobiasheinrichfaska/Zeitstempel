@@ -12,6 +12,8 @@
 # (RELAY_BATCH_MS gesetzt): 130s als sichere Obergrenze für die Vorgabe (docs/relay.md, "Latenz und Fristen").
 # TLS: Caddy holt und erneuert das Zertifikat für den Namen unten selbst (Name und Port 80/443 müssen erreichbar sein).
 # Genau eine Relay-Instanz je Schlüsseldatei: nur eine Adresse in reverse_proxy.
+# /metrics (RELAY_METRICS=1) NIE nach außen weitergeben: für das Relay hat jede Anfrage über diesen Proxy eine
+# Loopback-Gegenstelle. Der Block "handle @metrics" unten sperrt den Pfad; abgeholt wird direkt am Relay.
 
 relay.example {
 	@stamp path /v1/stamp/*
@@ -29,14 +31,22 @@ relay.example {
 		max_size 1KB
 	}
 
-	reverse_proxy 127.0.0.1:8080 {
-		# Pfad, Origin und X-Zeitstempel-Auth gehen unverändert durch; Verbindungen zum Relay hält Caddy von sich aus offen.
-		# X-Forwarded-For nicht als Vertrauensquelle ans Relay: das Relay kennt keine Adressen und wertet ihn nicht aus.
-		header_up -X-Forwarded-For
-		transport http {
-			dial_timeout            5s
-			# Einzelbetrieb: 30 s Wartegrenze + 17 s + 3 s Reserve. Sammelbetrieb stattdessen 130s.
-			response_header_timeout 50s
+	# Die Zähler des Relays gehören nicht ins Netz (handle-Blöcke schließen sich aus; Reihenfolge wie geschrieben).
+	@metrics path /metrics /metrics/*
+	handle @metrics {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			# Pfad, Origin und X-Zeitstempel-Auth gehen unverändert durch; Verbindungen zum Relay hält Caddy von sich aus offen.
+			# X-Forwarded-For nicht als Vertrauensquelle ans Relay: das Relay kennt keine Adressen und wertet ihn nicht aus.
+			header_up -X-Forwarded-For
+			transport http {
+				dial_timeout            5s
+				# Einzelbetrieb: 30 s Wartegrenze + 17 s + 3 s Reserve. Sammelbetrieb stattdessen 130s.
+				response_header_timeout 50s
+			}
 		}
 	}
 }
