@@ -42,7 +42,7 @@ const verified = await verifyTimestampToken(response.value.token, sha256, [ancho
 über die **Zeit** gilt nur mit `minGenTime`: ohne sie wird nicht geprüft, wie alt das Token ist, und ein Dienst mit
 abgelaufenem oder gestohlenem Schlüssel könnte rückdatieren (`docs/grenzen.md`). Das Ergebnis nennt auch
 `signerNotAfter`: nach diesem Zeitpunkt oder bei Kompromittierung des Dienstschlüssels verfällt die Beweiskraft
-(rechtzeitig neu stempeln, mehrere Dienste; `docs/grenzen.md`, „Langzeitaussage“). Der Stempel ist **nicht qualifiziert**, es gibt **keine Sperrprüfung**, und die Anker bestimmt der
+(rechtzeitig neu stempeln, mehrere Dienste; `docs/grenzen.md`, „Langzeitaussage“). Der Stempel ist **nicht qualifiziert**, es gibt **nur Offline-CRLs, die der Aufrufer liefert (Option `crls`), kein OCSP, kein Abruf**, und die Anker bestimmt der
 Aufrufer (`docs/grenzen.md`). **Die mitgelieferten Anker sind Wurzeln:** die Prüfung akzeptiert jedes
 Zeitstempel-Zertifikat, das unter dem übergebenen Anker steht, auch das einer anderen Zeitstempel-Stelle derselben
 Hierarchie. „Dienst X hat bestätigt“ ist also stärker als das Geprüfte. Wer enger vertrauen will, übergibt selbst eine
