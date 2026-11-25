@@ -16,9 +16,11 @@ export type {
   FetchLike,
   FetchResponse,
   RelayAnswer,
+  RelayAuth,
   RelayClient,
   RelayClientOptions,
   RelayStamp,
+  StampOptions,
 } from './client.ts';
 export {
   MAX_RELAY_ADDRESS_CHARS,

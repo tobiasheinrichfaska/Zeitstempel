@@ -55,6 +55,7 @@ export type Reason =
   | 'relay-refused'
   | 'relay-bad-response'
   | 'relay-rate-limited'
+  | 'relay-unauthorized'
   | 'no-trusted-service';
 
 export interface Failure {

@@ -71,6 +71,7 @@ const REASONS: Record<lib.Reason, true> = {
   'relay-refused': true,
   'relay-bad-response': true,
   'relay-rate-limited': true,
+  'relay-unauthorized': true,
   'no-trusted-service': true,
 };
 

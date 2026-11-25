@@ -13,7 +13,7 @@ Node 24 getestet; im Browser nur in **Headless-Chromium 157** geprüft, am 2026-
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Bibliothek** (`src/`)                       | Anfrage bauen, Antwort strikt lesen, Token prüfen (Abdruck, Nonce, Signatur, Zertifikatskette gegen übergebene Anker). Läuft in Browser und Node, ohne Netzzugriff, ohne Abhängigkeiten.                                                                                                                   |
 | **Dienstliste** (`services.json`, `anchors/`) | Vier freie Dienste als Daten, mit Vertrauensankern, Bedingungen und Messung (`docs/dienste.md`). Ein qualifizierter Dienst ist eine Vorlage ohne Zugangsdaten.                                                                                                                                             |
-| **Relay-Client** (`src/lib/client.ts`)        | `createRelayClient`: fragt das Relay (`fetch` und monotone Uhr werden übergeben), prüft das Token selbst, hält die Pause nach 429 ein. Siehe `docs/relay.md`.                                                                                                                                              |
+| **Relay-Client** (`src/lib/client.ts`)        | `createRelayClient`: fragt das Relay (`fetch` und monotone Uhr werden übergeben), signiert mit dem Schlüssel der App, prüft Token und Beleg des Sammelbetriebs selbst, hält die Pause nach 429 ein. Siehe `docs/relay.md`.                                                                                 |
 | **Relay** (`relay/`)                          | Kleiner Server, der nur Hashes an feste Dienste weiterreicht, weil Browser die Dienste wegen CORS nicht direkt erreichen. Jede Anfrage ist mit ECDSA P-256 signiert (Kopf `X-Zeitstempel-Auth`, in der App mit `signRelayRequest` berechnet; das Relay kennt nur öffentliche Schlüssel). Nicht ausgerollt. |
 | **Werkzeuge** (`scripts/`)                    | `npm run spike` (eine Anfrage je Dienst, Prüfung doppelt), `npm run probe` (eine Anfrage über das Relay), `scripts/make-key.ts` (neues Schlüsselpaar für das Relay, nur auf dem Terminal).                                                                                                                 |
 
@@ -93,6 +93,24 @@ const res = await fetch(relayUrl + path, {
 const token = fromBase64Url((await res.json()).token); // 200 { service, genTime, accuracyMs, serial, token }
 // das Token danach mit verifyTimestampToken prüfen (ohne expectedNonce: die Nonce wählt das Relay), und zwar mit
 // { now: new Date(), minGenTime: new Date(sentMs - 60_000) }, sonst ist die Frische nicht geprüft
+```
+
+Kürzer mit dem Client der Bibliothek (signiert, korrigiert die Uhr nach einem 401 einmal, prüft Token und Beleg):
+
+```ts
+import { createRelayClient, fromBase64Url } from 'zeitstempel';
+
+const client = createRelayClient({
+  relay: relayUrl,
+  fetch: (url, init) => fetch(url, init),
+  now: () => performance.now(),
+  wallNow: () => Date.now(),
+  trusted: new Map([['freetsa', [freetsaRootPem]]]),
+  auth: { privateKey: fromBase64Url(privateKeyText.trim())!, keyId: 'app-1' },
+  timeoutMs: 80_000,
+});
+const r = await client.stamp(sha256); // oder client.stamp(sha256, { mode: 'solo' })
+// r.value.token und, im Sammelbetrieb, r.value.batch zusammen aufbewahren
 ```
 
 Der private Schlüssel (PKCS#8-Bytes, mit `scripts/make-key.ts` erzeugt, oder ein nicht extrahierbarer `CryptoKey`) gehört in die App. `make-key` druckt ihn als

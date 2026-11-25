@@ -375,7 +375,7 @@ bytes, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])` einmal beim Sta
 
 ### Der Client der Bibliothek
 
-`createRelayClient` (`src/lib/client.ts`) setzt die Schritte oben (ohne Anmeldung) um. Er benutzt keinen globalen `fetch`:
+`createRelayClient` (`src/lib/client.ts`) setzt die Schritte oben um. Er benutzt keinen globalen `fetch`:
 `fetch` und die **monotone** Uhr `now` (z. B. `performance.now()`) werden übergeben. Nichts wirft; Fehler sind
 Codes mit englischem `detail`.
 
@@ -385,19 +385,41 @@ const client = createRelayClient({
   fetch: (url, init) => fetch(url, init),
   now: () => performance.now(),
   trusted: new Map([['freetsa', [freetsaRootPem]]]), // Kennung → Anker (PEM), die Entscheidung des Aufrufers
-  wallNow: () => Date.now(), // optional: nur für ein `Retry-After` als HTTP-Datum (siehe 3.)
+  wallNow: () => Date.now(), // Zeit im signierten Kopf und `Retry-After` als HTTP-Datum
+  auth: { privateKey, keyId: 'app-1' }, // PKCS#8-Bytes oder CryptoKey; ohne `auth` unsigniert (RELAY_AUTH=off)
+  timeoutMs: 80_000, // für das neue Relay: siehe „Latenz und Fristen“
 });
-const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime, serial, verified }>
+const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime, serial, verified, batch? }>
+const solo = await client.stamp(sha256, { mode: 'solo' }); // nur Schlüssel der Art 2 im Sammelbetrieb
 ```
 
-1. Der Hash (SHA-256, 32 Byte) geht als `{"hash": "<base64url>"}` an `POST /v1/stamp/<id>`; ohne Anmeldedaten,
-   Referrer, Zwischenspeicher und Weiterleitung; Frist 20 s (das Relay wartet bis zu 10 s auf den Dienst).
-   `GET /v1/services` liefert die Kennungen; nur vertraute werden gefragt, höchstens drei nacheinander.
-2. Bei `200` wird die Antwort strikt gelesen (`parseRelayAnswer`: genau die fünf Felder), die Kennung muss die
-   gefragte sein, das Token wird mit `verifyTimestampToken` gegen Hash und Anker des Dienstes geprüft (ohne
-   `expectedNonce`: die Nonce wählt das Relay) und die Seriennummer mit der des Tokens verglichen. Maßgeblich
-   sind `genTime` und `serial` der eigenen Prüfung, nicht die des Relays.
-3. Bei `429` (auf `GET /v1/services` ebenso wie auf `POST /v1/stamp/<id>`) liest der Client `Retry-After` und
+1. Der Hash (SHA-256, 32 Byte) geht als `{"hash": "<base64url>"}` an `POST /v1/stamp/<id>` (mit `mode: 'solo'` als
+   `{"hash": "…", "mode": "solo"}`; `mode` gilt je Aufruf oder für den ganzen Client, der Aufruf gewinnt); ohne
+   Anmeldedaten, Referrer, Zwischenspeicher und Weiterleitung; Frist `timeoutMs` (Vorgabe 20 s, für das Relay mit
+   Wartezeiten zu kurz: im Einzelbetrieb mindestens `RELAY_MAX_WAIT_MS` + 17 s, im Sammelbetrieb dazu Fenster und
+   Kette, siehe „Latenz und Fristen“). `GET /v1/services` liefert die Kennungen (immer **unsigniert**); nur vertraute
+   werden gefragt, höchstens drei nacheinander.
+2. **Anmeldung (`auth`):** Mit `auth: { privateKey, keyId }` trägt jeder `POST` den Kopf `X-Zeitstempel-Auth`, von
+   `signRelayRequest` über **genau die gesendeten Bytes** des Körpers berechnet, mit `nowMs = wallNow() + Versatz`
+   (`wallNow` ist dann Pflicht, sonst `bad-options` ohne Aufruf). Ein Fehler beim Signieren (`bad-key`, `bad-key-id`,
+   `unsupported-signature` …) kommt unverändert zurück; gesendet wird dann nichts. Bei `401` liest der Client `Date`:
+   weicht es um mehr als `clockFixMs` (30 s) von der eigenen Uhr ab, merkt er den Versatz und signiert und sendet
+   **genau einmal** neu (der Versatz gilt auch für spätere Aufrufe); sonst und nach dem zweiten `401` ist das Ergebnis
+   `relay-unauthorized`. Ebenso `403` (z. B. `solo-not-allowed`); `detail` nennt Status und Code des Relays. Gewählt
+   wurde `auth` (Schlüssel und Kennung) statt eines Rückrufs zum Signieren, weil der Client die Zeit im Kopf selbst
+   korrigieren muss; der Schlüssel geht nur an `signRelayRequest`, nie in eine Anfrage oder ein Ergebnis. Ein
+   `CryptoKey` (auch nicht extrahierbar) wird unverändert benutzt.
+3. Bei `200` wird die Antwort strikt gelesen (`parseRelayAnswer`: genau die fünf Felder, im Sammelbetrieb dazu
+   `batch` mit genau `v`, `size`, `index`, `salt`, `path`; `accuracyMs` darf Bruchteile haben), die Kennung muss die
+   gefragte sein. Ohne `batch` wird das Token mit `verifyTimestampToken` gegen Hash und Anker geprüft, **mit** `batch`
+   mit `verifyBatchedTimestamp` (Token, Hash, Beleg, Anker); die Seriennummer wird mit der des Tokens verglichen.
+   Maßgeblich sind `genTime` und `serial` der eigenen Prüfung. Ein Beleg auf eine Solo-Anfrage ist
+   `relay-bad-response`. Das Ergebnis trägt dann `batch`: **Token und Beleg zusammen aufbewahren**, das Token allein
+   beweist den Hash nicht (der Dienst stempelte den Abdruck des Baums), später prüfbar mit
+   `verifyBatchedTimestamp({ token, hash, batch }, anker)`. Geprüft wird ohne `expectedNonce` (die Nonce wählt das
+   Relay) und ohne `minGenTime` (die Frische prüft das Relay mit ±60 s; wer sie selbst prüfen will, ersetzt `verify`
+   bzw. `verifyBatched`).
+4. Bei `429` (auf `GET /v1/services` ebenso wie auf `POST /v1/stamp/<id>`) liest der Client `Retry-After` und
    sendet bis dahin **nichts**; `pausedForMs()` nennt den Rest. Erlaubt sind ganze Sekunden oder ein
    HTTP-Datum (RFC 9110); ein Datum wird nur ausgewertet, wenn `wallNow` (Millisekunden seit Epoche) übergeben
    wurde: Sekunden = aufgerundet (Datum − `wallNow()`). Fehlt der Header, ist er ungültig, ist das Datum
@@ -405,9 +427,10 @@ const stamp = await client.stamp(sha256); // Result<{ serviceId, token, genTime,
    der monotonen Uhr gemessen; springt diese zurück (Pause länger als das Höchste), wird sie vergessen. Bei
    `502`/`504`, Netzwerkfehler und Fristüberschreitung (`relay-timeout`) eines Dienstes kommt der nächste
    Dienst; sind alle (höchstens drei) durch, ist das Ergebnis der letzte Fehler (`relay-unreachable` oder
-   `relay-timeout`). Schlägt schon `GET /v1/services` fehl, endet der Aufruf sofort.
-4. Das Token (base64url-Text) zusammen mit Kennung des Dienstes und Hash aufbewahren; geprüft wird später
-   mit denselben Mitteln, ohne das Relay.
+   `relay-timeout`). Schlägt schon `GET /v1/services` fehl, endet der Aufruf sofort. Andere Status (auch `503 busy`)
+   sind `relay-refused`.
+5. Bezahlte Dienste (`upstream` im Körper) kann der Client noch nicht: ein Dienst mit Quelle `client` ist mit ihm
+   nicht nutzbar.
 
 Adressen des Relays (`src/lib/relayAddress.ts`, rein, nichts wirft): `parseRelayList(text)` liest eine Liste
 aus Kommas (z. B. eine Build-Variable) und behält nur gültige Adressen, getrimmt und ohne Doppelte;
@@ -416,19 +439,21 @@ keine Anmeldedaten, keine Leerzeichen, höchstens 200 Zeichen); `relayOrigin(adr
 (für eine Content-Security-Policy `connect-src`) oder `null`; `relayUsable(einstellung, erlaubt)` ist wahr,
 wenn die Einstellung nicht leer ist und genau eine erlaubte Adresse.
 
-Fehlercodes des Clients: `relay-unreachable`, `relay-timeout`, `relay-refused`, `relay-bad-response`,
-`relay-rate-limited`, `no-trusted-service`, `bad-hash` und die Codes der Prüfung (`imprint-mismatch`,
-`signature-invalid`, `untrusted-chain` …), unverändert durchgereicht.
+Fehlercodes des Clients: `relay-unreachable`, `relay-timeout`, `relay-refused`, `relay-unauthorized`,
+`relay-bad-response`, `relay-rate-limited`, `no-trusted-service`, `bad-hash`, `bad-options`, die Codes von
+`signRelayRequest` und die der Prüfung (`imprint-mismatch`, `bad-batch`, `signature-invalid`, `untrusted-chain` …),
+unverändert durchgereicht.
 
-| Name                  | Wert  | Bedeutung                                             |
-| --------------------- | ----- | ----------------------------------------------------- |
-| `timeoutMs`           | 20000 | Frist eines Aufrufs                                   |
-| `defaultRetrySeconds` | 60    | Pause nach 429 ohne brauchbares `Retry-After`         |
-| `maxRetrySeconds`     | 3600  | Längste Pause nach dem Wort des Relays                |
-| `maxServicesTried`    | 3     | Dienste, die bei Ausfall nacheinander versucht werden |
-| `maxServices`         | 32    | Längste gelesene Dienstliste                          |
-| `maxSerialChars`      | 64    | Längste Seriennummer (Hex-Zeichen)                    |
-| `maxTokenChars`       | 12288 | Längstes Token (base64url-Zeichen)                    |
+| Name                  | Wert  | Bedeutung                                                       |
+| --------------------- | ----- | --------------------------------------------------------------- |
+| `timeoutMs`           | 20000 | Vorgabe der Frist eines Aufrufs (`timeoutMs` der Optionen)      |
+| `defaultRetrySeconds` | 60    | Pause nach 429 ohne brauchbares `Retry-After`                   |
+| `maxRetrySeconds`     | 3600  | Längste Pause nach dem Wort des Relays                          |
+| `maxServicesTried`    | 3     | Dienste, die bei Ausfall nacheinander versucht werden           |
+| `maxServices`         | 32    | Längste gelesene Dienstliste                                    |
+| `maxSerialChars`      | 64    | Längste Seriennummer (Hex-Zeichen)                              |
+| `maxTokenChars`       | 12288 | Längstes Token (base64url-Zeichen)                              |
+| `clockFixMs`          | 30000 | Abweichung von `Date` nach 401, ab der einmal neu signiert wird |
 
 (`CLIENT_LIMITS` in `src/lib/client.ts`.)
 
