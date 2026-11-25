@@ -557,8 +557,11 @@ export function createRelay(options: RelayOptions): Relay {
    * Is the key of a request that waited no longer valid (removed from the file, revoked, past `notAfter`)? Looked at when the
    * request is stamped, so a change of the file reaches the requests that were admitted before it. Counted like at the door.
    */
-  function lapsed(kid: string): boolean {
-    if (!keyById.has(kid)) return true;
+  function lapsed(kid: string, atDoor: KeyObject | undefined): boolean {
+    const now = keyById.get(kid);
+    if (now === undefined) return true;
+    // the id was entered again with another public key: the signature of the waiting request was made with the old one
+    if (atDoor !== undefined && !now.equals(atDoor)) return true;
     if (revokedKids.has(kid)) {
       stats.keyRevoked = (stats.keyRevoked ?? 0) + 1;
       return true;
@@ -809,9 +812,10 @@ export function createRelay(options: RelayOptions): Relay {
     };
     // Still allowed: the key itself (`lapsed`), and what the door looked at: its `services` and, for a solo stamp, its type.
     // A change of the file reaches a waiting request as a 401 (like a removed key).
+    const keyAtDoor = auth === null ? undefined : keyById.get(auth.kid); // no await since `checkSignature`: the key that verified
     const valid = (): boolean => {
       if (auth === null) return true;
-      if (lapsed(auth.kid)) return false;
+      if (lapsed(auth.kid, keyAtDoor)) return false;
       const only = servicesOfKid.get(auth.kid);
       if (only !== undefined && !only.has(service.id)) {
         stats.serviceDenied = (stats.serviceDenied ?? 0) + 1;
