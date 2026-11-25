@@ -121,9 +121,12 @@ POST und kanonischem Ziel nie etwas anderes als `401`):
 min(Startzeit, jetzt)`), auch bei einem Rücksprung der Uhr, nie erhöht. Ging die Uhr beim Start vor und wird später
    korrigiert, sinkt die Startzeit einmal auf den ersten beobachteten korrigierten Zeitpunkt; danach gilt für Köpfe ab
    dort wieder das volle ±60-s-Fenster. Der Wiederholungsspeicher liegt nur im Speicher und ist nach einem Neustart leer; ohne diese Regel ließe sich ein
-   mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: **nach einem
-   Neustart sind Köpfe aus der Zeit davor ungültig** (die App signiert ohnehin jeden Versuch neu). **Widerruf
-   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen; das Relay liest die Datei laufend neu und lässt den Schlüssel danach sofort nicht mehr zu (siehe „Schlüsseldatei laufend lesen“, kein Neustart nötig). **Grenzen:** (a) Geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur ersten Anfrage nach der Korrektur geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). (b) Geht sie beim Start **vor**, werden Köpfe von vor der ersten Anfrage nach der Korrektur abgelehnt (die App signiert ohnehin jeden Versuch neu); Köpfe von vor dem echten Neustart bleiben abgelehnt, weil der echte Start nie nach dem ersten korrigierten Zeitpunkt liegt. (c) Die Startzeit sinkt nur bei Anfragen an einen Dienst; setzt jemand die Uhr nach dem Start zurück, gelten Köpfe bis zum niedrigsten dabei beobachteten Zeitpunkt, nie weiter zurück. Die Uhr der App muss also auf etwa eine Minute genau gehen (±60 s). (d) Ein Kopf mit `ts` ab dem Start (bis +60 s; geht die Uhr der App vor, ist das möglich) bleibt nach einem Neustart bis zum Ende seines Fensters wiederholbar, also bis zu 120 s nach dem Start des Relays (`ts` ≤ Start + 60 s, dazu das Fenster von 60 s), weil der Wiederholungsspeicher dann leer ist; gegen einen Mitschnitt dieser Art schützt das Relay nicht (kein Codefix). (e) Eine Uhrablesung, die nicht endlich ist (`NaN`, `±Infinity`), wird bei Anfragen ignoriert und senkt die Startzeit nicht; ist die Uhr schon beim Start nicht endlich, **bricht der Start ab** (Fehler `relay clock is not finite at start`, kein Inhalt). Das Fenster wird **nach** dem Lesen
+   mitgeschnittener Kopf aus der Zeit davor innerhalb seines Fensters noch einmal abspielen. Folge: nach einem
+   Neustart sind Köpfe aus der Zeit davor ungültig, **bis auf die Schonfrist von 1 s** (`AUTH_START_SLACK_MS`: die App signiert einen
+   Moment vor dem Lesen der Uhr des Relays): ein Kopf aus der letzten Sekunde vor dem Start kann über einen Neustart **einmal**
+   noch einmal abgespielt werden, weil der Wiederholungsspeicher leer ist (derselbe Hash, also ein zweiter Stempel desselben Hashes;
+   die App signiert ohnehin jeden Versuch neu). **Widerruf
+   eines Schlüssels** = Eintrag aus der Schlüsseldatei entfernen; das Relay liest die Datei laufend neu: **neue** Anfragen mit diesem Schlüssel sind spätestens 5 s nach dem Speichern der Datei `401` (siehe „Schlüsseldatei laufend lesen“, kein Neustart nötig); eine schon angenommene, **wartende** Anfrage (Einzelbetrieb: auf den Mindestabstand; Sammelbetrieb: im Fenster oder in der Warteschlange) wird beim Feuern beziehungsweise Stempeln noch einmal gegen den aktuellen Satz geprüft (entfernt, gesperrt, `notAfter` erreicht) und bekommt dann `401` ohne Aufruf beim Dienst (ein Aufruf, der schon läuft, wird fertig; bis dahin vergehen höchstens `RELAY_MAX_WAIT_MS`, im Sammelbetrieb dazu das Fenster). **Grenzen:** (a) Geht die Uhr des Relays beim Start **nach**, ist die Startzeit zu früh und der Schutz vor dem Abspielen alter Köpfe nach einem Neustart bis zur ersten Anfrage nach der Korrektur geschwächt (Köpfe aus der Zeit zwischen echtem und gemessenem Start werden angenommen); die Uhr beim Start prüfen (NTP vor dem Relay). (b) Geht sie beim Start **vor**, werden Köpfe von vor der ersten Anfrage nach der Korrektur abgelehnt (die App signiert ohnehin jeden Versuch neu); Köpfe von vor dem echten Neustart bleiben abgelehnt, weil der echte Start nie nach dem ersten korrigierten Zeitpunkt liegt. (c) Die Startzeit sinkt nur bei Anfragen an einen Dienst; setzt jemand die Uhr nach dem Start zurück, gelten Köpfe bis zum niedrigsten dabei beobachteten Zeitpunkt, nie weiter zurück. Die Uhr der App muss also auf etwa eine Minute genau gehen (±60 s). (d) Ein Kopf mit `ts` ab einer Sekunde vor dem Start (bis +60 s; geht die Uhr der App vor, ist das möglich) bleibt nach einem Neustart bis zum Ende seines Fensters wiederholbar, also bis zu 120 s nach dem Start des Relays (`ts` ≤ Start + 60 s, dazu das Fenster von 60 s), weil der Wiederholungsspeicher dann leer ist; gegen einen Mitschnitt dieser Art schützt das Relay nicht (kein Codefix). (e) Eine Uhrablesung, die nicht endlich ist (`NaN`, `±Infinity`), wird bei Anfragen ignoriert und senkt die Startzeit nicht; ist die Uhr schon beim Start nicht endlich, **bricht der Start ab** (Fehler `relay clock is not finite at start`, kein Inhalt). (f) Ein Eintrag des Wiederholungsspeichers läuft nach der Wanduhr **und** nach der monotonen Uhr ab und bleibt, solange eine der beiden ihn noch gelten lässt: geht die Wanduhr vor und wird sie zurückgestellt, vergisst das Relay keinen Kopf, dessen Fenster wiederkommt. Das Fenster wird **nach** dem Lesen
    des Körpers noch einmal geprüft (ein langsamer Körper rettet keinen veralteten Kopf).
 2. Nach dem Lesen des Körpers die Signatur (ECDSA P-256, SHA-256). Das Relay führt **für jeden wohlgeformten
    Kopf genau eine** Prüfung aus, auch bei unbekannter Kennung (gegen einen je Prozess zufällig erzeugten
@@ -204,7 +207,12 @@ Das Relay schreibt weder Kennung noch Zeit noch Signatur ins Protokoll; die Zäh
   stempelt wie sonst, und die Anfrage zählt unter `client-aborted`. Der Dienst bekommt dafür keinen zusätzlichen Aufruf;
   der Stempel für den Hash kommt trotzdem zustande und wird nicht zurückgenommen.
 
-In beiden Betriebsarten ist das Mengenbudget mit der Annahme verbraucht (siehe „Budgets und Zähler“).
+Das Mengenbudget (Gesamt, Schlüssel, Dienst, Anteil des Schlüssels, Solo-Limit) wird mit der Annahme verbraucht und **zurückgegeben**,
+wenn für die Anfrage nichts an den Dienst gesendet wurde: Abbruch beim Warten (im Einzelbetrieb erst zum berechneten Zeitpunkt
+bemerkt, bis dahin gilt es als verbraucht), `503 busy`, `503 shutting-down` und `401`, weil der Schlüssel beim Warten gesperrt wurde.
+Der Eintrag im Wiederholungsspeicher bleibt (der Kopf war schon gesehen). Im Sammelbetrieb bleibt der Hash eines abgebrochenen
+Clients im Baum und das Budget verbraucht (der Stempel wird gemacht). Ein Stempel, der beim Dienst scheitert (`502`, `504`),
+gibt nichts zurück (der Aufruf ging hinaus; siehe „Budgets und Zähler“).
 
 **Zu langsame Anfragen:** Kommt eine Anfrage nicht innerhalb von `requestTimeoutMs` vollständig an (Kopfzeilen oder
 Körper tröpfeln), beendet **der Server** die Verbindung und antwortet `408`. Das zählt unter `refused` als
@@ -275,6 +283,8 @@ minIntervalMs`, bei FreeTSA 12, bei 15 s 4) **eine** Schlüsselkennung in der gl
   zählt `shareDenied` (global, nur die Summe, nie je Schlüssel) und `refused['key-share']`; sagt auch das Dienstbudget,
   `perMinutePerKey` oder `perMinuteTotal` nein, bleibt es bei `rate-limited`. Die Abweisung verbraucht nichts: kein
   Gesamt- und kein Schlüsselbudget, kein Eintrag gegen Wiederholung, keine Reservierung beim Planer, kein Platz im Anteil.
+  (Eine **angenommene** Anfrage, die danach beim Warten abbricht oder `503 busy`/`shutting-down` bekommt, gibt ihren Anteil
+  und ihr Budget zurück, solange nichts an den Dienst gesendet wurde; ihr Wiederholungseintrag bleibt.)
   Der Kopf einer abgewiesenen Anfrage ist also keine Wiederholung und gilt noch, bis der Anteil wieder frei ist.
 - **Einzelbetrieb.** Gezählt wird die **Annahme** je (Spur, Kennung) in der gleitenden Minute, **auf der Wanduhr** wie die
   anderen Mengenzähler dieser Betriebsart (Dienstbudget, `perMinuteTotal`, `perMinutePerKey`); der Mindestabstand läuft
@@ -572,7 +582,8 @@ mindestens `RELAY_BATCH_MS=15000`). Die Startzeile im Protokoll nennt dann `batc
 - Eine **sofort** abgewiesene Anfrage (`401`, `400`, `415`, `429`, das `403 solo-not-allowed` und das `503 busy` bei voller Tabelle der Identitäten
   oder voller Solo-Warteschlange) kommt nie in ein Fenster und kostet kein Budget. Eine **angenommene** Anfrage hat das
   Budget dagegen verbraucht, auch wenn sie nach dem Warten `503 busy` oder beim Beenden `503 shutting-down` bekommt (das
-  Budget wird bei der Annahme verbraucht und nicht zurückgegeben; so auch im Abschnitt „Schlüsselarten und Solo-Stempel“).
+  Budget wird bei der Annahme verbraucht und zurückgegeben, wenn nichts an den Dienst ging: `503 busy` und `503 shutting-down`
+  geben es zurück, ein Fehler beim Dienst nicht; siehe „Abbruch während des Wartens“ und den Abschnitt „Schlüsselarten und Solo-Stempel“).
 - Der Wiederholungsspeicher gegen abgespielte Köpfe und die Prüfung der Frische arbeiten unverändert.
 - **Zähler:** `stamped` zählt die Stempel, die der Dienst gegeben hat (im Sammelbetrieb einen je Fenster), und es gibt
   `batched`, die Zahl der mit einem Beleg beantworteten Anfragen. Beides sind reine Summen. Ein Fehler im Fenster zählt
@@ -786,8 +797,8 @@ Solo-Stempel gibt es **nur für die Schlüsselart 2**.
    geprüft und es gibt keinen `403`. Die Prüfung gilt nur im Sammelbetrieb (dort gibt es den Unterschied zwischen Beleg
    im Fenster und direktem Stempel).
 4. **Budget und Zähler** einer angenommenen Solo-Anfrage der Art 2 wie bisher **einmal je Anfrage**: `perMinuteTotal`,
-   `perMinutePerKey` und das Solo-Limit je Schlüssel (`soloPerMinutePerKey`) werden bei der Annahme verbraucht (auch wenn
-   sie später `503 busy` bekommt). Das Dienstbudget braucht der Stempel selbst.
+   `perMinutePerKey` und das Solo-Limit je Schlüssel (`soloPerMinutePerKey`) werden bei der Annahme verbraucht (kommt später `503 busy`
+   oder `shutting-down`, ohne dass ein Aufruf an den Dienst ging, werden sie zurückgegeben). Das Dienstbudget braucht der Stempel selbst.
 5. **Latenz und Fristen:** ein Solo der Art 2 antwortet sofort, wenn ein Platz frei ist und der Mindestabstand eingehalten
    ist, sonst nach dem Warten (höchstens `RELAY_MAX_WAIT_MS`; der Abstand, auch hinter wartenden Fenstern, liegt darin).
    Frist der App und Lese-Timeout des Proxys: Wartegrenze + 17 s (der Abstand liegt innerhalb der Wartegrenze).
@@ -856,8 +867,8 @@ Solo-Stempel der Art 2; **der Rest wartet**.
 - Die 60 s der Anmeldung (Zeitfenster der Signatur) und die ±60 s der Frischeprüfung des Tokens werden von der
   Wartezeit nicht berührt: sie werden beim Eingang beziehungsweise beim Senden an den Dienst gemessen.
 - `perMinuteTotal` (60) und `perMinutePerKey` (20) bleiben **unverändert** und zählen jede angenommene Anfrage, auch eine
-  Solo-Anfrage und auch eine, die später `503 busy` bekommt (das Budget wird bei der Annahme verbraucht und nicht
-  zurückgegeben). Mit den mitgelieferten Diensten (zusammen 24 Plätze je Minute) kann ein Schlüssel, der mehrere Dienste
+  Solo-Anfrage und auch eine, die später `503 busy` bekommt (das Budget wird bei der Annahme verbraucht und
+  zurückgegeben, wenn nichts an den Dienst ging). Mit den mitgelieferten Diensten (zusammen 24 Plätze je Minute) kann ein Schlüssel, der mehrere Dienste
   nutzt, `perMinutePerKey` (20) erreichen; `perMinuteTotal` (60) wird nicht erreicht. Das Solo-Limit je Schlüssel (4)
   liegt unter `perMinutePerKey` (20), die Grenzen kollidieren also nicht.
 - **Kapazität:** ein Solo-Stempel der Art 2 kostet einen ganzen Platz. Mit FreeTSA (12 Plätze je Minute) und abwechselnder Vergabe
@@ -910,7 +921,9 @@ bliebe ein gesperrter Schlüssel gültig). Das Lesen ist billig: die Datei ist h
 - **Neuer Schlüssel:** gilt ab dem Übernehmen. **Entfernter Schlüssel:** ist **sofort** ungültig, sobald das Relay die
   Datei neu gelesen hat (jede Anfrage prüft gegen den aktuellen Satz; das Neulesen geschieht nach spätestens
   `keyFileCheckMs`, auch wenn Änderungszeit, Größe und Inode gleich geblieben sind); das ist der Weg, einen Schlüssel
-  zu **sperren**. Auch eine geänderte Art (`solo`) gilt sofort.
+  zu **sperren**. Auch eine geänderte Art (`solo`) gilt sofort. Das gilt für **neue** Anfragen; eine schon angenommene, wartende
+  Anfrage wird beim Stempeln noch einmal geprüft (siehe die Grenzen der Anmeldung, Widerruf eines Schlüssels) und bekommt `401`, ein schon laufender
+  Aufruf beim Dienst wird fertig.
 - **Ungültige Datei** (kein JSON, Regelverstoß, halb geschrieben, **gelöscht oder unlesbar**): der **alte Satz bleibt aktiv**
   (auch bei einer gelöschten Datei: nicht „kein Schlüssel“, sondern der letzte gültige Satz),
   `keyReloadFailed` zählt, es wird nichts aus der Datei protokolliert. **Alle sperren** geht also nicht durch Löschen der

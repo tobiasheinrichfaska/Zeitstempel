@@ -1,6 +1,7 @@
 // Static checks of the operating templates in deploy/ and docs/betrieb.md. Nothing here builds an image or starts nginx,
 // Caddy or systemd: the templates are read and compared with the code (settings read by the relay, limits) and with
 // docs/relay.md (time-outs). The check that they WORK is the first real run (docs/betrieb.md).
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { RELAY_LIMITS } from '../relay/limits.ts';
 
@@ -247,4 +248,28 @@ describe('docs/betrieb.md', () => {
     expect(betrieb).toContain('`shutdownHardMs` (10 s');
     expect(betrieb).toContain('`TimeoutStopSec=15`');
   });
+});
+
+describe('.gitignore keeps the filled-in env file out of the repository', () => {
+  const lines = active(read('.gitignore'));
+  it('names *.env and deploy/relay.env, and keeps the template (the exception comes last)', () => {
+    expect(lines).toContain('*.env');
+    expect(lines).toContain('deploy/relay.env');
+    expect(lines.indexOf('!deploy/relay.env.example')).toBeGreaterThan(lines.indexOf('*.env'));
+  });
+  const git = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd: new URL('./', root),
+  });
+  const inRepo = git.status === 0;
+  it.skipIf(!inRepo)(
+    'git itself ignores deploy/relay.env, any other *.env, and not the template',
+    () => {
+      const ignored = (path: string): boolean =>
+        spawnSync('git', ['check-ignore', '-q', path], { cwd: new URL('./', root) }).status === 0;
+      expect(ignored('deploy/relay.env')).toBe(true);
+      expect(ignored('relay.env')).toBe(true);
+      expect(ignored('deploy/other.env')).toBe(true);
+      expect(ignored('deploy/relay.env.example')).toBe(false);
+    },
+  );
 });

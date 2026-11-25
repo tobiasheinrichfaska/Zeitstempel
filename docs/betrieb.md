@@ -144,7 +144,9 @@ Ein privater Schlüssel in einer Web-App ist für die Besucher der Seite lesbar 
 ist eine bekannte Grenze, keine Überraschung. Wurde er missbraucht oder verbreitet:
 
 1. **Eintrag aus der Schlüsseldatei entfernen** (atomar ersetzen). Spätestens 5 s nach dem Speichern ist der Schlüssel
-   ungültig; alle ehrlichen Besucher der App sind dann ebenfalls ausgesperrt, bis die App einen neuen Schlüssel hat.
+   für **neue** Anfragen ungültig; eine schon angenommene, noch wartende Anfrage wird beim Stempeln noch einmal geprüft und
+   bekommt `401` (bis zu `RELAY_MAX_WAIT_MS`, im Sammelbetrieb dazu das Fenster, später); ein Aufruf, der beim Dienst schon läuft,
+   wird fertig. Alle ehrlichen Besucher der App sind dann ebenfalls ausgesperrt, bis die App einen neuen Schlüssel hat.
 2. Vorher oder gleichzeitig ein **neues Paar** erzeugen und die App darauf umstellen (Abschnitt Schlüsselrotation, Schritte 1 bis 3,
    mit gleichzeitigem Entfernen des alten Eintrags). Der neue Schlüssel steht in der Datei, bevor der alte verschwindet,
    wenn die Unterbrechung klein bleiben soll.
@@ -158,7 +160,8 @@ ist eine bekannte Grenze, keine Überraschung. Wurde er missbraucht oder verbrei
 Die Datei trägt `"version": 3` (Felder: `relay.md`, „Schlüsseldatei Version 3“).
 
 - **Ein Schlüssel:** dem Eintrag `"revoked": true` geben (atomar ersetzen). Spätestens **5 s** nach dem Speichern bekommt jede
-  Anfrage mit diesem Schlüssel `401`, genau wie bei einer unbekannten Kennung (kein Hinweis für den Angreifer); `keyRevoked`
+  neue Anfrage mit diesem Schlüssel `401`, genau wie bei einer unbekannten Kennung (kein Hinweis für den Angreifer); eine schon
+  angenommene, wartende Anfrage bekommt `401` beim Stempeln (ohne Aufruf beim Dienst); `keyRevoked`
   zählt die Versuche mit gültiger Signatur. Der Eintrag bleibt in der Datei (Spur, die Kennung ist belegt). Die anderen
   Schlüssel bleiben gültig. Entsperren: das Feld entfernen oder `false` setzen.
 - **Alle Schlüssel:** die Datei atomar durch `{"version": 3, "keys": []}` ersetzen. Ab dem nächsten Blick (höchstens 5 s) ist

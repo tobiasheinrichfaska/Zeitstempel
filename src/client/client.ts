@@ -114,7 +114,7 @@ export const CLIENT_LIMITS = {
   DEFAULT_TIMEOUT_MS: 130_000,
   DEFAULT_MAX_ATTEMPTS: 3,
   DEFAULT_SLACK_MS: 60_000,
-  DEFAULT_MAX_CLOCK_OFFSET_MS: 120_000,
+  DEFAULT_MAX_CLOCK_OFFSET_MS: 65_000,
   MAX_SERVICES: 16,
   MAX_TRUST: 64,
 } as const;
@@ -276,6 +276,8 @@ class BadClock extends Error {}
 
 /** Waits `ms` or until the signal aborts, whichever is first. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
+  // aborted already (while the body of the answer was read): no wait at all
+  if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
     const done = () => {
       clearTimeout(timer);
@@ -317,10 +319,15 @@ class Session {
       }
       if (f.mode === 'solo') mode = 'solo';
       if ('signal' in f && f.signal !== undefined) {
-        if (typeof AbortSignal !== 'function' || !(f.signal instanceof AbortSignal)) {
-          return failure('bad-options', { detail: 'signal' });
+        // `instanceof` runs the code of a proxy (`getPrototypeOf`): a hostile value must give a code, never a throw
+        let isSignal: boolean;
+        try {
+          isSignal = typeof AbortSignal === 'function' && f.signal instanceof AbortSignal;
+        } catch {
+          isSignal = false;
         }
-        userSignal = f.signal;
+        if (!isSignal) return failure('bad-options', { detail: 'signal' });
+        userSignal = f.signal as AbortSignal;
       }
       if ('service' in f && f.service !== undefined) {
         if (typeof f.service !== 'string' || !this.c.services.includes(f.service)) {
@@ -335,8 +342,12 @@ class Session {
       cause = 'aborted';
       control.abort();
     };
-    if (userSignal?.aborted) return failure('aborted');
-    userSignal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      if (userSignal?.aborted) return failure('aborted');
+      userSignal?.addEventListener('abort', onAbort, { once: true });
+    } catch {
+      return failure('bad-options', { detail: 'signal' }); // a signal of this realm that misbehaves
+    }
     const startedAt = performance.now();
     const timer = setTimeout(() => control.abort(), this.c.timeoutMs);
     try {
@@ -350,7 +361,11 @@ class Session {
       return failure(control.signal.aborted ? cause : 'network-error', { detail: 'unexpected' });
     } finally {
       clearTimeout(timer);
-      userSignal?.removeEventListener('abort', onAbort);
+      try {
+        userSignal?.removeEventListener('abort', onAbort);
+      } catch {
+        // a hostile signal must not turn the result into a rejection
+      }
     }
   }
 
@@ -420,7 +435,7 @@ class Session {
         }
         if (fixPending && status !== 401) this.offsetMs = offset;
         if (status === 200) {
-          const verified = await this.finish(res, hash, service, sentMs, offset);
+          const verified = await this.finish(res, hash, service, sentMs, offset, mode);
           return verified;
         }
         const error = await readError(res);
@@ -464,6 +479,7 @@ class Session {
     service: string,
     sentMs: number,
     offset: number,
+    mode: 'normal' | 'solo',
   ): Promise<ClientResult<Evidence>> {
     const c = this.c;
     let answer: unknown;
@@ -484,6 +500,8 @@ class Session {
     if (f === null || f.service !== service || typeof f.token !== 'string') {
       return failure('bad-response', { detail: 'shape' });
     }
+    // a direct stamp was asked for (`solo`): a collected receipt is another statement, whatever it proves
+    if (mode === 'solo' && 'batch' in f) return failure('bad-response', { detail: 'mode' });
     const token = f.token.length > 400_000 ? null : fromBase64Url(f.token);
     if (token === null) return failure('bad-response', { detail: 'token' });
     // minGenTime is mandatory: without it a back-dated token from a stolen or expired service key passes

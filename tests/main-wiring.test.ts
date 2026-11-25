@@ -374,6 +374,29 @@ describe('relay/main.ts as a process', () => {
     expect((await p.exited).code).toBe(0);
   }, 90_000);
 
+  it('the reload knows the service ids too: an unknown id in `services` makes the file invalid and the old set stays', async () => {
+    const text = (keys: unknown[]) => JSON.stringify({ version: 3, keys });
+    const e = (k: TestKey, more: Record<string, unknown> = {}) => ({
+      id: k.id,
+      publicKey: toBase64Url(k.publicKey),
+      ...more,
+    });
+    writeFileSync(keysPath, text([e(KEY_A)]), { mode: 0o600 });
+    const p = await startMain();
+    expect(await p.probe(KEY_B)).toBe(401);
+    // B with a mistyped service id: without the known ids the reload would take it (and answer 403 service-not-allowed)
+    writeFileSync(keysPath, text([e(KEY_A), e(KEY_B, { services: ['freetsaa'] })]));
+    expect(
+      await until(() => p.err.some((l) => l.includes('ungültig oder nicht lesbar')), 15_000),
+    ).toBe(true);
+    expect(await p.probe(KEY_B)).toBe(401);
+    expect(await p.probe(KEY_A)).toBe(400);
+    writeFileSync(keysPath, text([e(KEY_A), e(KEY_B, { services: ['freetsa'] })]));
+    expect(await until(async () => (await p.probe(KEY_B)) === 400, 15_000)).toBe(true);
+    p.child.kill('SIGTERM');
+    expect((await p.exited).code).toBe(0);
+  }, 45_000);
+
   it('readConfig: an empty list gives the warning, a services entry names only known service ids', () => {
     const base = {
       RELAY_ORIGINS: 'https://app.example',

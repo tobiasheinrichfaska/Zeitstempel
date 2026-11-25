@@ -150,11 +150,11 @@ describe('against a real relay (collecting operation)', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('a clock that is 90 s ahead gets 401, is corrected once by the relay Date, and the offset is kept', async () => {
+  it('a clock that is 62 s ahead gets 401, is corrected once by the relay Date, and the offset is kept', async () => {
     let sends = 0;
     const client = make(
       options(relay.origin, {
-        now: () => Date.now() + 90_000,
+        now: () => Date.now() + 62_000,
         fetch: (url, init) => {
           sends += 1;
           return fetch(url, init as RequestInit);
@@ -163,13 +163,13 @@ describe('against a real relay (collecting operation)', () => {
     );
     const e = evidenceOf(await client.stamp(sha256('clock a')));
     expect(sends).toBe(2);
-    // receivedAtMs is the corrected clock: close to the true time, not 90 s ahead
+    // receivedAtMs is the corrected clock: close to the true time, not 62 s ahead
     expect(Math.abs(e.receivedAtMs - Date.now())).toBeLessThan(10_000);
     evidenceOf(await client.stamp(sha256('clock b')));
     expect(sends).toBe(3); // the second call signs with the corrected clock at once
   });
 
-  it('a clock 5 minutes off is not corrected by default (cap 2 minutes): 401 stays, one send', async () => {
+  it('a clock 5 minutes off is not corrected by default (cap 65 s): 401 stays, one send', async () => {
     let sends = 0;
     const client = make(
       options(relay.origin, {

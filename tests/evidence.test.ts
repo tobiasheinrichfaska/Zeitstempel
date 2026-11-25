@@ -146,6 +146,14 @@ describe('readEvidence', () => {
     { ...GOOD, genTime: '2026-11-23T13:05:56.000+01:00' },
     'genTime',
   );
+  // V8 reads these as valid dates (30 February becomes 2 March, 24:00 the next day): only the round trip refuses them
+  refuse('a genTime on 30 February', { ...GOOD, genTime: '2026-02-30T00:00:00.000Z' }, 'genTime');
+  refuse('a genTime at 24:00', { ...GOOD, genTime: '2026-11-25T24:00:00.000Z' }, 'genTime');
+  refuse(
+    'a signerNotAfter on 31 April',
+    { ...GOOD, signerNotAfter: '2027-04-31T00:00:00.000Z' },
+    'signerNotAfter',
+  );
   refuse('a signerNotAfter that is a number', { ...GOOD, signerNotAfter: 5 }, 'signerNotAfter');
   refuse('a policy that is no OID', { ...GOOD, policy: 'x.y' }, 'policy');
   refuse('a policy that is too long', { ...GOOD, policy: '1.' + '2'.repeat(300) }, 'policy');

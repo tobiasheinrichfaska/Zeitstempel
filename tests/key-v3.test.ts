@@ -632,3 +632,23 @@ describe('scripts/make-key.ts prints a version 3 entry', () => {
     }
   });
 });
+
+describe('the key file reader looks at the own fields of an entry only', () => {
+  it('a polluted Object.prototype (revoked, solo, notAfter, perMinute, services, restartAfter) changes nothing', () => {
+    const data = {
+      version: 3,
+      keys: [{ id: 'app-a', publicKey: toBase64Url(makeTestKey('app-a').publicKey) }],
+    };
+    const proto = Object.prototype as unknown as Record<string, unknown>;
+    const fields = ['revoked', 'solo', 'notAfter', 'perMinute', 'services', 'restartAfter'];
+    try {
+      for (const f of fields) proto[f] = 'polluted';
+      const read = readKeyFileFull(data);
+      expect(read.ok).toBe(true);
+      if (read.ok)
+        expect(read.value).toEqual({ keys: [expect.not.objectContaining({ revoked: true })] });
+    } finally {
+      for (const f of fields) Reflect.deleteProperty(proto, f);
+    }
+  });
+});

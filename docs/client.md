@@ -66,7 +66,7 @@ ist `bad-options`). Die Fabrik macht keinen Netzaufruf und signiert noch nichts.
 | `timeoutMs`         | nein    | Gesamtfrist eines `stamp`-Aufrufs, 1000 bis 600000 ms, Vorgabe **130000**                                                                                                                                 |
 | `maxAttempts`       | nein    | Sendungen je Dienst bei `429` und `503 busy`, 1 bis 10, Vorgabe 3                                                                                                                                         |
 | `minGenTimeSlackMs` | nein    | Toleranz unter der Sendezeit, 0 bis 3600000 ms, Vorgabe 60000                                                                                                                                             |
-| `maxClockOffsetMs`  | nein    | Größter Uhrversatz, den die App aus dem `Date` des Relays übernimmt, 0 bis 86400000 ms, Vorgabe 120000                                                                                                    |
+| `maxClockOffsetMs`  | nein    | Größter Uhrversatz, den die App aus dem `Date` des Relays übernimmt, 0 bis 86400000 ms, Vorgabe 65000                                                                                                     |
 
 `trust` sind **PEM-Texte** wie überall in der Bibliothek (`verifyTimestampToken`), nicht DER-Bytes.
 
@@ -109,7 +109,9 @@ Was der Client tut (`docs/relay.md`, Tabelle der Fehlercodes):
 | `400`, `403` (`solo-not-allowed`, `service-not-allowed`, `origin-not-allowed`), `404`, `413`, `415` und alles Unbekannte | Fehler, **kein Failover** und keine Wiederholung: ein anderer Dienst ändert daran nichts                                                                                                                                                              |
 
 `403 solo-not-allowed` heißt: der Schlüssel ist von der Art 1; `stamp(hash, { mode: 'solo' })` braucht einen Schlüssel der Art 2.
-Der Client versteckt das nicht hinter einem normalen Stempel: ein `solo` ohne Solo-Beleg wäre eine andere Aussage.
+Der Client versteckt das nicht hinter einem normalen Stempel: ein `solo` ohne Solo-Beleg wäre eine andere Aussage. Antwortet ein
+Relay auf `mode: 'solo'` mit einem Sammelbeleg (`batch`), ist das `bad-response` (`detail: 'mode'`); wer `mode` nicht angibt, wertet
+`kind` des Belegs aus.
 
 ## Uhrabgleich
 
@@ -119,7 +121,7 @@ korrigierten Uhr neu und sendet. Genau einmal je `stamp`-Aufruf, nicht endlos; d
 `maxAttempts`. Hat die korrigierte Anfrage dann Erfolg (keine `401` mehr), **merkt der Client den Versatz** für die folgenden
 Aufrufe; bleibt auch sie `401`, wird er verworfen.
 
-**Grenze:** nur Versätze bis `maxClockOffsetMs` (Vorgabe 2 Minuten) werden übernommen. Grund: die korrigierte Uhr bestimmt auch
+**Grenze:** nur Versätze bis `maxClockOffsetMs` (Vorgabe 65 s, knapp über dem Fenster von ±60 s des Relays; ein ehrliches Relay braucht nicht mehr) werden übernommen. Grund: die korrigierte Uhr bestimmt auch
 `minGenTime`; ein Relay, das ein falsches `Date` schickt, könnte sonst die Frischeprüfung beliebig verschieben und ein
 rückdatiertes Token durchlassen. Mit der Grenze kann es sie höchstens um den Versatz plus `minGenTimeSlackMs` verschieben.
 Eine Uhr, die um mehr abweicht, bleibt `401` (ein Wert für `maxClockOffsetMs` erlaubt mehr; wer ihn erhöht, vertraut dem `Date`
@@ -197,7 +199,9 @@ Reihenfolge: Optionen (`bad-options`; erlaubt sind `trust` und die Optionen von 
 (`bad-evidence`) → der Hash des Belegs gegen den **übergebenen** Hash (`evidence-hash-mismatch`) → das Token
 (`verifyTimestampToken`, bei `kind: batch` `verifyBatchedTimestamp`: alle bekannten Codes, bei einem Beleg für einen anderen Hash im
 Baum `imprint-mismatch`) → Abgleich von `genTime`, `policy`, `signerNotAfter` (`bad-evidence`, wenn eines abweicht). Das Ergebnis trägt
-die **geprüften** Werte (`VerifiedTimestamp` plus `kind`, `service`, `receivedAtMs`, bei `batch` `{ size, index }`). Kein Netz, kein Relay.
+die Werte der Prüfung (`VerifiedTimestamp`, bei `batch` `{ size, index }`) und, **ungeprüft**, die Angaben des Belegs `kind`, `service`
+und `receivedAtMs`: das Token bindet weder die Dienstkennung noch die Empfangszeit, wer sie fälscht, ändert nur diese Notizen
+(`kind` dagegen entscheidet über die Art der Prüfung und fällt bei einer falschen Angabe durch). Kein Netz, kein Relay.
 Die **Frische** prüft nur, wer `minGenTime` angibt; die Aussage wird schwächer, wenn das Zeitstempel-Zertifikat abläuft oder sein
 Schlüssel kompromittiert wird (`docs/grenzen.md`, „Langzeitaussage“): rechtzeitig neu stempeln, mehrere Dienste nutzen.
 
@@ -230,4 +234,12 @@ Redundanz.
 - `receivedAtMs` ist die Uhr der App und kein Beweis. Ein Beleg beweist nur: dieser Hash lag zu `genTime` vor (bei `batch`: er war
   in der Menge, die der Dienst gestempelt hat; `docs/relay.md`, „Was der Beleg sagt, und was nicht“).
 - Keine eigene Wiederholung bei `500` auf demselben Dienst und keine Frist je Dienst.
+- Der Versatz der Uhr wird gemerkt, sobald das Relay den korrigierten Kopf nicht mehr mit `401` abweist, auch wenn danach etwas
+  anderes (`429`, `502`) folgt; ein ehrliches Relay heilt das mit der nächsten `401`.
+- Die Vorgabe `timeoutMs` (130 s) deckt den Sammelbetrieb nur, solange `RELAY_MAX_WAIT_MS` + Fenster + Kette + 17 s darunter bleiben
+  (Fenster und Kette von je 60 s ergeben 167 s); wer so fährt, setzt `timeoutMs` höher, der Client kennt die Einstellung des Relays nicht.
+- Die Zukunftstoleranz des Tokens ist die der Bibliothek (`maxSkewMs` 5 Minuten, das Relay selbst lässt 60 s zu): die `genTime` eines
+  Belegs kann bis zu 5 Minuten nach der Uhr der App liegen; die Aussage „spätestens zu T“ wird dadurch schwächer, nie falsch.
+- `random` wird nur auf die Länge geprüft: ein Zufallsgeber, der immer dasselbe liefert, macht jeden Kopf zur Wiederholung (das Relay
+  weist das zweite ab); das schadet nur der eigenen App.
 - Die Zugangsdaten bezahlter Dienste (`upstream`) kann der Client nicht senden.

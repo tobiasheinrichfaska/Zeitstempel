@@ -89,7 +89,7 @@ export function readKeyFileFull(
   if (top.version !== 2 && top.version !== 3) return bad('version');
   const v3 = top.version === 3;
   let restartAfter: number | undefined;
-  if ('restartAfter' in top) {
+  if (Object.hasOwn(top, 'restartAfter')) {
     const r = top.restartAfter;
     if (
       typeof r !== 'number' ||
@@ -120,9 +120,9 @@ export function readKeyFileFull(
     if (!v3 && extra.some((f) => ENTRY_V3.includes(f))) return bad('v3-field-in-v2-file', index);
     if (typeof e.id !== 'string' || !KEY_ID.test(e.id)) return bad('id', index);
     if (typeof e.publicKey !== 'string') return bad('public-key', index);
-    if ('solo' in e && typeof e.solo !== 'boolean') return bad('solo', index);
-    if ('revoked' in e && typeof e.revoked !== 'boolean') return bad('revoked', index);
-    if ('notAfter' in e) {
+    if (Object.hasOwn(e, 'solo') && typeof e.solo !== 'boolean') return bad('solo', index);
+    if (Object.hasOwn(e, 'revoked') && typeof e.revoked !== 'boolean') return bad('revoked', index);
+    if (Object.hasOwn(e, 'notAfter')) {
       const n = e.notAfter;
       if (
         typeof n !== 'number' ||
@@ -133,7 +133,7 @@ export function readKeyFileFull(
         return bad('not-after', index);
       }
     }
-    if ('perMinute' in e) {
+    if (Object.hasOwn(e, 'perMinute')) {
       const n = e.perMinute;
       if (
         typeof n !== 'number' ||
@@ -145,7 +145,7 @@ export function readKeyFileFull(
       }
     }
     let services: string[] | undefined;
-    if ('services' in e) {
+    if (Object.hasOwn(e, 'services')) {
       const list = e.services;
       if (!Array.isArray(list) || list.length < 1 || list.length > MAX_KEY_SERVICES)
         return bad('services', index);

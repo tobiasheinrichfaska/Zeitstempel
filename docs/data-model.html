@@ -199,7 +199,7 @@
       <tr><td>timeoutMs</td><td>Zahl 1000 bis 600000, optional</td><td>Gesamtfrist eines <code>stamp</code>-Aufrufs über alle Versuche (Vorgabe 130000; Formel in <code>docs/client.md</code>)</td></tr>
       <tr><td>maxAttempts</td><td>ganze Zahl 1 bis 10, optional</td><td>Höchstens so viele Sendungen je Dienst bei <code>429</code> und <code>503 busy</code> (Vorgabe 3); die eine Uhrkorrektur zählt nicht</td></tr>
       <tr><td>minGenTimeSlackMs</td><td>Zahl 0 bis 3600000, optional</td><td>Abstand unter der Sendezeit für <code>minGenTime</code> (Vorgabe 60000, wie <code>genTimeSlackMs</code> des Relays)</td></tr>
-      <tr><td>maxClockOffsetMs</td><td>Zahl 0 bis 86400000, optional</td><td>Größter Uhrversatz, den der <code>Date</code>-Kopf eines <code>401</code> korrigieren darf (Vorgabe 120000); mehr bleibt <code>401</code>, damit ein Relay die Frischeprüfung nicht beliebig verschieben kann</td></tr>
+      <tr><td>maxClockOffsetMs</td><td>Zahl 0 bis 86400000, optional</td><td>Größter Uhrversatz, den der <code>Date</code>-Kopf eines <code>401</code> korrigieren darf (Vorgabe 65000); mehr bleibt <code>401</code>, damit ein Relay die Frischeprüfung nicht beliebig verschieben kann</td></tr>
     </table>
     <h3>ClientFailure (Fehlerform von <code>stamp</code>)</h3>
     <table>
@@ -243,7 +243,7 @@
       <tr><td>DEFAULT_TIMEOUT_MS</td><td>130000</td><td>Vorgabe von <code>timeoutMs</code></td></tr>
       <tr><td>DEFAULT_MAX_ATTEMPTS</td><td>3</td><td>Vorgabe von <code>maxAttempts</code></td></tr>
       <tr><td>DEFAULT_SLACK_MS</td><td>60000</td><td>Vorgabe von <code>minGenTimeSlackMs</code></td></tr>
-      <tr><td>DEFAULT_MAX_CLOCK_OFFSET_MS</td><td>120000</td><td>Vorgabe von <code>maxClockOffsetMs</code></td></tr>
+      <tr><td>DEFAULT_MAX_CLOCK_OFFSET_MS</td><td>65000</td><td>Vorgabe von <code>maxClockOffsetMs</code></td></tr>
       <tr><td>MAX_SERVICES</td><td>16</td><td>Einträge von <code>services</code></td></tr>
       <tr><td>MAX_TRUST</td><td>64</td><td>Einträge von <code>trust</code></td></tr>
     </table>
