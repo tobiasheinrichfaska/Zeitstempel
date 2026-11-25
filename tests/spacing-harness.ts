@@ -113,6 +113,7 @@ export async function start(
     keyShare?: number;
     /** The monotonic clock of the relay is virtual (`vmono`, moved by `advance` only); the real timers still run. */
     virtualMono?: boolean;
+    authReplayEntries?: number;
   } = {},
 ): Promise<Harness> {
   const calls: Harness['calls'] = [];
@@ -156,6 +157,7 @@ export async function start(
       ? {}
       : { upstreamIdentities: over.upstreamIdentities }),
     ...(over.keyShare === undefined ? {} : { keyShare: over.keyShare }),
+    ...(over.authReplayEntries === undefined ? {} : { authReplayEntries: over.authReplayEntries }),
     ...(over.maxWaitMs === undefined ? {} : { maxWaitMs: over.maxWaitMs }),
     ...(over.budgetWindowMs === undefined ? {} : { budgetWindowMs: over.budgetWindowMs }),
   };

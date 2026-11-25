@@ -454,12 +454,19 @@ export function createRelay(options: RelayOptions): Relay {
         times.push(now);
         shares.set(id, times);
         for (const [other, list] of shares) {
-          if (other !== id && now - Math.min(list[list.length - 1]!, now) >= bw) {
+          if (
+            other !== id &&
+            (list.length === 0 || now - Math.min(list[list.length - 1]!, now) >= bw)
+          ) {
             shares.delete(other);
           }
         }
       },
-      unspend: () => removeOne(shares.get(id), now),
+      unspend: () => {
+        removeOne(shares.get(id), now);
+        // an empty list is no list (nothing would ever age it out)
+        if (shares.get(id)?.length === 0) shares.delete(id);
+      },
     };
   }
 
@@ -800,7 +807,22 @@ export function createRelay(options: RelayOptions): Relay {
       soloNow?.unspend();
       shareNow?.unspend();
     };
-    const valid = (): boolean => auth === null || !lapsed(auth.kid);
+    // Still allowed: the key itself (`lapsed`), and what the door looked at: its `services` and, for a solo stamp, its type.
+    // A change of the file reaches a waiting request as a 401 (like a removed key).
+    const valid = (): boolean => {
+      if (auth === null) return true;
+      if (lapsed(auth.kid)) return false;
+      const only = servicesOfKid.get(auth.kid);
+      if (only !== undefined && !only.has(service.id)) {
+        stats.serviceDenied = (stats.serviceDenied ?? 0) + 1;
+        return false;
+      }
+      if (direct && !soloKids.has(auth.kid)) {
+        stats.soloDenied = (stats.soloDenied ?? 0) + 1;
+        return false;
+      }
+      return true;
+    };
     if (auth && signedId !== null) remember(signedId, auth);
     const entry = tracked ? touchIdentity(lk, service) : null;
     if (entry) entry.pending += 1;
@@ -891,6 +913,7 @@ export function createRelay(options: RelayOptions): Relay {
         lastCall.delete(key);
         lanes.delete(key);
         gates.delete(key);
+        for (const id of shares.keys()) if (id.endsWith(`|${key}`)) shares.delete(id);
         continue;
       }
       count += 1;

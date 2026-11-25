@@ -139,7 +139,7 @@ describe('B2: what a request spent comes back when it was not sent to the servic
     expect(h.calls).toHaveLength(2);
   });
 
-  it('a request answered with shutting-down is not counted; the replay entry stays (the head was seen)', async () => {
+  it('a request answered with shutting-down leaves its replay entry (the head was seen, so it is not accepted again)', async () => {
     h = await start({ batch: null, minIntervalMs: 2000, maxWaitMs: 8000 });
     expect((await h.stamp(sha256('1'), { key: KEY_A })).status).toBe(200);
     const text = JSON.stringify({ hash: toBase64Url(sha256('2')) });

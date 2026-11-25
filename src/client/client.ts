@@ -55,7 +55,7 @@ export interface RelayClientOptions {
   maxAttempts?: number;
   /** Tolerance below the send time for the token's `genTime`, 0 to 3600000 ms. Default 60000. */
   minGenTimeSlackMs?: number;
-  /** Largest clock offset a `Date` header may correct, 0 to 86400000 ms. Default 120000. */
+  /** Largest clock offset a `Date` header may correct, 0 to 86400000 ms. Default 65000. */
   maxClockOffsetMs?: number;
   /** Random bytes for the `jti` of each head: `(length) => Uint8Array`. Default `crypto.getRandomValues`. */
   random?: (length: number) => Uint8Array;
