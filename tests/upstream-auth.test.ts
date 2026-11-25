@@ -124,6 +124,8 @@ async function start(
     upstreamAuth?: Map<string, UpstreamCredentials>;
     upstreamIdentities?: number;
     maxWaitMs?: number;
+    /** Single operation: the monotonic clock follows the clock of the test (identities expire on it, not on the wall clock). */
+    followClock?: boolean;
   } = {},
 ): Promise<Harness> {
   const calls: Call[] = [];
@@ -145,7 +147,7 @@ async function start(
     now: () => clock.now,
     // single operation: the minimum distance has its own tests (single-spacing.test.ts); collecting operation: the planner
     // runs on the monotonic clock, which here follows the clock of the test (it moves it to let budgets expire)
-    monotonicNow: over.batch ? () => clock.now : fastMonotonic(),
+    monotonicNow: over.batch || over.followClock ? () => clock.now : fastMonotonic(),
     keys: KEYS,
     upstreamAuth: over.upstreamAuth ?? RELAY_CREDS,
     ...(over.batch ? { batch: over.batch } : {}),
@@ -939,7 +941,7 @@ describe('the table of identities is limited, and idle identities are dropped', 
   afterEach(() => h.close());
 
   it('a new identity beyond the limit is 503 busy with Retry-After; known ones still go; room is made after a window', async () => {
-    h = await start({ upstreamIdentities: 3 });
+    h = await start({ upstreamIdentities: 3, followClock: true });
     for (const t of ['A', 'B', 'C']) {
       expect((await h.post('paid-client', withUpstream(`x${t}`, { token: t }))).status).toBe(200);
     }
@@ -949,7 +951,8 @@ describe('the table of identities is limited, and idle identities are dropped', 
     expect(Number(d.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
     expect(Number(d.headers.get('retry-after'))).toBeLessThanOrEqual(60);
     expect(h.calls).toHaveLength(3); // the refused one never reached the service
-    // a known identity is not a new one
+    // a known identity is not a new one (its distance to the first call is over)
+    h.clock.now += 5_000;
     expect((await h.post('paid-client', withUpstream('xA2', { token: 'A' }))).status).toBe(200);
     // another service has its own table
     expect(
@@ -1071,7 +1074,7 @@ describe('the lifetime of an identity (credentials of the app)', () => {
 
   it('the identity lives a whole window after its last ANSWER, not after its start', async () => {
     const slow = held();
-    h = await start({ upstream: slow.upstream, upstreamIdentities: 1 });
+    h = await start({ upstream: slow.upstream, upstreamIdentities: 1, followClock: true });
     slow.follow(h.clock);
     const inFlight = post('x1', 'X');
     await sleep(200);

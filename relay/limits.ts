@@ -129,3 +129,11 @@ export const RELAY_LIMITS = {
    */
   keyFileMaxBytes: 65_536,
 } as const;
+
+/**
+ * Single operation: how far past its deadline (`RELAY_MAX_WAIT_MS` after arrival) the call of a waiting request may lie
+ * before it is `503 busy`. The door lets the last request through whose time is at the very limit, but every call before
+ * it is a few milliseconds late (timers), and those delays add up along the chain: without this slack that last request
+ * would wait the whole limit and then be refused without a stamp. Also the most by which a wait can exceed the limit.
+ */
+export const WAIT_TOLERANCE_MS = 50;

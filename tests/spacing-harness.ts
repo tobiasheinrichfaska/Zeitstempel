@@ -85,6 +85,8 @@ export interface Harness {
       signedRaw?: string;
       type?: string;
       head?: string;
+      /** Aborting it closes the connection (a client or a proxy that gives up). */
+      signal?: AbortSignal;
     },
   ) => Promise<Response>;
   /** Like `stamp`, plus the time until the answer. */
@@ -174,6 +176,7 @@ export async function start(
       method: 'POST',
       body: text,
       headers: { 'Content-Type': o.type ?? 'application/json', 'X-Zeitstempel-Auth': head },
+      ...(o.signal === undefined ? {} : { signal: o.signal }),
     });
   };
   return {

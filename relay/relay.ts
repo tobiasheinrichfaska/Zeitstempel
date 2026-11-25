@@ -24,7 +24,7 @@ import {
 } from './credentials.ts';
 import { isAuthHeaderName } from '../src/lib/services.ts';
 import { publicKeyObject, type RelayKey } from './keys.ts';
-import { RELAY_LIMITS } from './limits.ts';
+import { RELAY_LIMITS, WAIT_TOLERANCE_MS } from './limits.ts';
 import { UpstreamError, type Upstream } from './upstream.ts';
 
 /** A service together with its trust anchors (PEM text), as the relay needs it. */
@@ -619,7 +619,7 @@ export function createRelay(options: RelayOptions): Relay {
     budgetNow.spend();
     soloNow?.spend();
     if (auth && signedId !== null) remember(signedId, auth);
-    const entry = tracked ? touchIdentity(lk, service.id) : null;
+    const entry = tracked ? touchIdentity(lk, service) : null;
     if (entry) entry.pending += 1;
     try {
       if (batch) {
@@ -631,14 +631,16 @@ export function createRelay(options: RelayOptions): Relay {
         if (res.destroyed) return countAborted(req, res);
         return send(res, reply.status, reply.body, origin, reply.headers);
       }
-      const got = await spaced(service, lk, hash, creds);
+      const got = await spaced(service, lk, hash, creds, () => res.destroyed);
+      // the client gave up while the request waited for its time: the service was not called for it
+      if (got === 'gone') return countAborted(req, res);
       if (!got.ok) return send(res, got.status, got.body, origin, got.headers);
       stats.stamped += 1;
       return send(res, 200, stampBody(service, got), origin);
     } finally {
       if (entry) {
         entry.pending -= 1;
-        entry.lastMs = tick(); // the identity lives a whole window after its last answer
+        entry.lastMs = mono(); // the identity lives a whole window (at least one distance) after its last answer
       }
     }
   }
@@ -647,7 +649,10 @@ export function createRelay(options: RelayOptions): Relay {
 
   /** The identities of the app known now: lane key -> service, last activity, requests in flight. Memory only, never output. */
   const identitiesMax = options.upstreamIdentities ?? RELAY_LIMITS.upstreamIdentitiesMax;
-  const known = new Map<string, { serviceId: string; lastMs: number; pending: number }>();
+  const known = new Map<
+    string,
+    { serviceId: string; lastMs: number; pending: number; keepMs: number }
+  >();
 
   /**
    * What the request must send to the service: the credentials (or none) and the identity (null: the relay's own or
@@ -673,16 +678,19 @@ export function createRelay(options: RelayOptions): Relay {
     return mine === null ? 'bad-upstream' : { creds: mine, identity: credentialIdentity(mine) };
   }
 
-  /** Is an identity gone for good: idle for a whole window and nothing in flight? */
-  const expired = (e: { lastMs: number; pending: number }, now: number): boolean =>
-    e.pending === 0 && now - Math.min(e.lastMs, now) >= bw;
+  /**
+   * Is an identity gone for good: idle for `keepMs` and nothing in flight? `now` and `lastMs` are on the monotonic clock
+   * (in single operation, too: a jump of the wall clock must not drop a gate and give back a distance).
+   */
+  const expired = (e: { lastMs: number; pending: number; keepMs: number }, now: number): boolean =>
+    e.pending === 0 && now - Math.min(e.lastMs, now) >= e.keepMs;
 
   /**
    * Drops the identities of a service that are expired, then: null when there is room for one more, else the seconds
    * until the first one expires (at least 1).
    */
   function identitiesFullWait(serviceId: string): number | null {
-    const now = tick();
+    const now = mono();
     let count = 0;
     let soonest = Infinity;
     for (const [key, e] of known) {
@@ -698,19 +706,24 @@ export function createRelay(options: RelayOptions): Relay {
       count += 1;
       soonest = Math.min(
         soonest,
-        e.pending > 0 ? 1 : Math.max(1, Math.ceil((bw - (now - Math.min(e.lastMs, now))) / 1000)),
+        e.pending > 0
+          ? 1
+          : Math.max(1, Math.ceil((e.keepMs - (now - Math.min(e.lastMs, now))) / 1000)),
       );
     }
     return count >= identitiesMax ? soonest : null;
   }
 
-  function touchIdentity(key: string, serviceId: string) {
+  function touchIdentity(key: string, service: RelayService) {
     let e = known.get(key);
     if (e === undefined) {
-      e = { serviceId, lastMs: tick(), pending: 0 };
+      // kept for a whole budget window, and at least for the minimum distance of the service: the gate and the last call
+      // of the identity are what holds that distance, they must not be dropped before it is over
+      const keepMs = Math.max(bw, service.minIntervalMs);
+      e = { serviceId: service.id, lastMs: mono(), pending: 0, keepMs };
       known.set(key, e);
     }
-    e.lastMs = tick();
+    e.lastMs = mono();
     return e;
   }
 
@@ -808,7 +821,7 @@ export function createRelay(options: RelayOptions): Relay {
   }
   interface GateWait {
     timer: ReturnType<typeof setTimeout> | null;
-    resolve: (how: 'go' | 'busy' | 'closing') => void;
+    resolve: (how: 'go' | 'busy' | 'closing' | 'gone') => void;
   }
   const gates = new Map<string, Gate>();
 
@@ -830,7 +843,8 @@ export function createRelay(options: RelayOptions): Relay {
     key: string,
     hash: Uint8Array,
     creds: UpstreamCredentials | undefined,
-  ): Promise<Obtained> {
+    aborted: () => boolean,
+  ): Promise<Obtained | 'gone'> {
     const m = service.minIntervalMs;
     let g = gates.get(key);
     if (g === undefined) {
@@ -846,19 +860,34 @@ export function createRelay(options: RelayOptions): Relay {
       return obtain(service, hash, creds);
     }
     const deadline = start + maxWaitMs;
-    const how = await new Promise<'go' | 'busy' | 'closing'>((resolve) => {
+    // The time this request booked is given back when it will not call after all (busy, client gone) and it is the last
+    // of the chain: a gap in the middle is not filled (the order of arrival stays), but the end of the chain must not
+    // wait for a call nobody makes. The distance to the call really made (`gate.last`) is checked at every call anyway.
+    const giveBack = (): void => {
+      if (gate.next === at + m) gate.next = at;
+    };
+    const how = await new Promise<'go' | 'busy' | 'closing' | 'gone'>((resolve) => {
       const entry: GateWait = { timer: null, resolve };
       gate.waiting.add(entry);
-      const finish = (h: 'go' | 'busy' | 'closing'): void => {
+      const finish = (h: 'go' | 'busy' | 'closing' | 'gone'): void => {
         gate.waiting.delete(entry);
         entry.timer = null;
         resolve(h);
       };
       const look = (): void => {
         const t = mono();
+        if (aborted()) {
+          giveBack();
+          return finish('gone');
+        }
         // the distance to the call that was made last, as it really was (a timer may fire late or a bit early)
         const due = Math.max(at, gate.last + m);
-        if (due > deadline) return finish('busy');
+        // the door lets the last one through at the very limit, and every call before it may be a few ms late
+        // (timers): the sum of those delays must not cost the request the slot the door promised
+        if (due > deadline + WAIT_TOLERANCE_MS) {
+          giveBack();
+          return finish('busy');
+        }
         if (due > t) {
           entry.timer = setTimeout(look, Math.ceil(due - t));
           return;
@@ -869,6 +898,7 @@ export function createRelay(options: RelayOptions): Relay {
       entry.timer = setTimeout(look, Math.ceil(at - start));
     });
     if (how === 'closing') return { ok: false, status: 503, body: { error: 'shutting-down' } };
+    if (how === 'gone') return 'gone';
     if (how === 'busy') {
       return {
         ok: false,
