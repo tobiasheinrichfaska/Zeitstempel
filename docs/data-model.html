@@ -20,7 +20,7 @@
   <body>
     <h1>Zeitstempel – Datenmodell</h1>
     <p class="note">
-      Quelle: <code>src/lib/</code>, <code>relay/</code> und <code>services.json</code> (Stand 2026-11-23). Bei jeder
+      Quelle: <code>src/lib/</code>, <code>relay/</code> und <code>services.json</code> (Stand 2026-11-24). Bei jeder
       Änderung in derselben Sitzung abgleichen; <code>tests/docs.test.ts</code> prüft, dass jeder Fehlercode, jede
       Grenze und jede öffentliche Funktion hier steht. Die Datei ist eigenständig (kein Netz, kein Build).
     </p>
@@ -39,9 +39,10 @@
       <tr><td>hash</td><td>"sha256"</td><td>ja</td><td>Hashverfahren der Anfrage; nur SHA-256</td></tr>
       <tr><td>anchors</td><td>Pfade <code>anchors/&lt;name&gt;.pem</code>, 1 bis 8</td><td>ja</td><td>Vertrauensanker des Dienstes (PEM-Dateien)</td></tr>
       <tr><td>qualified</td><td>wahr/falsch</td><td>ja</td><td>Qualifizierter Vertrauensdienst im Sinne von eIDAS; bei allen mitgelieferten Diensten falsch</td></tr>
-      <tr><td>minIntervalMs</td><td>ganze Zahl 1000 bis 3600000</td><td>ja</td><td>Kleinster Abstand zwischen zwei Anfragen an den Dienst</td></tr>
+      <tr><td>minIntervalMs</td><td>ganze Zahl 1000 bis 3600000</td><td>ja</td><td>Daraus folgt das Budget des Dienstes: höchstens 60000 / minIntervalMs Anfragen je Minute (im Sammelbetrieb zusätzlich der Mindestabstand <code>minIntervalMs</code> zwischen zwei Aufrufen des Dienstes für Solo-Stempel und Fenster)</td></tr>
       <tr><td>intendedUse</td><td>Text, höchstens 500 Zeichen</td><td>ja</td><td>Wofür der Betreiber den Dienst anbietet</td></tr>
       <tr><td>terms</td><td>Text, höchstens 800 Zeichen</td><td>ja</td><td>Stand der Nutzungsbedingungen, ehrlich auch „nicht geprüft“</td></tr>
+      <tr><td>auth</td><td><code>{ "kind": "none" }</code> oder <code>{ "kind": "basic" | "bearer" | "header", "source": "relay" | "client" | "either" }</code>; bei <code>header</code> zusätzlich <code>"header"</code> (<code>[A-Za-z0-9-]{1,40}</code>, keiner der verbotenen oder Hop-by-hop-Köpfe)</td><td>nein</td><td>Zugangsdaten eines bezahlten Dienstes: Art und Quelle (das Relay, die App oder beide, Vorrang der App). Ohne das Feld gilt <code>none</code> (die vier mitgelieferten freien Dienste). <code>basic</code>, <code>bearer</code> und <code>header</code> nur mit https-Adresse, sonst <code>bad-services</code>. Streng gelesen: unbekannte Felder oder Werte ergeben <code>bad-services</code>. Einzelheiten: <code>docs/relay.md</code>, „Zugangsdaten zu bezahlten Diensten“</td></tr>
     </table>
     <p>Die Datei hat die Form <code>{ "version": 1, "services": [Service, …] }</code>, höchstens 32 Einträge, unbekannte Felder werden abgelehnt.</p>
 
@@ -52,10 +53,27 @@
       <tr><td>hashOid, hashName</td><td>OID, "SHA-1"/"SHA-256"/"SHA-384"/"SHA-512" oder null</td><td>Hashverfahren des Abdrucks</td></tr>
       <tr><td>imprint</td><td>Bytes</td><td>Der bestätigte Hash</td></tr>
       <tr><td>serial</td><td>Hex-Text</td><td>Seriennummer des Tokens</td></tr>
-      <tr><td>genTime</td><td>Millisekunden seit 1970</td><td>Zeit, die der Dienst bestätigt</td></tr>
-      <tr><td>accuracyMs</td><td>Zahl oder null</td><td>Genauigkeit, wenn angegeben</td></tr>
+      <tr><td>genTime</td><td>Zahl: Millisekunden seit 1970</td><td>Zeit, die der Dienst bestätigt (noch nicht geprüft). <code>genTime</code> kommt an drei Stellen in zwei Formen vor: hier (<code>info</code>) als Zahl in Millisekunden, im Ergebnis von <code>verifyTimestampToken</code> und in der Antwort des Relays als ISO-8601-Text (UTC)</td></tr>
+      <tr><td>accuracyMs</td><td>Zahl (kann Bruchteile haben) oder null</td><td>Genauigkeit in Millisekunden, wenn angegeben (Mikrosekunden gehen als Bruchteil ein)</td></tr>
       <tr><td>nonce</td><td>Bytes oder null</td><td>Die in der Anfrage gesendete Zufallszahl (ohne führende Nullen)</td></tr>
+      <tr><td>tsa</td><td>Bytes (DER eines <code>GeneralName</code>) oder null</td><td>Das Feld <code>tsa</code> (<code>[0]</code>), wenn der Dienst es setzt. <code>verifyTimestampToken</code> prüft, dass es einer der Namen des Zeitstempel-Zertifikats ist (<code>tsa-mismatch</code>, Regeln in <code>docs/grenzen.md</code>)</td></tr>
     </table>
+    <p>
+      Der <code>TSTInfo</code> wird als Schema gelesen (RFC 3161 § 2.4.2): Version 1, Richtlinie, <code>messageImprint</code> (genau
+      Algorithmus, höchstens ein NULL als Parameter, und Hash), Seriennummer, <code>genTime</code>, dann
+      <code>accuracy</code>, <code>ordering</code>, <code>nonce</code>, <code>tsa</code> <code>[0]</code>, Erweiterungen <code>[1]</code>, jedes
+      höchstens einmal und in dieser Reihenfolge, nichts sonst. In <code>accuracy</code> stehen Sekunden, <code>[0]</code> Millisekunden und
+      <code>[1]</code> Mikrosekunden (je höchstens einmal, in dieser Reihenfolge, Milli- und Mikrosekunden 1 bis 999). <code>ordering</code> FALSE
+      wird nicht geschrieben (DER) und ist <code>bad-tst-info</code>; die Erweiterungen sind eine nicht leere Liste, ein
+      <code>critical</code> FALSE wird nicht geschrieben; eine kritische, unbekannte Erweiterung wird nicht beurteilt. Jeder Verstoß ist <code>bad-tst-info</code>.
+    </p>
+    <h3>Unterzeichner (<code>readToken(…).signer.sid</code>, RFC 5652 § 5.3)</h3>
+    <table>
+      <tr><th>Form (<code>kind</code>)</th><th>Felder</th><th>Version des <code>SignerInfo</code></th><th>Bedeutung</th></tr>
+      <tr><td>issuerAndSerialNumber</td><td>issuer (Bytes, DER des Namens), serial (Bytes ohne führende Nullen)</td><td>1</td><td>Das Zertifikat des Tokens mit diesem Aussteller und dieser Seriennummer (erster Treffer)</td></tr>
+      <tr><td>subjectKeyIdentifier</td><td>ski (Bytes, 1 bis 64)</td><td>3</td><td>Ein Zertifikat des Tokens, dessen Erweiterung <code>subjectKeyIdentifier</code> (Feld <code>subjectKeyIdentifier</code> von <code>Certificate</code>, Bytes oder <code>null</code>) bytegleich ist; bei mehreren das, dessen Hash das Attribut <code>signingCertificate(V2)</code> nennt. Ohne Erweiterung wird nie gefunden (nichts wird berechnet)</td></tr>
+    </table>
+    <p>Die <code>SignedData</code>-Version bleibt in beiden Fällen 3. Einzelheiten und der Abgleich mit OpenSSL: <code>docs/grenzen.md</code>, „Unterzeichner über <code>subjectKeyIdentifier</code>“.</p>
     <h3>TimestampResponse</h3>
     <table>
       <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
@@ -67,20 +85,47 @@
     <table>
       <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
       <tr><td>genTime</td><td>ISO-8601-Text (UTC)</td><td>Bestätigte Zeit</td></tr>
-      <tr><td>accuracyMs</td><td>Zahl oder null</td><td>Genauigkeit</td></tr>
+      <tr><td>accuracyMs</td><td>Zahl (kann Bruchteile haben) oder null</td><td>Genauigkeit</td></tr>
       <tr><td>policy</td><td>Text</td><td>Richtlinie</td></tr>
       <tr><td>serial</td><td>Hex-Text</td><td>Seriennummer</td></tr>
       <tr><td>signer</td><td>Text <code>CN=…, O=…</code></td><td>Lesbarer Name des Zeitstempel-Zertifikats; nicht zum Vergleichen</td></tr>
       <tr><td>chainLength</td><td>Zahl</td><td>Zertifikate vom Zeitstempel-Zertifikat bis zum Anker (Anker eingerechnet)</td></tr>
+      <tr><td>signerNotBefore</td><td>ISO-8601-Text (UTC)</td><td>Beginn der Gültigkeit des Zeitstempel-Zertifikats</td></tr>
+      <tr><td>signerNotAfter</td><td>ISO-8601-Text (UTC)</td><td>Ende der Gültigkeit des Zeitstempel-Zertifikats. Geprüft wurde die Kette <strong>zur <code>genTime</code></strong>; nach diesem Zeitpunkt (oder wenn der Schlüssel des Dienstes kompromittiert wird) verfällt die Beweiskraft des Tokens, auch wenn <code>verifyTimestampToken</code> es später noch annimmt (<code>docs/grenzen.md</code>, „Langzeitaussage“)</td></tr>
+    </table>
+    <h3>BatchProof (Feld <code>batch</code> der Antwort des Relays im Sammelbetrieb)</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>v</td><td>die Zahl 1</td><td>Fassung des Verfahrens; sie steckt auch im gestempelten Wert (<code>"zeitstempel-batch-v1\n"</code>)</td></tr>
+      <tr><td>size</td><td>ganze Zahl 1 bis 1024</td><td>Zahl der Blätter des Baumes; sie steckt im gestempelten Wert</td></tr>
+      <tr><td>index</td><td>ganze Zahl 0 bis size &minus; 1</td><td>Stelle des Blattes im gemischten Baum</td></tr>
+      <tr><td>salt</td><td>base64url, genau 32 Byte</td><td>Das Salz <code>r_i</code> im Blatt (vom Relay gezogen, nur dem Einreicher bekannt)</td></tr>
+      <tr><td>path</td><td>Liste von base64url-Texten zu je 32 Byte, 0 bis 10 Einträge</td><td>Prüfpfad nach RFC 6962/9162: die Geschwister von der Blattebene aufwärts. Die Länge ergibt sich aus <code>size</code> und <code>index</code> und wird genau verlangt</td></tr>
+    </table>
+    <p>
+      Das Blatt ist <code>SHA-256(0x00 &#8214; salt &#8214; hash)</code>, ein innerer Knoten <code>SHA-256(0x01 &#8214; links &#8214; rechts)</code>; der Baum hat
+      die Form von RFC 6962 (geteilt wird bei der größten Zweierpotenz unter <code>n</code>, das letzte Blatt wird nie verdoppelt); gestempelt wird
+      <code>SHA-256("zeitstempel-batch-v1\n" &#8214; uint32be(size) &#8214; Wurzel)</code>. Das Objekt wird streng gelesen: genau diese fünf Felder, einfaches Objekt
+      (Prototyp <code>Object.prototype</code> oder <code>null</code>), jedes Feld einmal, der Pfad nur nach Länge und Index (nie über einen Iterator).
+    </p>
+    <h3>VerifiedBatchedTimestamp (Ergebnis von <code>verifyBatchedTimestamp</code>)</h3>
+    <table>
+      <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
+      <tr><td>(alle Felder von VerifiedTimestamp)</td><td>wie dort</td><td>Das Ergebnis der Prüfung des Tokens gegen den Abdruck des Baumes, unverändert (<code>genTime</code> ist die Zeit des Baumes)</td></tr>
+      <tr><td>batch</td><td><code>{ size, index }</code></td><td>Aus dem Beleg übernommen, nachdem er geprüft wurde</td></tr>
     </table>
     <h3>VerifyOptions</h3>
     <table>
       <tr><th>Feld</th><th>Typ</th><th>Bedeutung</th></tr>
-      <tr><td>expectedNonce</td><td>Bytes, optional</td><td>Gesendete Nonce; wenn gegeben, muss das Token genau sie tragen</td></tr>
-      <tr><td>at</td><td>Date, optional</td><td>Zeitpunkt, zu dem die Zertifikate gültig sein müssen (Vorgabe: die Zeit des Tokens)</td></tr>
-      <tr><td>now</td><td>Date, optional</td><td>Aktuelle Zeit; ein Token aus der Zukunft wird abgelehnt (Vorgabe: nicht geprüft)</td></tr>
-      <tr><td>maxSkewMs</td><td>Zahl, optional</td><td>Erlaubter Vorsprung gegenüber <code>now</code> (Vorgabe 300000)</td></tr>
-      <tr><td>requireCriticalEku</td><td>wahr/falsch, optional</td><td>Erweiterte Schlüsselverwendung muss kritisch sein (Vorgabe wahr)</td></tr>
+      <tr><td>(options selbst)</td><td>einfaches Objekt, optional</td><td>Prototyp <code>Object.prototype</code> oder <code>null</code>; <code>null</code>, Zahl, Text, Funktion, Array, Klasseninstanz, <code>Map</code>, <code>Date</code>, <code>String</code>: <code>bad-options</code> (nie still als leere Optionen behandelt). Jede Option wird einmal gelesen, nur eigene Eigenschaften zählen</td></tr>
+      <tr><td>expectedNonce</td><td>Bytes, optional</td><td>Gesendete Nonce; wenn gegeben, muss das Token genau sie tragen. Typregel: <code>Uint8Array</code> mit 1 bis 16 Byte, sonst <code>bad-options</code> (auch <code>null</code>, <code>0</code>, <code>""</code>, <code>NaN</code>, <code>false</code>, leeres Array); nur <code>undefined</code> heißt „nicht angegeben“</td></tr>
+      <tr><td>at</td><td>Date, optional</td><td>Zusätzlicher Zeitpunkt: das Zeitstempel-Zertifikat und die Kette müssen <strong>sowohl zur <code>genTime</code> als auch zu <code>at</code></strong> gültig sein (<code>at</code> ersetzt die <code>genTime</code> nicht; ohne <code>at</code> gilt nur die <code>genTime</code>); sonst <code>certificate-not-valid-at-time</code>. Typregel wie bei <code>now</code>, sonst <code>bad-options</code></td></tr>
+      <tr><td>minGenTime</td><td>Date, optional</td><td>Frühestes angenommenes <code>genTime</code>: ein älteres Token ergibt <code>time-too-old</code>. <strong>Ohne diese Option wird die Frische nicht geprüft</strong> (ein rückdatiertes Token, dessen Signierzertifikat damals gültig war, wird angenommen). Üblich: <code>new Date(gesendet - 60000)</code>. Typregel wie bei <code>now</code>, sonst <code>bad-options</code> (kein stilles Überspringen)</td></tr>
+      <tr><td>now</td><td>Date, optional</td><td>Aktuelle Zeit; ein Token aus der Zukunft wird abgelehnt (Vorgabe: nicht geprüft); angegeben, aber kein echtes, gültiges <code>Date</code>: <code>bad-options</code> (kein stilles Überspringen). Typregel: Prototyp genau <code>Date.prototype</code>, endlich, Betrag höchstens 8,64e15 ms; Unterklassen, Fälschungen über <code>Symbol.toStringTag</code> und Daten aus anderen Realms sind Fehler; gelesen wird einmal mit dem eingebauten <code>getTime</code></td></tr>
+      <tr><td>maxSkewMs</td><td>Zahl, optional</td><td>Erlaubter Vorsprung gegenüber <code>now</code> (Vorgabe 300000; <code>Infinity</code> erlaubt, NaN, negativ oder kein Zahlentyp: <code>bad-options</code>)</td></tr>
+      <tr><td>requireCriticalEku</td><td>wahr/falsch, optional</td><td>Erweiterte Schlüsselverwendung muss kritisch sein (Vorgabe wahr); kein Wahrheitswert (außer <code>undefined</code>): <code>bad-options</code></td></tr>
+      <tr><td>minRsaBits</td><td>Zahl, optional</td><td>Kleinste Länge des RSA-Moduls in Bit für das Zeitstempel-Zertifikat und jedes Zertifikat der Kette; ein kürzerer Schlüssel ergibt <code>weak-key</code>. Vorgabe 2048, 0 schaltet die Regel aus. <strong>Vertrauensanker sind ausgenommen</strong> (auch ein Zeitstempel-Zertifikat, das selbst als Anker übergeben wurde); Schlüssel anderer Art (ECDSA) werden nicht beurteilt. Keine endliche Zahl &ge; 0 (außer <code>undefined</code>): <code>bad-options</code>. <code>openssl ts -verify</code> nimmt auch RSA-512 an</td></tr>
+      <tr><td>expectedPolicy</td><td>Text oder Liste von Texten, optional</td><td>Erwartete Richtlinie(n) als OID in Punktschreibweise (<code>"1.2.3.4"</code>; ein Text, oder eine Liste mit 1 bis 16 Texten): die <code>policy</code> des Tokens muss genau eine davon sein (Textgleichheit, kein Präfix), sonst <code>policy-mismatch</code>. Ohne die Option wird die Richtlinie nur gemeldet. Anderer Typ, leere oder zu lange Liste, kein OID in kanonischer Punktschreibweise (mindestens zwei Zahlen, keine führenden Nullen, erste Zahl 0 bis 2, bei 0 und 1 die zweite höchstens 39): <code>bad-options</code>. Entspricht der Richtlinie im Anfragefile von <code>openssl ts -verify -queryfile</code> (<code>-tspolicy</code> beim Erzeugen der Anfrage)</td></tr>
     </table>
 
     <h2>2 Beziehungen</h2>
@@ -108,23 +153,28 @@
     </table>
 
     <h2>3 Funktionen (Bibliothek, <code>src/lib/</code>)</h2>
-    <p class="note">Alle laufen in Browser und Node (nur Standard-APIs). Keine wirft: Fehler sind <code>{ ok: false, reason }</code>.</p>
+    <p class="note">Alle laufen in Browser und Node (nur Standard-APIs). Die Kernfunktionen (<code>buildTimestampRequest</code>, <code>readTimestampResponse</code>, <code>verifyTimestampToken</code>, <code>verifyBatchedTimestamp</code>, <code>readServices</code>, <code>signRelayRequest</code>) werfen bei keiner gewöhnlichen Eingabe: Fehler sind <code>{ ok: false, reason }</code>. Anders die Bausteine: <code>readToken</code>, <code>parseCertificate</code> und <code>parsePemCertificates</code> werfen <code>ReaderError</code>, und <code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code> werfen <code>TypeError</code>. Gegen einen feindlichen <code>Proxy</code> (werfende Fallen) abgesichert und getestet sind <code>buildTimestampRequest</code>, <code>verifyTimestampToken</code>, <code>equalBytes</code> und <code>signRelayRequest</code>; <code>signRelayRequest</code> ist ebenso abgedeckt und getestet (Proxy als Eingabe, Schlüssel oder Körper, werfender <code>globalThis.crypto</code>: Ergebnis ein Code). Die Schreiber werfen auch bei einem Proxy mit werfender Falle einen <code>TypeError</code>, <code>equalBytes</code> vergleicht nur echte <code>Uint8Array</code> (ein Proxy ist <code>false</code>).</p>
     <table>
       <tr><th>Funktion</th><th>Signatur</th><th>Zweck</th></tr>
       <tr><td>buildTimestampRequest</td><td>(sha256: Uint8Array, nonce: Uint8Array) → Result&lt;Uint8Array&gt;</td><td>RFC-3161-Anfrage (DER) mit <code>certReq = TRUE</code>; Nonce 1 bis 16 Byte</td></tr>
-      <tr><td>readTimestampResponse</td><td>(bytes: Uint8Array) → Result&lt;TimestampResponse&gt;</td><td>Antwort strikt lesen; Ablehnung ist <code>rejected</code> mit der Statusnummer in <code>detail</code></td></tr>
-      <tr><td>readToken</td><td>(bytes: Uint8Array) → ParsedToken (wirft ReaderError)</td><td>Token strikt lesen (Baustein der Prüfung)</td></tr>
-      <tr><td>verifyTimestampToken</td><td>(token, expectedSha256, trust: string[], options?) → Promise&lt;Result&lt;VerifiedTimestamp&gt;&gt;</td><td>Abdruck, Nonce, Signatur, Zeitstempel-Zertifikat, Kette zu einem der Anker prüfen</td></tr>
-      <tr><td>parsePemCertificates, parseCertificate</td><td>(pem) → Certificate[] / (der) → Certificate</td><td>Zertifikate strikt lesen (wirft ReaderError)</td></tr>
+      <tr><td>readTimestampResponse</td><td>(bytes: Uint8Array) → Result&lt;TimestampResponse&gt;</td><td>Antwort strikt lesen; Ablehnung ist <code>rejected</code> mit der Statusnummer in <code>detail</code>. Die Eingabe wird nach Länge kopiert (höchstens 262144 Byte, sonst <code>too-large</code>): <code>token</code> und die Bytefelder von <code>info</code> zeigen nie in den Puffer des Aufrufers</td></tr>
+      <tr><td>readToken</td><td>(bytes: Uint8Array) → ParsedToken (wirft ReaderError)</td><td>Token strikt lesen (Baustein der Prüfung); die Eingabe wird wie bei <code>readTimestampResponse</code> zuerst kopiert, nichts im Ergebnis zeigt in den Puffer des Aufrufers</td></tr>
+      <tr><td>verifyTimestampToken</td><td>(token, expectedSha256, trust: string[], options?) → Promise&lt;Result&lt;VerifiedTimestamp&gt;&gt;</td><td>Abdruck, Nonce, Signatur, Zeitstempel-Zertifikat, Kette zu einem der Anker prüfen (Gültigkeit zur <code>genTime</code> und zu <code>at</code>; Frische nur mit <code>minGenTime</code>)</td></tr>
+      <tr><td>verifyBatchedTimestamp</td><td>({ token, hash, batch: BatchProof }, trust: string[], options?) → Promise&lt;Result&lt;VerifiedBatchedTimestamp&gt;&gt;</td><td>Prüft den Beleg eines Stempels im Sammelbetrieb des Relays: rechnet das Blatt aus <code>hash</code> und <code>salt</code>, folgt dem Pfad nach dem Verfahren von RFC 9162 (§ 2.1.3.2) zur Wurzel, bildet den gestempelten Wert und prüft das Token mit <code>verifyTimestampToken</code> dagegen (<code>trust</code> und <code>options</code> gelten unverändert). Ein Pfad, der zu einer anderen Wurzel führt, ein verändertes Salz, ein anderer Hash oder ein Token eines anderen Baumes ergeben <code>imprint-mismatch</code> (kein eigener Code); eine Form, die kein Beleg dieses Baumes sein kann, <code>bad-batch</code>. Die Aussage ist „dieser Hash lag in der Menge, die der Dienst zu <code>genTime</code> gestempelt hat“, kein Einzelstempel (<code>docs/grenzen.md</code>). Wirft nie</td></tr>
+      <tr><td>parsePemCertificates, parseCertificate</td><td>(pem) → Certificate[] / (der) → Certificate</td><td>Zertifikate strikt lesen (wirft ReaderError); <code>parseCertificate</code> kopiert die Eingabe zuerst</td></tr>
       <tr><td>nameToString</td><td>(name: Uint8Array) → string</td><td>Lesbarer Name aus der DER-Form</td></tr>
-      <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen</td></tr>
+      <tr><td>readServices</td><td>(data: unknown) → Result&lt;Service[]&gt;</td><td>Dienstliste strikt lesen; wirft nie (ein werfender Getter oder Proxy ergibt <code>bad-services</code>)</td></tr>
+      <tr><td>signRelayRequest</td><td>({ privateKey, keyId, method, path, body, nowMs }) &rarr; Promise&lt;Result&lt;string&gt;&gt;; <code>privateKey: Uint8Array | CryptoKey</code></td><td>Wert des Kopfes <code>X-Zeitstempel-Auth</code> (<code>v2.&lt;kid&gt;.&lt;ts&gt;.&lt;sig&gt;</code>): ECDSA P-256 / SHA-256 (r&#8214;s, 64 Byte) über Methode, Pfad, Zeit und Hash des Körpers; <code>privateKey</code> sind PKCS#8-Bytes (sie werden nicht extrahierbar importiert und weder zurückgegeben noch abgelegt) <strong>oder ein <code>CryptoKey</code></strong> (privat, ECDSA auf P-256 (Verwendung <code>sign</code> ist bei einem privaten ECDSA-Schlüssel immer gegeben); er darf auch nicht extrahierbar sein, die App braucht die Schlüsselbytes dann nie; er wird unverändert benutzt; geprüft über die eingebauten Getter, ein <code>CryptoKey</code> aus einem anderen Realm, ein ähnliches Objekt oder ein Proxy mit werfender Falle ist <code>bad-key</code>); die Uhr ist der Parameter <code>nowMs</code>: Millisekunden seit 1970 (<code>Date.now()</code>), <strong>nicht Sekunden</strong>; endlich, mindestens 1e11 und unter 1e15 (Bruchteile erlaubt; ab 1e15 hätte <code>ts</code> mehr als 12 Stellen), sonst <code>bad-options</code>. Ein Schlüsselpaar zu erzeugen ist Sache von <code>scripts/make-key.ts</code>, nicht der Bibliothek</td></tr>
+      <tr><td>ReaderError</td><td>Klasse (<code>extends Error</code>), Feld <code>reason: Reason</code></td><td>Was <code>readToken</code>, <code>parseCertificate</code> und <code>parsePemCertificates</code> werfen: <code>e instanceof ReaderError</code> trennt einen Lesefehler (mit dem Code in <code>e.reason</code>) von jedem anderen Wurf. Die Kernfunktionen werfen ihn nie, sie geben den Code als Ergebnis zurück</td></tr>
+      <tr><td>ok, fail</td><td>(value) → Result&lt;T&gt; / (reason, detail?) → Failure</td><td>Bauen die Ergebnisformen <code>{ ok: true, value }</code> und <code>{ ok: false, reason }</code>; für Aufrufer, die eigene <code>Result</code>-Werte erzeugen</td></tr>
       <tr><td>createRelayClient</td><td>({ relay, fetch, now, trusted, timeoutMs?, verify? }) → RelayClient</td><td>Client des Relays (<code>docs/relay.md</code>): <code>services()</code>, <code>stamp(sha256)</code> (prüft das Token selbst), <code>pausedForMs()</code>; <code>fetch</code> und die monotone Uhr <code>now</code> sind Parameter</td></tr>
+      <tr><td>CLIENT_LIMITS, MAX_RELAY_ADDRESS_CHARS</td><td>Konstanten</td><td>Grenzen des Clients (<code>timeoutMs</code> 20000, <code>defaultRetrySeconds</code> 60, <code>maxRetrySeconds</code> 3600, <code>maxServicesTried</code> 3, <code>maxServices</code> 32, <code>maxSerialChars</code> 64, <code>maxTokenChars</code> 12288; Tabelle in <code>docs/relay.md</code>, an den Code gebunden) und die längste Relay-Adresse (200 Zeichen)</td></tr>
       <tr><td>parseRelayList</td><td>(text) → string[]</td><td>Kommaliste von Relay-Adressen: getrimmt, nur gültige, je einmal (<code>docs/relay.md</code>)</td></tr>
       <tr><td>isRelayAddress</td><td>(value) → boolean</td><td>leer, <code>https</code> oder <code>http</code> für <code>localhost</code>/<code>127.0.0.1</code>; keine Anmeldedaten, höchstens 200 Zeichen</td></tr>
       <tr><td>relayOrigin</td><td>(address) → string | null</td><td>Herkunft einer Adresse; <code>null</code> wenn keine Adresse</td></tr>
       <tr><td>relayUsable</td><td>(setting, allowed) → boolean</td><td>Einstellung nicht leer und genau eine erlaubte Adresse</td></tr>
       <tr><td>parseServiceList, parseRelayAnswer</td><td>(value: unknown) → Result&lt;string[]&gt; / Result&lt;RelayAnswer&gt;</td><td>Antworten des Relays strikt lesen</td></tr>
-      <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen; strenge Leser geben null bei ungültiger Eingabe</td></tr>
+      <tr><td>toBase64Url, fromBase64Url, toBase64, fromBase64, toHex, equalBytes</td><td>Hilfen</td><td>Kodierung ohne Node-Typen. Strenge Leser (<code>fromBase64</code>, <code>fromBase64Url</code>) geben <code>null</code> bei ungültiger Eingabe und bei allem außer Text; <code>equalBytes</code> gibt <code>false</code>, wenn ein Argument kein <code>Uint8Array</code> ist; die Schreiber (<code>toBase64</code>, <code>toBase64Url</code>, <code>toHex</code>) werfen bei allem außer <code>Uint8Array</code> einen <code>TypeError</code> (ein Text oder Array würde sonst still als Bytes kodiert). Ein <code>Uint8Array</code> aus einem anderen Realm (iframe, Worker, <code>vm</code>) zählt nicht als eines: als <code>new Uint8Array(x)</code> übergeben</td></tr>
     </table>
 
     <h2>4 Fehlercodes</h2>
@@ -132,40 +182,49 @@
       <tr><th>Code</th><th>Bedeutung</th></tr>
       <tr><td>bad-hash</td><td>Hash nicht 32 Byte</td></tr>
       <tr><td>bad-nonce</td><td>Nonce nicht 1 bis 16 Byte</td></tr>
+      <tr><td>bad-options</td><td>Option ungültig (<code>trust</code> kein Array oder mit mehr als 64 Einträgen, <code>options</code> kein einfaches Objekt, <code>expectedNonce</code> kein <code>Uint8Array</code> mit 1 bis 16 Byte, <code>now</code>/<code>at</code> kein echtes, gültiges <code>Date</code>, <code>maxSkewMs</code> keine Zahl &ge; 0, <code>requireCriticalEku</code> kein Wahrheitswert, <code>minRsaBits</code> keine endliche Zahl &ge; 0, <code>expectedPolicy</code> weder ein OID-Text noch eine Liste von 1 bis 16 OID-Texten; beim Signieren: Methode, Pfad, Körper (kein <code>Uint8Array</code> oder mehr als 512 Byte) oder <code>nowMs</code> ungültig (keine endliche Zahl, unter 1e11, also auch Sekunden statt Millisekunden, oder ab 1e15); auch ein Wurf, den eine feindliche Eingabe oder <code>globalThis.crypto</code> auslöst; bei <code>verifyBatchedTimestamp</code>: die Eingabe ist kein einfaches Objekt oder ein Zugriff darauf wirft)</td></tr>
       <tr><td>bad-services</td><td>Dienstliste ungültig</td></tr>
+      <tr><td>bad-key</td><td>Privater Schlüssel weder <code>Uint8Array</code> noch passender <code>CryptoKey</code>; Bytes leer oder länger als 256 Byte oder kein gültiger PKCS#8-Schlüssel für ECDSA P-256; ein <code>CryptoKey</code>, der nicht privat ist, nicht ECDSA auf P-256 oder aus einem anderen Realm</td></tr>
+      <tr><td>bad-key-id</td><td>Schlüsselkennung nicht nach <code>[a-z][a-z0-9-]{0,31}</code></td></tr>
+      <tr><td>bad-key-file</td><td>Schlüsseldatei des Relays ungültig (Regelname in <code>detail</code>; Teil des Relays, nicht der Bibliothek)</td></tr>
+      <tr><td>bad-batch</td><td>Beleg des Sammelbetriebs ungültig: kein einfaches Objekt, ein Feld fehlt oder ist zu viel, <code>v</code> nicht 1, <code>size</code> nicht 1 bis 1024, <code>index</code> nicht unter <code>size</code>, <code>salt</code> oder ein Pfadelement nicht base64url zu genau 32 Byte, Pfad länger als 10 oder von falscher Länge für <code>size</code> und <code>index</code></td></tr>
       <tr><td>too-large</td><td>Eingabe über der Größengrenze</td></tr>
       <tr><td>malformed</td><td>Kein gültiges DER</td></tr>
       <tr><td>indefinite-length</td><td>BER mit unbestimmter Länge (nicht erlaubt)</td></tr>
       <tr><td>too-deep</td><td>Verschachtelung über der Grenze</td></tr>
       <tr><td>trailing-bytes</td><td>Bytes nach dem Ende der Struktur</td></tr>
-      <tr><td>bad-structure</td><td>Aufbau stimmt nicht mit dem Standard überein</td></tr>
+      <tr><td>bad-structure</td><td>Aufbau stimmt nicht mit dem Standard überein (auch: Unterzeichner-Bezeichner weder <code>SEQUENCE</code> noch einfaches <code>[0]</code>, oder ein <code>subjectKeyIdentifier</code> im Eintrag mit weniger als 1 oder mehr als 64 Byte; ein Element zu viel in <code>EncapsulatedContentInfo</code>, im <code>issuerAndSerialNumber</code> des Unterzeichner-Eintrags oder in einem Attribut der signierten Attribute)</td></tr>
       <tr><td>rejected</td><td>Der Dienst hat abgelehnt (Status in <code>detail</code>)</td></tr>
       <tr><td>no-token</td><td>Gewährt, aber ohne Token</td></tr>
       <tr><td>not-signed-data</td><td>Token ist kein <code>SignedData</code></td></tr>
-      <tr><td>unsupported-version</td><td>Version einer Struktur nicht unterstützt</td></tr>
+      <tr><td>unsupported-version</td><td>Version einer Struktur nicht unterstützt: <code>SignedData</code> nicht 3; <code>SignerInfo</code> weder 1 noch 3, oder Form des Unterzeichner-Bezeichners passt nicht zur Version (Version 1 nur mit Aussteller und Seriennummer, Version 3 nur mit <code>subjectKeyIdentifier</code>)</td></tr>
       <tr><td>bad-content-type</td><td>Inhaltstyp ist nicht <code>TSTInfo</code></td></tr>
-      <tr><td>bad-tst-info</td><td>Inhalt des Tokens ungültig</td></tr>
-      <tr><td>unsupported-hash</td><td>Hashverfahren nicht SHA-256 (Abdruck) oder SHA-1</td></tr>
-      <tr><td>bad-time</td><td>Zeitangabe ungültig</td></tr>
+      <tr><td>bad-tst-info</td><td>Inhalt des Tokens ungültig: Version nicht 1, Felder des <code>TSTInfo</code> nicht im Schema (falsche Reihenfolge, doppelt, überzählig, <code>ordering</code> FALSE geschrieben, Milli- oder Mikrosekunden außerhalb 1 bis 999), <code>messageImprint</code> mit anderem Aufbau, ein <code>tsa</code>, das kein <code>GeneralName</code> ist, Erweiterungen <code>[1]</code> leer oder mit falschem Aufbau</td></tr>
+      <tr><td>unsupported-hash</td><td>Hashverfahren nicht SHA-256 (Abdruck) oder SHA-1; ebenso SHA-1 oder eine unbekannte Hash-OID im Attribut <code>signingCertificateV2</code> (ESSCertIDv2; kein Rückfall auf SHA-256; SHA-1 gilt nur im v1-Attribut)</td></tr>
+      <tr><td>bad-time</td><td>Zeitangabe ungültig (GeneralizedTime: Sekunden, optional mit bis zu 9 Nachkommastellen ohne Null am Ende; sie werden auf Millisekunden abgeschnitten, nicht gerundet; in der Gültigkeit eines Zertifikats sind keine Nachkommastellen erlaubt)</td></tr>
       <tr><td>time-in-future</td><td>Zeit des Tokens liegt hinter der Uhr des Prüfers</td></tr>
+      <tr><td>time-too-old</td><td>Zeit des Tokens liegt vor <code>minGenTime</code> (nur wenn der Aufrufer die Option gibt; im Relay: älter als der Zeitpunkt der Anfrage an den Dienst minus <code>genTimeSlackMs</code>)</td></tr>
       <tr><td>imprint-mismatch</td><td>Token bestätigt einen anderen Hash</td></tr>
       <tr><td>nonce-mismatch</td><td>Nonce fehlt oder weicht ab</td></tr>
       <tr><td>one-signer-required</td><td>Nicht genau ein Unterzeichner</td></tr>
-      <tr><td>unsupported-signature</td><td>Signaturverfahren oder Schlüssel nicht unterstützt (zum Beispiel RSA-PSS)</td></tr>
+      <tr><td>unsupported-signature</td><td>Signaturverfahren oder Schlüssel nicht unterstützt (zum Beispiel RSA-PSS); beim Signieren für das Relay: kein WebCrypto (Seite über plain http)</td></tr>
       <tr><td>signed-attributes-missing</td><td>Signierte Attribute fehlen</td></tr>
       <tr><td>message-digest-mismatch</td><td>Hash des Inhalts stimmt nicht mit dem signierten überein</td></tr>
       <tr><td>signing-certificate-missing</td><td>Attribut zum Zeitstempel-Zertifikat fehlt</td></tr>
       <tr><td>signing-certificate-mismatch</td><td>Zertifikat passt nicht zum signierten Attribut</td></tr>
       <tr><td>signature-invalid</td><td>Signatur stimmt nicht</td></tr>
+      <tr><td>policy-mismatch</td><td>Die <code>policy</code> des Tokens ist keine der Richtlinien in <code>expectedPolicy</code></td></tr>
+      <tr><td>tsa-mismatch</td><td>Das Feld <code>tsa</code> des Tokens nennt keinen der Namen des Zeitstempel-Zertifikats (Subject oder Eintrag der <code>subjectAltName</code> gleicher Art; RFC 3161 § 2.4.2)</td></tr>
       <tr><td>bad-pem</td><td>Anker nicht als PEM lesbar oder leer</td></tr>
-      <tr><td>bad-certificate</td><td>Zertifikat ungültig</td></tr>
-      <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token</td></tr>
-      <tr><td>certificate-not-valid-at-time</td><td>Ein Zertifikat war zur Zeit des Tokens nicht gültig</td></tr>
-      <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) für Zeitstempel zugelassen</td></tr>
-      <tr><td>not-a-ca</td><td>Aussteller ist keine Zertifizierungsstelle</td></tr>
-      <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker</td></tr>
-      <tr><td>chain-too-long</td><td>Kette länger als die Grenze</td></tr>
-      <tr><td>relay-unreachable</td><td>Relay oder Dienst nicht erreichbar (Netzwerkfehler, 502, 504)</td></tr>
+      <tr><td>bad-certificate</td><td>Zertifikat ungültig (auch: <code>subjectKeyIdentifier</code>-Erweiterung kein OCTET STRING von 1 bis 64 Byte ohne Rest, oder doppelt; kritische, unbekannte Erweiterung in einem Zertifikat der Kette; ein nicht lesbares <code>subjectAltName</code> des Zeitstempel-Zertifikats, wenn ein <code>tsa</code>-Name damit verglichen werden muss; das Zeitstempel-Zertifikat selbst ist eine CA (<code>cA</code> TRUE oder <code>keyCertSign</code>), außer es wurde als Anker übergeben; <code>basicConstraints</code> mit negativem <code>pathLenConstraint</code> oder mit anderem Inhalt als <code>cA</code> und <code>pathLenConstraint</code>)</td></tr>
+      <tr><td>weak-key</td><td>RSA-Schlüssel des Zeitstempel-Zertifikats oder eines Zertifikats der Kette (Anker ausgenommen) mit weniger Bit als <code>minRsaBits</code> (Vorgabe 2048)</td></tr>
+      <tr><td>signer-certificate-missing</td><td>Zertifikat des Unterzeichners nicht im Token (kein Zertifikat mit passendem Aussteller und Seriennummer, oder, bei einem Eintrag mit <code>subjectKeyIdentifier</code>, keines mit genau diesem Bezeichner; ein Zertifikat ohne die Erweiterung wird nie gefunden, der Bezeichner wird nicht berechnet; oder unlesbar: unlesbare Zusatzzertifikate im Token werden übersprungen, <code>readToken</code> zählt sie in <code>skippedCertificates</code>)</td></tr>
+      <tr><td>certificate-not-valid-at-time</td><td>Ein Zertifikat war zur Zeit des Tokens (<code>genTime</code>) oder, wenn gegeben, zu <code>at</code> nicht gültig</td></tr>
+      <tr><td>bad-eku</td><td>Zeitstempel-Zertifikat nicht (kritisch) und ausschließlich für Zeitstempel zugelassen (erweiterte Schlüsselverwendung muss genau <code>id-kp-timeStamping</code> enthalten); ebenso eine Zwischen-CA der Kette mit erweiterter Schlüsselverwendung ohne <code>id-kp-timeStamping</code> und ohne <code>anyExtendedKeyUsage</code> (Anker ausgenommen)</td></tr>
+      <tr><td>not-a-ca</td><td>Der Aussteller, der das Zertifikat darunter signiert hat, ist keine Zertifizierungsstelle (<code>basicConstraints</code> ohne CA oder Schlüsselverwendung ohne <code>keyCertSign</code>); ohne <code>basicConstraints</code> gilt nur ein übergebener Anker als CA</td></tr>
+      <tr><td>untrusted-chain</td><td>Kette endet nicht an einem der Anker. Dazu zählen: kein Aussteller mit passendem Namen und gültiger Signatur im Token oder bei den Ankern; das Suchbudget ist erschöpft (Kandidaten- oder Signaturgrenze, Abschnitt 5); das echte Zwischenzertifikat wird von Scheinkandidaten verdeckt (sie sehen brauchbar aus, sind aber nicht vom echten Aussteller signiert); das Zertifikat des Zeitstempel-Dienstes ist selbstsigniert und nicht selbst einer der Anker. Ein genauerer Grund wird nur gemeldet, wenn er innerhalb des kleinen Budgets für die Ursachensuche gefunden wird</td></tr>
+      <tr><td>chain-too-long</td><td>Kette länger als die Grenze, oder ein Zertifikat der Kette (auch der Anker) hat ein <code>pathLenConstraint</code>, das weniger Zwischen-CAs unter sich erlaubt, als die Kette hat (selbst ausgestellte Zwischenzertifikate zählen nicht; RFC 5280 § 6.1.4)</td></tr>
+          <tr><td>relay-unreachable</td><td>Relay oder Dienst nicht erreichbar (Netzwerkfehler, 502, 504)</td></tr>
       <tr><td>relay-timeout</td><td>Frist des Aufrufs überschritten</td></tr>
       <tr><td>relay-refused</td><td>Relay antwortet mit einem anderen Status als 200, 429, 502, 504</td></tr>
       <tr><td>relay-bad-response</td><td>Antwort des Relays hat nicht die erwartete Form, andere Dienstkennung oder Seriennummer weicht vom Token ab</td></tr>
@@ -179,9 +238,32 @@
       <tr><td>maxBytes</td><td>262144</td><td>Größte gelesene DER-Struktur</td></tr>
       <tr><td>maxDepth</td><td>24</td><td>Größte Verschachtelung</td></tr>
       <tr><td>maxChildren</td><td>256</td><td>Elemente in einer Folge</td></tr>
-      <tr><td>MAX_CERTIFICATES</td><td>16</td><td>Zertifikate in einem Token</td></tr>
-      <tr><td>MAX_CHAIN</td><td>6</td><td>Länge der geprüften Kette</td></tr>
+      <tr><td>MAX_CERTIFICATES</td><td>16</td><td>Zertifikate in einem Token (zugleich die Zahl der Kandidaten für einen Unterzeichner über <code>subjectKeyIdentifier</code>: je Kandidat ein Hash; die Signatur wird nur einmal geprüft, für den gefundenen Unterzeichner)</td></tr>
+      <tr><td>SKI_BYTES</td><td>1 bis 64</td><td>Länge eines <code>subjectKeyIdentifier</code> im Unterzeichner-Eintrag und in der Erweiterung eines Zertifikats</td></tr>
+      <tr><td>MAX_CHAIN</td><td>6</td><td>Tiefe der Kettensuche: höchstens 5 Zwischenzertifikate; <code>chainLength</code> höchstens 7 (Anker eingerechnet)</td></tr>
+      <tr><td>MAX_CANDIDATES</td><td>8</td><td>Brauchbare Kandidaten mit gültiger Signatur je Schritt der Kettensuche; unbrauchbare Zwillinge zählen nicht</td></tr>
+      <tr><td>MAX_SIGNATURE_CHECKS</td><td>64</td><td>Signaturprüfungen für die ganze Kettensuche (die Prüfung der Token-Signatur kommt dazu)</td></tr>
+      <tr><td>MAX_TRUST_ANCHORS</td><td>64</td><td>Einträge von <code>trust</code>; eine längere Liste ist <code>bad-options</code> (die Länge wird vor dem Lesen eines Eintrags geprüft)</td></tr>
+      <tr><td>MAX_PRIVATE_KEY_BYTES</td><td>256</td><td><code>signRelayRequest</code>: <code>privateKey</code> hat 1 bis 256 Byte, sonst <code>bad-key</code> (ein PKCS#8-Schlüssel für P-256 hat etwa 138)</td></tr>
+      <tr><td>MAX_BODY_BYTES</td><td>512</td><td><code>signRelayRequest</code>: <code>body</code> höchstens 512 Byte, sonst <code>bad-options</code>; gleich <code>bodyBytes</code> des Relays (ein Test koppelt beide)</td></tr>
+      <tr><td>MAX_SIZE</td><td>1024</td><td><code>verifyBatchedTimestamp</code>: größte Blattzahl (<code>size</code>); gleich <code>batchMaxMax</code> des Relays (ein Test koppelt beide)</td></tr>
+      <tr><td>MAX_PATH</td><td>10</td><td><code>verifyBatchedTimestamp</code>: längster Prüfpfad (2<sup>10</sup> = 1024)</td></tr>
+      <tr><td>NODE_BYTES</td><td>32</td><td><code>verifyBatchedTimestamp</code>: Größe von Salz und jedem Pfadelement in Byte</td></tr>
+      <tr><td>MAX_REASON_CHECKS</td><td>4</td><td>Zusätzliche Signaturprüfungen, nach erfolgloser Suche, um den genaueren Fehlergrund zu nennen; nehmen der Suche nichts weg</td></tr>
     </table>
+    <p class="note">Die Optionsregeln und die Suchgrenzen im Einzelnen: <code>docs/grenzen.md</code>.</p>
+
+    <h2>5a Relay: Schlüsseldatei, Anfrage und Planer (Teil des Relays, nicht der Bibliothek)</h2>
+    <table>
+      <tr><th>Feld</th><th>Form</th><th>Bedeutung</th></tr>
+      <tr><td>Schlüsseldatei: <code>keys[i].solo</code></td><td>boolesch, optional (<code>true</code> = Schlüsselart 2)</td><td>Schlüsselart 2 bekommt im Sammelbetrieb sofort einen Solo-Stempel; Art 1 bekommt für <code>mode: "solo"</code> sofort <code>403 solo-not-allowed</code>; fehlt das Feld oder ist es <code>false</code>, ist es Art 1. Jeder andere Typ: <code>bad-key-file</code> (<code>solo in keys[i]</code>)</td></tr>
+      <tr><td>Schlüsseldatei: <code>restartAfter</code></td><td>ganze Zahl, Unix-Sekunden (1000000000 bis 99999999999), optional, oberste Ebene</td><td>Gilt <code>Startzeit &lt; restartAfter &lt;= jetzt</code>, beendet sich das Relay einmal sauber (Exit-Code 0); ein Prozess-Überwacher startet es neu. Das Relay schreibt nie in die Datei. Sonst <code>bad-key-file</code> (<code>restart-after</code>)</td></tr>
+      <tr><td>Anfrage: <code>mode</code></td><td>Text <code>"solo"</code>, optional im JSON-Körper neben <code>hash</code></td><td>Direkter Stempel des Hashes ohne Merkle-Baum, Antwort ohne <code>batch</code>: Schlüsselart 2 sofort (nach dem Mindestabstand zum letzten Aufruf des Dienstes), Art 1 sofort <code>403 solo-not-allowed</code> (kein Budget, kein Platz). Steht im signierten Körper, ist also an die Signatur gebunden. Anderer Wert: <code>400 bad-mode</code>. Ohne Sammelbetrieb wirkungslos</td></tr>
+      <tr><td>Anfrage: <code>upstream</code></td><td>Objekt, optional im JSON-Körper neben <code>hash</code> (und <code>mode</code>): bei <code>basic</code> <code>{ "user", "password" }</code>, bei <code>bearer</code> und <code>header</code> <code>{ "token" }</code>; Strings aus druckbarem ASCII (Benutzername ohne <code>:</code>, Token ohne Leerzeichen, <code>"</code> und <code>\</code>)</td><td>Zugangsdaten für einen bezahlten Dienst (<code>auth</code> in <code>services.json</code>). Steht im signierten Körper, ist also an die Signatur gebunden. Quelle <code>relay</code> oder Dienst ohne <code>auth</code>: nicht erlaubt; Quelle <code>client</code>: Pflicht. Verstoß gegen Form, Zeichen oder Länge: <code>400 bad-upstream</code>. Nie im Protokoll, nie in Zählern oder Fehlertexten</td></tr>
+      <tr><td>Fehlercodes</td><td><code>bad-upstream</code> (400), <code>bad-mode</code> (400), <code>solo-not-allowed</code> (403), <code>busy</code> (503)</td><td>Einzelheiten und Zähler (<code>solo</code>, <code>soloDenied</code>, <code>keyReloads</code>, <code>keyReloadFailed</code>) in <code>docs/relay.md</code>, „Schlüsselarten und Solo-Stempel“</td></tr>
+      <tr><td>Einstellung <code>RELAY_MAX_WAIT_MS</code></td><td>ganze Zahl 1000 bis 60000, Vorgabe 30000</td><td>Längste Wartezeit auf einen freien Platz beim Dienst, danach <code>503 busy</code></td></tr>
+    </table>
+    <p class="note">Grenzen im Code (<code>relay/limits.ts</code>): <code>soloPerMinutePerKey</code> 4, <code>soloQueueMax</code> 6, <code>maxWaitDefaultMs</code> 30000, <code>keyFileCheckMs</code> 5000, <code>keyFileMaxBytes</code> 65536, <code>upstreamUserMax</code> 64, <code>upstreamPasswordMax</code> 128, <code>upstreamTokenMax</code> 384, <code>upstreamIdentitiesMax</code> 64; alle mit Wert in <code>docs/relay.md</code>.</p>
 
     <h2>6 Werkseinstellungen (mitgelieferte Daten)</h2>
     <p>

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { credentialHeader, type UpstreamCredentials } from './credentials.ts';
 import { RELAY_LIMITS } from './limits.ts';
 
 /** What the relay needs to know about a service to call it. */
@@ -13,8 +14,15 @@ export interface UpstreamAnswer {
   body: Uint8Array;
 }
 
-/** Posts a request to a service. Rejects with an `UpstreamError`; never follows a redirect. */
-export type Upstream = (target: UpstreamTarget, body: Uint8Array) => Promise<UpstreamAnswer>;
+/**
+ * Posts a request to a service. Rejects with an `UpstreamError`; never follows a redirect. The optional credentials
+ * go out in one header and only to an https address (anything else is `failed` before a connection is made).
+ */
+export type Upstream = (
+  target: UpstreamTarget,
+  body: Uint8Array,
+  credentials?: UpstreamCredentials,
+) => Promise<UpstreamAnswer>;
 
 export class UpstreamError extends Error {
   readonly kind: 'timeout' | 'failed' | 'too-large';
@@ -29,58 +37,77 @@ export class UpstreamError extends Error {
  * deadline and a size cap. The target comes from the allow-list, never from a client.
  */
 export const makeNetworkUpstream =
-  (timeoutMs: number = RELAY_LIMITS.upstreamTimeoutMs): Upstream =>
-  (target, body) =>
+  (
+    timeoutMs: number = RELAY_LIMITS.upstreamTimeoutMs,
+    /** For tests only: an additional trust anchor (PEM) for the TLS check of the service; the relay never sets it. */
+    tls: { ca?: string } = {},
+  ): Upstream =>
+  (target, body, credentials) =>
     new Promise((resolve, rejectRaw) => {
+      // The request is made BEFORE the timer: a throw from `new URL` or `request` then leaves no timer
+      // behind that would later reach for a `req` that does not exist.
+      let req: http.ClientRequest;
+      try {
+        const url = new URL(target.url);
+        const lib = url.protocol === 'https:' ? https : http;
+        // Credentials never go to plain http, and the header is built (and checked) before anything is connected.
+        if (credentials !== undefined && url.protocol !== 'https:')
+          throw new Error('no credentials over http');
+        const credential = credentials === undefined ? [] : [credentialHeader(credentials)];
+        req = lib.request(
+          url,
+          {
+            method: 'POST',
+            ...(tls.ca === undefined || url.protocol !== 'https:' ? {} : { ca: tls.ca }),
+            headers: {
+              ...Object.fromEntries(credential), // first: nothing of the fixed headers below can be replaced by it
+              'Content-Type': 'application/timestamp-query',
+              Accept: 'application/timestamp-reply',
+              'Content-Length': String(body.length),
+              'User-Agent': 'zeitstempel-relay',
+            },
+            agent: false,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            res.on('data', (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > RELAY_LIMITS.upstreamBytes) {
+                req.destroy();
+                reject(new UpstreamError('too-large'));
+                return;
+              }
+              chunks.push(chunk);
+            });
+            res.on('end', () => {
+              clearTimeout(timer);
+              resolve({
+                status: res.statusCode ?? 0,
+                contentType: String(res.headers['content-type'] ?? '')
+                  .split(';')[0]!
+                  .trim()
+                  .toLowerCase(),
+                body: new Uint8Array(Buffer.concat(chunks)),
+              });
+            });
+            res.on('error', () => reject(new UpstreamError('failed')));
+          },
+        );
+      } catch {
+        // no usable address: nothing was started, nothing to clean up
+        rejectRaw(new UpstreamError('failed'));
+        return;
+      }
       // one hard deadline for the whole call (connect to last byte), not an idle timeout
       const timer = setTimeout(() => {
         req.destroy();
         reject(new UpstreamError('timeout'));
       }, timeoutMs);
-      const reject = (e: UpstreamError) => {
+      function reject(e: UpstreamError): void {
         clearTimeout(timer);
         rejectRaw(e);
-      };
-      const url = new URL(target.url);
-      const lib = url.protocol === 'https:' ? https : http;
-      const req = lib.request(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/timestamp-query',
-            Accept: 'application/timestamp-reply',
-            'Content-Length': String(body.length),
-            'User-Agent': 'zeitstempel-relay',
-          },
-          agent: false,
-        },
-        (res) => {
-          const chunks: Buffer[] = [];
-          let size = 0;
-          res.on('data', (chunk: Buffer) => {
-            size += chunk.length;
-            if (size > RELAY_LIMITS.upstreamBytes) {
-              req.destroy();
-              reject(new UpstreamError('too-large'));
-              return;
-            }
-            chunks.push(chunk);
-          });
-          res.on('end', () => {
-            clearTimeout(timer);
-            resolve({
-              status: res.statusCode ?? 0,
-              contentType: String(res.headers['content-type'] ?? '')
-                .split(';')[0]!
-                .trim()
-                .toLowerCase(),
-              body: new Uint8Array(Buffer.concat(chunks)),
-            });
-          });
-          res.on('error', () => reject(new UpstreamError('failed')));
-        },
-      );
+      }
       req.on('error', () => reject(new UpstreamError('failed')));
       req.end(body);
     });

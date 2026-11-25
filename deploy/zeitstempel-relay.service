@@ -1,0 +1,76 @@
+# systemd-Unit für das Zeitstempel-Relay (Pilot: eine Instanz, Einzelbetrieb).
+# Nur statisch geprüft (tests/ops-templates.test.ts, systemd-analyze verify ohne die Zielrechner-Pfade); nicht auf einem
+# echten Rechner gestartet. Anpassen: Pfade, Benutzer, Knotenpfad (ExecStart).
+#
+# Einrichtung (Beispiel, als root):
+#   useradd --system --no-create-home --shell /usr/sbin/nologin zeitstempel
+#   git clone <Repository> /opt/zeitstempel        # das Relay läuft ungebaut, kein npm install nötig
+#   install -d -o root -g zeitstempel -m 0750 /etc/zeitstempel
+#   cp deploy/relay.env.example /etc/zeitstempel/relay.env   # ausfüllen
+#   cp deploy/zeitstempel-relay.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now zeitstempel-relay
+# Die Schlüsseldatei /etc/zeitstempel/relay-keys.json gehört root (Modus 0640, Gruppe zeitstempel): das Relay liest sie nur,
+# es darf sie nie schreiben, und für Gruppe oder Andere schreibbar löst eine Warnung aus.
+#
+# Ende und Neustart: Das Relay beendet sich bei SIGTERM und bei "restartAfter" in der Schlüsseldatei mit Exit-Code 0
+# (nach höchstens 10 s, shutdownHardMs in relay/limits.ts). Damit "restartAfter" es wieder hochbringt, muss der
+# Überwacher auch nach einem sauberen Ende starten: deshalb Restart=always (Restart=on-failure würde es nach Exit 0
+# NICHT neu starten). Ein Konfigurationsfehler (Exit 1) wird dadurch ebenfalls wiederholt, die Start-Begrenzung
+# unten bremst die Schleife.
+
+[Unit]
+Description=Zeitstempel relay (RFC 3161, forwards hashes only)
+Documentation=file:///opt/zeitstempel/docs/relay.md
+# Uhr zuerst: das Relay prüft Zeitfenster (±60 s) und merkt sich die Startzeit; mit falscher Uhr beim Start ist der
+# Schutz vor dem Abspielen alter Köpfe geschwächt (docs/relay.md). time-sync.target gibt es nur, wenn ein
+# Zeitdienst es mitbringt (systemd-timesyncd, chrony mit chrony-wait.service): sonst ist die Zeile wirkungslos.
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=zeitstempel
+Group=zeitstempel
+WorkingDirectory=/opt/zeitstempel
+# Einstellungen: KEY=Wert, ein Eintrag je Zeile, Kommentare nur auf eigenen Zeilen (docs/betrieb.md). Keine Geheimnisse
+# außer ggf. RELAY_UPSTREAM_AUTH_<ID> (nur bei bezahlten Diensten): Datei mit Modus 0640, Gruppe zeitstempel.
+EnvironmentFile=/etc/zeitstempel/relay.env
+ExecStart=/usr/bin/node relay/main.ts
+# Immer neu starten, auch nach Exit 0 (restartAfter). Ein "systemctl stop" bleibt dagegen gestoppt.
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+# Das Relay beendet sich selbst nach höchstens shutdownHardMs = 10 s (relay/limits.ts); danach erst SIGKILL.
+TimeoutStopSec=15
+# Höchstens 256 offene Verbindungen (relay/limits.ts) plus Dateien und Wächter: großzügig, aber begrenzt.
+LimitNOFILE=4096
+
+# Härtung. MemoryDenyWriteExecute fehlt mit Absicht: Node braucht schreibbaren, ausführbaren Speicher (JIT).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+# Das Relay schreibt nichts auf die Platte. Programm und Schlüsseldatei nur lesbar.
+ReadOnlyPaths=/opt/zeitstempel /etc/zeitstempel
+# Ein Port über 1023: keine Berechtigung nötig (PORT=8080, Proxy davor auf 443).
+
+[Install]
+WantedBy=multi-user.target

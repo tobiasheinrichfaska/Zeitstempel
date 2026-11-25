@@ -16,7 +16,9 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./services.json": "./services.json",
+    "./anchors/*.pem": "./anchors/*.pem"
   },
   "files": [
     "dist",
@@ -29,11 +31,13 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "build": "tsc -p tsconfig.build.json && node scripts/fix-declarations.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/fix-declarations.mjs",
+    "prepare": "node scripts/prepare.mjs",
     "relay": "node relay/main.ts",
     "probe": "node scripts/probe.ts",
     "spike": "node scripts/spike.ts",
-    "prepare": "npm run build"
+    "make-key": "node scripts/make-key.ts",
+    "browser-check": "node scripts/browser-check.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

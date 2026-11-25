@@ -67,24 +67,24 @@ describe('no private names', () => {
       }
     }
   });
-  it('in commit messages', () => {
-    const read = (): string | null => {
-      try {
-        return execFileSync('git', ['-C', ROOT, 'log', '--format=%B'], {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          encoding: 'utf8',
-        }).toLowerCase();
-      } catch {
-        return null; // not a git checkout (e.g. a tarball), or no commit yet
-      }
-    };
-    const log = read();
-    if (log === null) return;
+  const readLog = (): string | null => {
+    try {
+      return execFileSync('git', ['-C', ROOT, 'log', '--format=%B'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+      }).toLowerCase();
+    } catch {
+      return null; // not a git checkout (e.g. a tarball), no git, or no commit yet
+    }
+  };
+  const log = readLog();
+  // Visibly skipped (not silently green) when there is no log to read.
+  it.skipIf(log === null)('in commit messages', () => {
     // GitHub writes the owner's account into every merge message ("Merge pull request #n from <owner>/…").
     // The account is public and not a project name, so only that exact login in that line is taken out
-    // (decision Tobias 2026-11-24); the word stays forbidden everywhere else.
+    // (decision Tobias 2026-11-24); the word stays forbidden everywhere else, merge messages included.
     const owner = ['tobias', 'heinrich', 'fa', 'ska'].join('');
-    const checked = log.replace(
+    const checked = log!.replace(
       /^(merge pull request #\d+ from )([^/\s]+)\//gm,
       (all, head, login) => (login === owner ? `${head}<owner>/` : all),
     );

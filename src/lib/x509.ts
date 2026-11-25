@@ -1,4 +1,4 @@
-import { fromBase64 } from './bytes.ts';
+import { equalBytes, fromBase64, trimZeros } from './bytes.ts';
 import {
   TAG,
   bitStringBytes,
@@ -10,11 +10,13 @@ import {
   integerNumber,
   octets,
   oid,
+  ownBytes,
   parseDer,
   time,
+  unsignedBytes,
   type Node,
 } from './der.ts';
-import { OID } from './oids.ts';
+import { KNOWN_EXTENSIONS, OID, SKI_BYTES } from './oids.ts';
 import { ReaderError } from './result.ts';
 
 /** What the verifier needs from a certificate; read strictly, nothing else is interpreted. */
@@ -27,7 +29,7 @@ export interface Certificate {
   /** Signature algorithm OID (outer) and the signature bytes. */
   signatureOid: string;
   signature: Uint8Array;
-  /** DER of the issuer and subject names, compared byte for byte. */
+  /** DER of the issuer and subject names (`sameName` compares them; the signature decides in the end). */
   issuer: Uint8Array;
   subject: Uint8Array;
   notBefore: number;
@@ -38,9 +40,25 @@ export interface Certificate {
   curveOid: string | null;
   /** From the extensions; null when the extension is absent. */
   isCa: boolean | null;
+  /**
+   * `pathLenConstraint` of the basicConstraints: how many non-self-issued intermediate CAs may follow this
+   * certificate on a path (RFC 5280 § 4.2.1.9). null: absent, or the certificate is no CA (a value next to
+   * cA FALSE is ignored).
+   */
+  pathLen: number | null;
   /** First byte of the keyUsage bit string (0x80 digitalSignature, 0x40 nonRepudiation, 0x04 keyCertSign). */
   keyUsage: number | null;
   eku: { oids: string[]; critical: boolean } | null;
+  /** The value (DER) of the subjectAltName extension, or null; read only when a `tsa` name needs it (`subjectAltNames`). */
+  subjectAltName: Uint8Array | null;
+  /**
+   * The key identifier of the subjectKeyIdentifier extension (1 to 64 bytes), or null when the extension is absent.
+   * Never computed from the key: a certificate without the extension has none (and is never found by a
+   * SignerInfo that names a key identifier).
+   */
+  subjectKeyIdentifier: Uint8Array | null;
+  /** True when a critical extension is present that this reader does not know (RFC 5280 § 4.2). */
+  unknownCritical: boolean;
 }
 
 const LIMITS = { maxCertificates: 16, maxPemChars: 200_000 } as const;
@@ -59,23 +77,42 @@ function readExtensions(list: Node): Map<string, { critical: boolean; value: Uin
   return map;
 }
 
+/** Runs a reader and makes sure that only `ReaderError` can come out of it. */
+function strict<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (e) {
+    throw e instanceof ReaderError ? e : new ReaderError('malformed');
+  }
+}
+
+/** Reads one certificate. The bytes are copied first (by length): nothing in the result points into the caller's buffer. */
 export function parseCertificate(der: Uint8Array): Certificate {
+  return strict(() => parseCertificateStrict(ownBytes(der)));
+}
+
+function parseCertificateStrict(der: Uint8Array): Certificate {
   const root = expect(parseDer(der), TAG.sequence);
-  const [tbs, sigAlg, sigBits] = children(root);
+  const top = children(root);
+  if (top.length !== 3) throw new ReaderError('bad-certificate');
+  const [tbs, sigAlg, sigBits] = top;
   expect(tbs, TAG.sequence);
   expect(sigAlg, TAG.sequence);
   const signature = bitStringBytes(sigBits!);
   const fields = children(tbs!);
   let i = 0;
-  if (fields[0]!.tag === ctx(0)) {
+  if (fields[0]?.tag === ctx(0)) {
     if (integerNumber(inner(fields[0]!)) !== 2) throw new ReaderError('bad-certificate'); // v3
     i = 1;
   }
-  const serial = expect(fields[i]!, TAG.integer).value;
+  // version, serial, algorithm, issuer, validity, subject, key: at least these must be there
+  if (fields.length < i + 6) throw new ReaderError('bad-certificate');
+  const serial = unsignedBytes(expect(fields[i], TAG.integer));
   expect(fields[i + 1], TAG.sequence); // inner signature algorithm (must equal the outer one)
   if (!equalNode(fields[i + 1]!, sigAlg!)) throw new ReaderError('bad-certificate');
   const issuer = expect(fields[i + 2], TAG.sequence).raw;
   const validity = children(expect(fields[i + 3], TAG.sequence));
+  if (validity.length !== 2) throw new ReaderError('bad-certificate');
   const subject = expect(fields[i + 4], TAG.sequence).raw;
   const spkiNode = expect(fields[i + 5], TAG.sequence);
   const spkiParts = children(spkiNode);
@@ -85,21 +122,48 @@ export function parseCertificate(der: Uint8Array): Certificate {
   bitStringBytes(spkiParts[1]!);
 
   let isCa: boolean | null = null;
+  let pathLen: number | null = null;
   let keyUsage: number | null = null;
   let eku: Certificate['eku'] = null;
+  let subjectAltName: Uint8Array | null = null;
+  let subjectKeyIdentifier: Uint8Array | null = null;
+  let unknownCritical = false;
   const extNode = fields.find((f) => f.tag === ctx(3));
   if (extNode) {
     const exts = readExtensions(extNode);
+    for (const [id, e] of exts) if (e.critical && !KNOWN_EXTENSIONS.has(id)) unknownCritical = true;
     const bc = exts.get(OID.extBasicConstraints);
     if (bc) {
       const seq = children(expect(parseDer(bc.value), TAG.sequence));
-      isCa = seq.length > 0 && seq[0]!.tag === TAG.boolean ? boolean(seq[0]!) : false;
+      // BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint INTEGER (0..MAX) OPTIONAL }
+      let at = 0;
+      isCa = false;
+      if (seq[0]?.tag === TAG.boolean) {
+        isCa = boolean(seq[0]);
+        at = 1;
+      }
+      if (seq[at]?.tag === TAG.integer) {
+        const len = unsignedBytes(seq[at]!); // a negative value is unreadable
+        if (isCa) pathLen = len.length > 6 ? Number.MAX_SAFE_INTEGER : integerNumber(seq[at]!);
+        at += 1;
+      }
+      if (at !== seq.length) throw new ReaderError('bad-certificate'); // nothing else is in the schema
     }
     const ku = exts.get(OID.extKeyUsage);
     if (ku) {
       const bits = parseDer(ku.value);
       expect(bits, TAG.bitString);
       keyUsage = bits.value[1] ?? 0;
+    }
+    subjectAltName = exts.get(OID.extSubjectAltName)?.value ?? null;
+    const skiExt = exts.get(OID.extSubjectKeyIdentifier);
+    if (skiExt) {
+      // an OCTET STRING (the key identifier) inside the extension's OCTET STRING, 1 to 64 bytes
+      const id = octets(parseDer(skiExt.value));
+      if (id.length < SKI_BYTES.min || id.length > SKI_BYTES.max) {
+        throw new ReaderError('bad-certificate');
+      }
+      subjectKeyIdentifier = id;
     }
     const ex = exts.get(OID.extEku);
     if (ex) {
@@ -117,23 +181,128 @@ export function parseCertificate(der: Uint8Array): Certificate {
     signature,
     issuer,
     subject,
-    notBefore: time(validity[0]!),
-    notAfter: time(validity[1]!),
+    notBefore: time(validity[0]!, false),
+    notAfter: time(validity[1]!, false),
     spki: spkiNode.raw,
     keyOid,
     curveOid,
     isCa,
+    pathLen,
     keyUsage,
     eku,
+    subjectAltName,
+    subjectKeyIdentifier,
+    unknownCritical,
   };
+}
+
+/** The entries of the subjectAltName (each a `GeneralName` node); `[]` without the extension, `ReaderError` when it is unreadable. */
+export function subjectAltNames(cert: Certificate): Node[] {
+  if (!cert.subjectAltName) return [];
+  try {
+    const names = children(expect(parseDer(cert.subjectAltName), TAG.sequence));
+    if (names.length === 0) throw new ReaderError('bad-certificate');
+    return names;
+  } catch {
+    throw new ReaderError('bad-certificate');
+  }
+}
+
+/**
+ * The size of an RSA public key's modulus in bits (leading zero bits not counted), or null for another kind of
+ * key. A key that claims to be RSA but cannot be read gives 0, so that a size rule refuses it.
+ */
+export function rsaModulusBits(cert: Certificate): number | null {
+  if (cert.keyOid !== OID.rsaEncryption) return null;
+  try {
+    const spki = children(parseDer(cert.spki));
+    const key = children(expect(parseDer(bitStringBytes(spki[1]!)), TAG.sequence));
+    if (key.length !== 2) return 0;
+    const modulus = trimZeros(unsignedBytes(key[0]!));
+    unsignedBytes(key[1]!);
+    if (modulus.length === 0) return 0;
+    return (modulus.length - 1) * 8 + (32 - Math.clz32(modulus[0]!));
+  } catch {
+    return 0;
+  }
 }
 
 function equalNode(a: Node, b: Node): boolean {
   return a.raw.length === b.raw.length && a.raw.every((v, k) => v === b.raw[k]);
 }
 
+const STRING_TAGS = new Set([0x0c, 0x13, 0x14, 0x16, 0x1e]);
+
+/** The text of a directory string, or the bytes as hex when the type is unknown or not decodable. */
+function nameValue(node: Node): string {
+  const v = node.value;
+  let text: string | null = null;
+  try {
+    if (node.tag === 0x0c) text = new TextDecoder('utf-8', { fatal: true }).decode(v);
+    else if (node.tag === 0x1e) text = new TextDecoder('utf-16be', { fatal: true }).decode(v);
+    else if (node.tag === 0x14)
+      text = new TextDecoder('latin1').decode(v); // TeletexString: Latin-1 subset
+    else if (STRING_TAGS.has(node.tag)) text = new TextDecoder('latin1').decode(v);
+  } catch {
+    text = null;
+  }
+  if (text === null)
+    return `#${node.tag.toString(16)}:${Array.from(v, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  // RFC 5280 § 7.1, simplified: ASCII letters case-insensitive, outer spaces dropped, inner runs of spaces
+  // become one space
+  const folded = text
+    .replace(/[A-Z]/g, (c) => c.toLowerCase())
+    .replace(/ +/g, ' ')
+    .trim();
+  return `s:${folded}`;
+}
+
+const canonicalNames = new WeakMap<Uint8Array, string | null>();
+
+/** The name as a comparable text (attribute types exact, values as `nameValue`), or null when unreadable. */
+function canonicalName(name: Uint8Array): string | null {
+  const known = canonicalNames.get(name);
+  if (known !== undefined) return known;
+  let out: string | null;
+  try {
+    out = JSON.stringify(
+      children(expect(parseDer(name), TAG.sequence)).map((rdn) =>
+        children(expect(rdn, TAG.set))
+          .map((atv) => {
+            const parts = children(expect(atv, TAG.sequence));
+            if (parts.length !== 2) throw new ReaderError('bad-structure'); // type and value, nothing else
+            return `${oid(parts[0]!)}=${nameValue(parts[1]!)}`;
+          })
+          .sort(),
+      ),
+    );
+  } catch {
+    out = null;
+  }
+  canonicalNames.set(name, out);
+  return out;
+}
+
+/**
+ * Whether two distinguished names (DER) name the same party, by the simplified rule of RFC 5280 § 7.1:
+ * attribute types exact; values decoded (UTF8String, PrintableString, IA5String, TeletexString, BMPString),
+ * ASCII letters case-insensitive, outer spaces removed, inner runs of spaces collapsed; an unknown value type
+ * is compared by its bytes. A name that cannot be read is compared byte for byte. This only picks which
+ * issuer candidates are tried: the signature against the candidate's key decides.
+ */
+export function sameName(a: Uint8Array, b: Uint8Array): boolean {
+  if (equalBytes(a, b)) return true;
+  const x = canonicalName(a);
+  const y = canonicalName(b);
+  return x !== null && y !== null && x === y;
+}
+
 /** Reads every certificate of a PEM text (a bundle may hold several). */
 export function parsePemCertificates(pem: string): Certificate[] {
+  return strict(() => parsePemStrict(pem));
+}
+
+function parsePemStrict(pem: string): Certificate[] {
   if (pem.length > LIMITS.maxPemChars) throw new ReaderError('too-large');
   const out: Certificate[] = [];
   const re = /-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*)-----END CERTIFICATE-----/g;

@@ -3,7 +3,12 @@ export type Reason =
   // input
   | 'bad-hash'
   | 'bad-nonce'
+  | 'bad-options'
   | 'bad-services'
+  | 'bad-key'
+  | 'bad-key-id'
+  | 'bad-key-file'
+  | 'bad-batch'
   // DER / structure
   | 'too-large'
   | 'malformed'
@@ -22,6 +27,7 @@ export type Reason =
   | 'unsupported-hash'
   | 'bad-time'
   | 'time-in-future'
+  | 'time-too-old'
   | 'imprint-mismatch'
   | 'nonce-mismatch'
   | 'one-signer-required'
@@ -31,9 +37,12 @@ export type Reason =
   | 'signing-certificate-missing'
   | 'signing-certificate-mismatch'
   | 'signature-invalid'
+  | 'tsa-mismatch'
+  | 'policy-mismatch'
   // certificates
   | 'bad-pem'
   | 'bad-certificate'
+  | 'weak-key'
   | 'signer-certificate-missing'
   | 'certificate-not-valid-at-time'
   | 'bad-eku'
@@ -61,7 +70,13 @@ export const ok = <T>(value: T): Result<T> => ({ ok: true, value });
 export const fail = (reason: Reason, detail?: string): Failure =>
   detail === undefined ? { ok: false, reason } : { ok: false, reason, detail };
 
-/** Thrown inside the readers, caught at every public function: the API itself never throws. */
+/**
+ * Thrown inside the readers and caught in the core functions (`buildTimestampRequest`,
+ * `readTimestampResponse`, `verifyTimestampToken`, `readServices`, `signRelayRequest`): those never throw,
+ * whatever they are given. Not caught, by design: the building blocks `readToken`, `parseCertificate` and
+ * `parsePemCertificates` throw `ReaderError`, and the byte writers `toBase64`, `toBase64Url` and `toHex`
+ * throw `TypeError` for anything but a `Uint8Array`.
+ */
 export class ReaderError extends Error {
   readonly reason: Reason;
   constructor(reason: Reason) {
