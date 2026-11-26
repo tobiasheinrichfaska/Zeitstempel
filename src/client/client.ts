@@ -41,8 +41,14 @@ export interface RelayClientOptions {
   keyId: string;
   /** ECDSA P-256 private key: PKCS#8 bytes or a `CryptoKey` (it may be non-extractable). */
   privateKey: Uint8Array | CryptoKey;
-  /** Trust anchors as PEM texts (1 to 64): the caller's decision. */
-  trust: TrustAnchors;
+  /**
+   * Trust anchors as PEM texts: the caller's decision. A list (1 to 64) trusts all anchors equally for every
+   * service. A map `{ [serviceId]: string[] }` (one entry per id of `services`, each 1 to 64) verifies a token
+   * against the anchors of the service that was asked only.
+   */
+  trust: TrustAnchors | Readonly<Record<string, readonly string[]>>;
+  /** Policy OID(s) the token must carry (passed to `verifyTimestampToken`); default: any. */
+  expectedPolicy?: string | readonly string[];
   /** Service ids in order of preference (1 to 16, from `services.json`). */
   services: readonly string[];
   /** Default: the environment's `fetch`. */
@@ -141,6 +147,7 @@ const OPTION_FIELDS = [
   'keyId',
   'privateKey',
   'trust',
+  'expectedPolicy',
   'services',
   'fetch',
   'now',
@@ -200,20 +207,6 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
     } else {
       return fail('bad-key');
     }
-    const trustItems = listItems(o.trust, CLIENT_LIMITS.MAX_TRUST);
-    if (trustItems === null || trustItems.length === 0) return fail('bad-options', 'trust');
-    const trust: string[] = [];
-    for (const pem of trustItems) {
-      if (typeof pem !== 'string' || pem.length === 0 || pem.length > MAX_PEM_CHARS) {
-        return fail('bad-options', 'trust');
-      }
-      try {
-        parsePemCertificates(pem);
-      } catch {
-        return fail('bad-pem');
-      }
-      trust.push(pem);
-    }
     const serviceItems = listItems(o.services, CLIENT_LIMITS.MAX_SERVICES);
     if (serviceItems === null || serviceItems.length === 0) return fail('bad-options', 'services');
     const services: string[] = [];
@@ -222,6 +215,42 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
         return fail('bad-options', 'services');
       }
       services.push(id);
+    }
+    const readPems = (value: unknown): string[] | Result<never> => {
+      const items = listItems(value, CLIENT_LIMITS.MAX_TRUST);
+      if (items === null || items.length === 0) return fail('bad-options', 'trust');
+      const pems: string[] = [];
+      for (const pem of items) {
+        if (typeof pem !== 'string' || pem.length === 0 || pem.length > MAX_PEM_CHARS) {
+          return fail('bad-options', 'trust');
+        }
+        try {
+          parsePemCertificates(pem);
+        } catch {
+          return fail('bad-pem');
+        }
+        pems.push(pem);
+      }
+      return pems;
+    };
+    let trust: readonly string[] | Readonly<Record<string, readonly string[]>>;
+    if (Array.isArray(o.trust)) {
+      const list = readPems(o.trust);
+      if (!Array.isArray(list)) return list;
+      trust = list;
+    } else {
+      const map = plainFields(o.trust, services, services);
+      if (map === null) return fail('bad-options', 'trust');
+      const copy: Record<string, readonly string[]> = Object.create(null) as Record<
+        string,
+        readonly string[]
+      >;
+      for (const id of services) {
+        const list = readPems(map[id]);
+        if (!Array.isArray(list)) return list;
+        copy[id] = list;
+      }
+      trust = copy;
     }
     for (const name of ['fetch', 'now', 'random', 'monoNow'] as const) {
       if (name in o && typeof o[name] !== 'function') return fail('bad-options', name);
@@ -253,12 +282,15 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
         ? (o.random as (length: number) => Uint8Array)
         : (n: number) => globalThis.crypto.getRandomValues(new Uint8Array(n));
     const mono = 'monoNow' in o ? (o.monoNow as () => number) : () => performance.now();
+    const expectedPolicy =
+      'expectedPolicy' in o ? (o.expectedPolicy as string | readonly string[]) : undefined;
     const state = new Session({
       origin,
       audience: o.audience,
       keyId: o.keyId,
       privateKey,
       trust,
+      expectedPolicy,
       services,
       fetchFn,
       clock,
@@ -284,7 +316,8 @@ interface Config {
   audience: string;
   keyId: string;
   privateKey: Uint8Array | CryptoKey;
-  trust: readonly string[];
+  trust: readonly string[] | Readonly<Record<string, readonly string[]>>;
+  expectedPolicy: string | readonly string[] | undefined;
   services: readonly string[];
   fetchFn: FetchLike;
   clock: () => number;
@@ -605,14 +638,24 @@ class Session {
     if (token === null) return failure('bad-response', { detail: 'token' });
     // minGenTime is mandatory: without it a back-dated token from a stolen or expired service key passes
     const receivedMs = this.now(offset);
-    const options = { now: new Date(receivedMs), minGenTime: new Date(sentMs - c.slack) };
+    // The corrected clock comes from the relay's `Date`: it may only make the check stricter, never looser. The
+    // floor is the later of the corrected and the uncorrected (device) send time.
+    const floorMs = Math.max(sentMs, sentMs - offset);
+    const options = {
+      now: new Date(receivedMs),
+      minGenTime: new Date(floorMs - c.slack),
+      ...(c.expectedPolicy === undefined ? {} : { expectedPolicy: c.expectedPolicy }),
+    };
+    const trust: readonly string[] = Array.isArray(c.trust)
+      ? (c.trust as readonly string[])
+      : (c.trust as Readonly<Record<string, readonly string[]>>)[service]!;
     const kind = 'batch' in f ? 'batch' : 'single';
     const verified =
       kind === 'single'
-        ? await verifyTimestampToken(token, hash, c.trust, options)
+        ? await verifyTimestampToken(token, hash, trust, options)
         : await verifyBatchedTimestamp(
             { token, hash, batch: f.batch as BatchProof },
-            c.trust,
+            trust,
             options,
           );
     if (!verified.ok) return verified;
