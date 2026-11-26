@@ -554,7 +554,9 @@ class Session {
           const left = c.timeoutMs - (this.mono() - startedAt);
           if (attempts >= c.maxAttempts || wait >= left) {
             // the call ends on the relay's word: no later call sends before the pause is over
-            this.blockedUntil = this.mono() + Math.min(asked, CLIENT_LIMITS.MAX_PAUSE_MS);
+            // extend, never shorten: a pause still running (set by a call in parallel) keeps its later end
+            const until = this.mono() + Math.min(asked, CLIENT_LIMITS.MAX_PAUSE_MS);
+            this.blockedUntil = Math.max(this.blockedUntil, until);
             return refused;
           }
           await pause(wait, signal);

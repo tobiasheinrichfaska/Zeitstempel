@@ -68,6 +68,42 @@ describe('ported from the old client', () => {
     expect(fake.seen).toHaveLength(2);
   });
 
+  it('a later, shorter Retry-After does not shorten a pause that is still running', async () => {
+    // two calls in flight at once: the first answer asks for 10 minutes, the second (later) for 5 seconds
+    fake = await startFake((_s, n) =>
+      n === 0
+        ? { status: 429, headers: { 'Retry-After': '600' }, json: { error: 'rate-limited' } }
+        : {
+            status: 429,
+            headers: { 'Retry-After': '5' },
+            json: { error: 'rate-limited' },
+            delayMs: 300,
+          },
+    );
+    const mono = 1000;
+    const client = make(options(fake.origin, { timeoutMs: 3000, monoNow: () => mono }));
+    const both = await Promise.all([client.stamp(hash), client.stamp(hash)]);
+    expect(both.every((r) => !r.ok)).toBe(true);
+    expect(fake.seen).toHaveLength(2);
+    expect(client.pausedForMs()).toBe(600_000);
+  });
+
+  it('a pause that has expired is replaced by the next one, longer or shorter', async () => {
+    fake = await startFake((_s, n) => ({
+      status: 429,
+      headers: { 'Retry-After': n === 0 ? '60' : '5' },
+      json: { error: 'rate-limited' },
+    }));
+    let mono = 1000;
+    const client = make(options(fake.origin, { timeoutMs: 3000, monoNow: () => mono }));
+    failure(await client.stamp(hash));
+    expect(client.pausedForMs()).toBe(60_000);
+    mono += 60_000;
+    expect(client.pausedForMs()).toBe(0);
+    failure(await client.stamp(hash));
+    expect(client.pausedForMs()).toBe(5000);
+  });
+
   it('a monotonic clock that jumps back past the longest pause forgets the pause', async () => {
     fake = await startFake(() => ({
       status: 429,
