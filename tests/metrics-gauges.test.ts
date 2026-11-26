@@ -255,6 +255,32 @@ describe('relay.gauges(): collecting operation', () => {
     expect((await Promise.all([p1, p2])).map((r) => r.status)).toEqual([200, 200]);
   });
 
+  it('a request that waits in the queue of its lane for a free slot (no window yet) is counted, and not any more once it is answered', async () => {
+    // budget window 300 ms, distance 100 ms: three slots; three solo stamps take them, the fourth request has to queue
+    h = await start({
+      batch: { windowMs: 100, max: 100 },
+      minIntervalMs: MIN,
+      budgetWindowMs: 3 * MIN,
+      maxWaitMs: 60_000,
+      virtualMono: true,
+    });
+    const soloKeys = [KEY_B, KEY_C, KEY_B];
+    const done: Promise<{ status: number }>[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      done.push(h.stamp(sha256(`n${i}`), { key: soloKeys[i]!, body: solo(sha256(`n${i}`)) }));
+      await until(() => h.calls.length === i + 1);
+      if (i < 2) h.advance(MIN); // the distance to the next solo stamp; after the third the slots stay taken
+    }
+    done.push(h.stamp(sha256('n-normal'), { key: KEY_A }));
+    await until(() => h.relay.gauges().queued.freetsa === 1);
+    expect(h.calls).toHaveLength(3);
+    h.advance(3 * MIN); // the slots of the minute are free again
+    await until(() => h.calls.length === 4);
+    expect(h.relay.gauges().queued).toEqual({ freetsa: 0 });
+    expect((await Promise.all(done)).map((r) => r.status)).toEqual([200, 200, 200, 200]);
+    expect(h.relay.gauges().queued).toEqual({ freetsa: 0 });
+  });
+
   it('a request that leaves (the relay closes) is no longer counted', async () => {
     h = await collecting(1500);
     const p = h.stamp(sha256('x1'), { key: KEY_A });

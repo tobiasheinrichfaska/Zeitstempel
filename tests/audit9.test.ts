@@ -104,6 +104,28 @@ describe('N1: the share lists of the relay do not pile up empty lists', () => {
     expect(h.relay.heldForTests().known).toBe(1);
     expect(h.relay.heldForTests().shares).toBeLessThanOrEqual(1);
   }, 30_000);
+  it('an identity that expires leaves its share list behind only if nobody sweeps: `forget` drops it itself (the request that made room is refused after)', async () => {
+    // the replay cache holds one entry (the head of the first request): the second request is a 429 after the look for room,
+    // so it spends nothing and no sweep of `shareBudget` runs; only `forget` can remove the list of the expired identity
+    h = await start({
+      batch: null,
+      bearer: true,
+      minIntervalMs: 300,
+      budgetWindowMs: 1200,
+      keyShare: 50,
+      maxWaitMs: 5000,
+      upstreamIdentities: 1,
+      authReplayEntries: 1,
+    });
+    expect((await h.stamp(sha256('1'), { key: KEY_F, body: body('1', 't1') })).status).toBe(200);
+    expect(h.relay.heldForTests().shares).toBe(1);
+    expect(h.relay.heldForTests().known).toBe(1);
+    await sleep(1300);
+    const r = await h.stamp(sha256('2'), { key: KEY_A, body: body('2', 't2') });
+    expect(r.status).toBe(429); // the replay cache is full
+    expect(h.relay.heldForTests().known).toBe(0); // the expired identity is gone ...
+    expect(h.relay.heldForTests().shares).toBe(0); // ... and its share list with it
+  }, 30_000);
 });
 
 describe('refunds count exactly', () => {

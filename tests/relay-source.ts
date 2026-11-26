@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
  * The text of the relay rules. They live in `relay/relay.ts` (the wiring and the request) and the parts it is made of; the tests
  * that tie the documents and the counters to "the code of the relay" read all of them, as they read the one file before the split.
  */
-const PARTS = [
+export const PARTS = [
   'relay.ts',
   'types.ts',
   'body.ts',
