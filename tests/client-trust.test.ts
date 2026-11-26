@@ -120,6 +120,22 @@ describe('M3: trust per service', () => {
     expect(right.ok).toBe(true);
     const unknown = await verifyEvidence(evidence, hash, { trust: { freetsa: [SIGNER.caPem] } });
     expect(unknown.ok).toBe(false);
+    if (!unknown.ok) expect(unknown.reason).toBe('bad-evidence');
+    // a map of several services (the app's whole list): only the evidence's entry counts
+    const several = await verifyEvidence(evidence, hash, {
+      trust: { freetsa: [SIGNER_B.caPem], sectigo: [SIGNER.caPem] },
+    });
+    expect(several.ok).toBe(true);
+    const severalWrong = await verifyEvidence(evidence, hash, {
+      trust: { freetsa: [SIGNER.caPem], sectigo: [SIGNER_B.caPem] },
+    });
+    expect(severalWrong.ok).toBe(false);
+    if (!severalWrong.ok) expect(severalWrong.reason).toBe('untrusted-chain');
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 17 }, (_, i) => [`s${i}`, [SIGNER.caPem]]),
+    );
+    expect((await verifyEvidence(evidence, hash, { trust: tooMany })).ok).toBe(false);
+    expect((await verifyEvidence(evidence, hash, { trust: {} })).ok).toBe(false);
     // the array form is unchanged
     expect((await verifyEvidence(evidence, hash, { trust: [SIGNER.caPem] })).ok).toBe(true);
   });

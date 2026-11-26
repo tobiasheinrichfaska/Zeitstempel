@@ -9,6 +9,9 @@ import {
 } from '../lib/verify.ts';
 import { listItems, plainFields } from './plain.ts';
 
+/** At most this many services in the map form of `trust` (the client's own limit for `services`). */
+const MAX_TRUST_SERVICES = 16;
+
 /**
  * The evidence of a time stamp, format version 1: everything needed to check later, without the relay and without
  * a network, that a hash existed at the latest at `genTime`. JSON-capable (no functions, no bytes: base64url text).
@@ -274,7 +277,17 @@ export async function verifyEvidence(
     const verifyOptions = rest as VerifyOptions;
     let trust: unknown = given_trust;
     if (!Array.isArray(given_trust)) {
-      const map = plainFields(given_trust, [e.service], []);
+      // the map may name any services (an app passes its whole list); only the evidence's entry counts
+      let keys: string[];
+      try {
+        keys =
+          typeof given_trust === 'object' && given_trust !== null ? Object.keys(given_trust) : [];
+      } catch {
+        return fail('bad-options', 'trust');
+      }
+      if (keys.length === 0 || keys.length > MAX_TRUST_SERVICES)
+        return fail('bad-options', 'trust');
+      const map = plainFields(given_trust, keys, []);
       if (map === null) return fail('bad-options', 'trust');
       if (!(e.service in map)) return bad('service');
       trust = map[e.service];
