@@ -197,7 +197,7 @@ const r = await verifyEvidence(beleg /* Objekt oder Text */, hash, {
 });
 ```
 
-Reihenfolge: Optionen (`bad-options`; `trust` darf auch eine Zuordnung `{ [Dienstkennung]: PEM-Liste }` sein: dann zählen nur die Anker des Dienstes des Belegs, ohne Eintrag `bad-evidence` (Feld `service`); erlaubt sind `trust` und die Optionen von `VerifyOptions` außer `expectedNonce`) → Form
+Reihenfolge: Optionen (`bad-options`; `trust` darf auch eine Zuordnung `{ [Dienstkennung]: PEM-Liste }` sein: dann zählen nur die Anker des Dienstes des Belegs, weitere Dienste dürfen darin stehen (1 bis 16 Einträge, sonst `bad-options`), ohne Eintrag für den Dienst des Belegs `bad-evidence` (Feld `service`); erlaubt sind `trust` und die Optionen von `VerifyOptions` außer `expectedNonce`) → Form
 (`bad-evidence`) → der Hash des Belegs gegen den **übergebenen** Hash (`evidence-hash-mismatch`) → das Token
 (`verifyTimestampToken`, bei `kind: batch` `verifyBatchedTimestamp`: alle bekannten Codes, bei einem Beleg für einen anderen Hash im
 Baum `imprint-mismatch`) → Abgleich von `genTime`, `policy`, `signerNotAfter` (`bad-evidence`, wenn eines abweicht). Das Ergebnis trägt
