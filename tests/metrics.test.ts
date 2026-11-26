@@ -17,6 +17,7 @@ import { createRelayServer } from '../relay/server.ts';
 import type { Upstream } from '../relay/upstream.ts';
 import { TEST_AUDIENCE, makeTestKey, nodeAuthHeaderMs } from './auth-helpers.ts';
 import { FREETSA_NONCE, fixture, sha256 } from './helpers.ts';
+import { relaySource } from './relay-source.ts';
 
 // GET /metrics: off by default, loopback peers only, GET only, counters and gauges without anything a request carries.
 
@@ -551,7 +552,7 @@ describe('nothing a request carries ever appears', () => {
     const text = (await h.get('/metrics')).body;
     for (const l of text.split('\n').filter((x) => x.includes('{'))) {
       expect(l, l).toMatch(
-        /^zeitstempel_(?:refused_total\{reason=|http_responses_total\{status=|stamp_responses_total\{service=|stamp_attempts_total\{service=|stamp_inflight\{service=|service_last_success_age_seconds\{service=|service_success_seen\{service=)/,
+        /^zeitstempel_(?:refused_total\{reason=|http_responses_total\{status=|stamp_responses_total\{service=|stamp_attempts_total\{service=|stamp_inflight\{service=|service_last_success_age_seconds\{service=|service_success_seen\{service=|stamp_queued\{service=|last_gentime_delta_seconds\{service=|service_last_call_age_seconds\{service=)/,
       );
     }
   });
@@ -842,7 +843,7 @@ describe('audit 12: a failure while serving /metrics', () => {
 
 describe('audit 12: the cap of refusal codes', () => {
   it('holds every code the relay can send, with a reserve', () => {
-    const relay = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+    const relay = relaySource();
     const upstream = readFileSync(new URL('../relay/upstream.ts', import.meta.url), 'utf8');
     const codes = new Set<string>();
     for (const m of relay.matchAll(/error: '([a-z][a-z0-9-]*)'/g)) codes.add(m[1]!);

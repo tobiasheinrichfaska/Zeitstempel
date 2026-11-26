@@ -73,6 +73,10 @@ export interface Harness {
    * no timer jitter, so a test can test the distance to the millisecond. Without it the value is unused.
    */
   vmono: { now: number };
+  /** The `genTime` of the stub's tokens is the relay's wall clock plus `offset` ms (default 0; keep within the relay's +-60 s). */
+  gen: { offset: number };
+  /** `http://127.0.0.1:<port>` of the server. */
+  base: string;
   advance: (ms: number) => void;
   relay: ReturnType<typeof createRelayServer>['relay'];
   stats: ReturnType<typeof createRelayServer>['relay']['stats'];
@@ -114,12 +118,15 @@ export async function start(
     /** The monotonic clock of the relay is virtual (`vmono`, moved by `advance` only); the real timers still run. */
     virtualMono?: boolean;
     authReplayEntries?: number;
+    /** `RELAY_METRICS=1`: the server answers `GET /metrics` to loopback. */
+    metrics?: boolean;
   } = {},
 ): Promise<Harness> {
   const calls: Harness['calls'] = [];
   const clock = { offset: 0 };
   const mono = { offset: 0 };
   const vmono = { now: 1_000_000 };
+  const gen = { offset: 0 };
   const monoNow = (): number => (over.virtualMono ? vmono.now : performance.now() + mono.offset);
   const t0 = Date.now();
   const stub: Upstream = async (_t, body, creds) => {
@@ -133,7 +140,7 @@ export async function start(
     return {
       status: 200,
       contentType: 'application/timestamp-reply',
-      body: replyFor(body, Date.now() + clock.offset),
+      body: replyFor(body, Date.now() + clock.offset + gen.offset),
     };
   };
   const batch = over.batch === undefined ? { windowMs: 100, max: 100 } : over.batch;
@@ -161,7 +168,7 @@ export async function start(
     ...(over.maxWaitMs === undefined ? {} : { maxWaitMs: over.maxWaitMs }),
     ...(over.budgetWindowMs === undefined ? {} : { budgetWindowMs: over.budgetWindowMs }),
   };
-  const { server, relay } = createRelayServer(options);
+  const { server, relay } = createRelayServer(options, over.metrics ? { metrics: true } : {});
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const stamp: Harness['stamp'] = (hash, o = {}) => {
@@ -190,6 +197,8 @@ export async function start(
     clock,
     mono,
     vmono,
+    gen,
+    base,
     advance: (ms) => {
       vmono.now += ms;
     },

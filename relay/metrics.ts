@@ -5,10 +5,12 @@
 // What it holds: the counters of `relay.stats()` (sums, never per key), and what the server can see of the answers it
 // sends: the status per service (the service id is public data and only ids of the offered services are counted, so
 // the number of series is fixed by the operator), the requests in progress per service and the time of the last
-// answered stamp per service on the monotonic clock. It holds NO key id, hash, token, signature, address or path of a
+// answered stamp per service on the monotonic clock. Since `relay.gauges()`: the open identities, the replay cache, the
+// waiting requests per service, the difference of the last `genTime` to the relay's clock and the age of the last call
+// per service (numbers only, labels the same closed list). It holds NO key id, hash, token, signature, address or path of a
 // request: a label value comes from a closed list (service ids, status codes, refusal codes the relay itself sends).
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { RelayStats } from './relay.ts';
+import type { RelayGauges, RelayStats } from './relay.ts';
 import { RELAY_LIMITS } from './limits.ts';
 
 const STAMP_PATH = /^\/v1\/stamp\/([a-z][a-z0-9-]{0,31})$/;
@@ -48,14 +50,16 @@ export interface Metrics {
   countServerAnswer: (status: number) => void;
   /** Number of per-service entries held in memory (for tests: a made-up service name must create none). */
   trackedSeries: () => number;
-  /** The text of the endpoint for the given counters. */
-  render: (stats: RelayStats) => string;
+  /** The text of the endpoint for the given counters and gauges (none: the gauges of the relay are written as 0 or left out). */
+  render: (stats: RelayStats, gauges?: RelayGauges) => string;
 }
 
 export function createMetrics(options: {
   /** Ids of the offered services (the only service labels ever written). */
   serviceIds: readonly string[];
   stats: () => RelayStats;
+  /** `relay.gauges`: read at every scrape; only the ids of `serviceIds` are ever written, whatever it returns. */
+  gauges?: () => RelayGauges;
   /** The monotonic clock in milliseconds (`performance.now()`). */
   mono: () => number;
   /** The peer address of a request; for tests. Default: the socket's remote address. */
@@ -117,7 +121,7 @@ export function createMetrics(options: {
     if (!isLoopbackPeer((options.peerAddress ?? ((r) => r.socket.remoteAddress))(req)))
       return false;
     scrapes += 1;
-    const text = render(options.stats());
+    const text = render(options.stats(), options.gauges?.());
     res.writeHead(200, {
       'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
       'Content-Length': String(Buffer.byteLength(text)),
@@ -128,7 +132,7 @@ export function createMetrics(options: {
     return true;
   }
 
-  function render(stats: RelayStats): string {
+  function render(stats: RelayStats, gauges?: RelayGauges): string {
     const out: string[] = [];
     const num = (v: unknown): number =>
       typeof v === 'number' && Number.isFinite(v) && v >= 0
@@ -287,6 +291,48 @@ export function createMetrics(options: {
     );
     for (const id of ids)
       out.push(`zeitstempel_service_success_seen{service="${id}"} ${lastSuccess.has(id) ? 1 : 0}`);
+    plain(
+      'zeitstempel_identities_open',
+      'gauge',
+      'Identities of the app (credentials of the client) open at once, over all services.',
+      num(gauges?.identities),
+    );
+    plain(
+      'zeitstempel_replay_entries',
+      'gauge',
+      'Entries of the replay cache that can still matter (heads that could pass the window).',
+      num(gauges?.replayEntries),
+    );
+    // only the offered services, whatever the object holds: a read of an own property only (no prototype, no other name)
+    const own = (o: Record<string, number> | undefined, id: string): number | undefined =>
+      o !== undefined && Object.hasOwn(o, id) ? o[id] : undefined;
+    head(
+      'zeitstempel_stamp_queued',
+      'gauge',
+      'Requests per service that wait for a window, a slot or the minimum distance (not those at the service).',
+    );
+    for (const id of ids)
+      out.push(`zeitstempel_stamp_queued{service="${id}"} ${num(own(gauges?.queued, id))}`);
+    head(
+      'zeitstempel_last_gentime_delta_seconds',
+      'gauge',
+      'Whole seconds between the genTime of the last verified token of the service and the relay clock when the answer was read (absolute; includes the time of the call). Absent until the service stamped once.',
+    );
+    for (const id of ids) {
+      const ms = own(gauges?.lastGenTimeDeltaMs, id);
+      if (typeof ms === 'number' && Number.isFinite(ms) && ms >= 0)
+        out.push(`zeitstempel_last_gentime_delta_seconds{service="${id}"} ${num(ms / 1000)}`);
+    }
+    head(
+      'zeitstempel_service_last_call_age_seconds',
+      'gauge',
+      'Seconds (monotonic clock) since the last call to the service was made, answered or not. Absent until the service was called.',
+    );
+    for (const id of ids) {
+      const s = own(gauges?.lastServiceCallAgeSeconds, id);
+      if (typeof s === 'number' && Number.isFinite(s) && s >= 0)
+        out.push(`zeitstempel_service_last_call_age_seconds{service="${id}"} ${num(s)}`);
+    }
     plain('zeitstempel_metrics_scrapes_total', 'counter', 'Answers of this endpoint.', scrapes);
 
     let text = out.join('\n') + '\n';

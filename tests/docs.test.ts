@@ -6,6 +6,7 @@ import { DER_LIMITS } from '../src/lib/der.ts';
 import { BATCH_LIMITS } from '../src/lib/batch.ts';
 import { VERIFY_LIMITS } from '../src/lib/verify.ts';
 import { AUTH_START_SLACK_MS, RELAY_LIMITS } from '../relay/limits.ts';
+import { relaySource } from './relay-source.ts';
 
 const read = (name: string) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
 const model = read('data-model.html');
@@ -154,7 +155,7 @@ describe('docs against the code', () => {
     }
   });
   it('relay.md names every error code the relay sends', () => {
-    const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+    const source = relaySource();
     const sent = new Set([...source.matchAll(/error: '([a-z-]+)'/g)].map((m) => m[1]!));
     sent.add('upstream-failed').add('upstream-timeout').add('upstream-too-large'); // `upstream-${kind}`
     for (const code of sent) expect(relayDoc, code).toContain(`\`${code}\``);
@@ -396,7 +397,7 @@ describe('collecting operation (Sammelbetrieb) is written down where a reader lo
 describe('key types, solo stamps and the key file read again are written down where a reader looks', () => {
   const flat = (text: string) => text.replace(/\s+/g, ' ');
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const source = relaySource();
   it('relay.md: settings, error codes and counters', () => {
     expect(relayDoc).toMatch(/\|\s*`RELAY_MAX_WAIT_MS`\s*\|/);
     expect(relayDoc).toContain('## Schlüsselarten und Solo-Stempel');
@@ -611,7 +612,7 @@ describe('credentials of paid services (upstream, auth) are written down where a
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
   const features = readFileSync(new URL('../FEATURES_REQUIRED.md', import.meta.url), 'utf8');
-  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const source = relaySource();
   it('relay.md: the section, the kinds, the sources, the setting, the code and the limits', () => {
     const doc = flat(relayDoc);
     expect(relayDoc).toContain('## Zugangsdaten zu bezahlten Diensten');
@@ -868,7 +869,7 @@ describe('pathLenConstraint, the signer that is no CA, expectedPolicy and Reader
 describe('key file version 3 (revoked, empty list, notAfter, services, perMinute) is written down and tied to the code', () => {
   const flat = (text: string) => text.replace(/\s+/g, ' ');
   const betrieb = read('betrieb.md');
-  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const source = relaySource();
   const keysSource = readFileSync(new URL('../relay/keys.ts', import.meta.url), 'utf8');
   it('relay.md: the section, every field, the error code, the counters and the rules', () => {
     const doc = flat(relayDoc);
@@ -940,7 +941,7 @@ describe('key file version 3 (revoked, empty list, notAfter, services, perMinute
 });
 
 describe('RELAY_KEY_SHARE (share of one key at a service budget) is written down and tied to the code', () => {
-  const source = readFileSync(new URL('../relay/relay.ts', import.meta.url), 'utf8');
+  const source = relaySource();
   const betriebDoc = read('betrieb.md');
   const flatText = (t: string) => t.replace(/\s+/g, ' ');
   it('relay.md: the setting, the code, the counter and the limits', () => {

@@ -47,6 +47,7 @@ export function createRelayServer(
       ? createMetrics({
           serviceIds: options.services.map((s) => s.id),
           stats: relay.stats,
+          gauges: relay.gauges,
           mono: options.monotonicNow ?? (() => performance.now()),
           ...(limits.peerAddress === undefined ? {} : { peerAddress: limits.peerAddress }),
         })

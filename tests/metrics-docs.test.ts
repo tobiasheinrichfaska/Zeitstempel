@@ -85,7 +85,9 @@ describe('docs/betrieb.md: alarm criteria', () => {
     // the real rule: only more than 60 s before the request counts; no early warning, the future is another code
     expect(doc).toContain('mehr als 60 s vor der Anfrage');
     expect(doc).toContain('keine Vorwarnung');
-    expect(doc).not.toContain('ab 30 s Unterschied ist Vorwarnung');
+    // the early warning is a real series now (`relay.gauges()`), named with its threshold
+    expect(doc).toContain('`zeitstempel_last_gentime_delta_seconds{service}` | **> 30**');
+    expect(doc).not.toContain('Der Unterschied selbst ist kein Messwert');
     expect(doc).toContain('`upstream-invalid` (Grund `time-in-future`)');
     // the ratio is sum() over sum(): the two sides carry different labels
     expect(doc).toContain(
