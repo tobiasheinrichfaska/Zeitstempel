@@ -213,8 +213,12 @@ export function serializeEvidence(evidence: Evidence): Result<string> {
 }
 
 export interface VerifyEvidenceOptions {
-  /** The trust anchors (PEM texts): the caller's decision, as everywhere in the library. Required. */
-  trust: TrustAnchors;
+  /**
+   * The trust anchors (PEM texts): the caller's decision, as everywhere in the library. Required. A list trusts
+   * all anchors equally for every service; a map `{ [serviceId]: string[] }` checks the token against the
+   * anchors of the evidence's `service` only (no entry for it: `bad-evidence`, field `service`).
+   */
+  trust: TrustAnchors | Readonly<Record<string, readonly string[]>>;
   /** As in `VerifyOptions`; `expectedNonce` is not offered (the relay chooses the nonce). */
   now?: Date;
   at?: Date;
@@ -266,8 +270,15 @@ export async function verifyEvidence(
     const given = copyBytes(hash, 32, 32);
     if (given === null) return fail('bad-hash');
     if (!equalBytes(given, fromBase64Url(e.hash)!)) return fail('evidence-hash-mismatch');
-    const { trust, ...rest } = o;
+    const { trust: given_trust, ...rest } = o;
     const verifyOptions = rest as VerifyOptions;
+    let trust: unknown = given_trust;
+    if (!Array.isArray(given_trust)) {
+      const map = plainFields(given_trust, [e.service], []);
+      if (map === null) return fail('bad-options', 'trust');
+      if (!(e.service in map)) return bad('service');
+      trust = map[e.service];
+    }
     const token = fromBase64Url(e.token)!;
     const checked =
       e.batch === undefined

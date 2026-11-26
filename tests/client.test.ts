@@ -155,6 +155,9 @@ describe('against a real relay (collecting operation)', () => {
     const client = make(
       options(relay.origin, {
         now: () => Date.now() + 62_000,
+        // freshness counts from the later of the corrected and the device send time (audit M4): a device clock
+        // 62 s ahead needs a slack above that for the genuine token to pass
+        minGenTimeSlackMs: 70_000,
         fetch: (url, init) => {
           sends += 1;
           return fetch(url, init as RequestInit);
