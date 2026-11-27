@@ -197,7 +197,7 @@
       <tr><td>audience</td><td>Text, Pflicht</td><td>Die <code>RELAY_AUDIENCE</code> des Relays (druckbares ASCII ohne Leerzeichen, 1 bis 128 Zeichen)</td></tr>
       <tr><td>keyId</td><td>Text, Pflicht</td><td>Schlüsselkennung der Schlüsseldatei (<code>[a-z][a-z0-9-]{0,31}</code>), sonst <code>bad-key-id</code></td></tr>
       <tr><td>privateKey</td><td><code>Uint8Array</code> (PKCS#8, 1 bis 256 Byte) oder <code>CryptoKey</code>, Pflicht</td><td>ECDSA-P-256-Schlüssel; Bytes werden kopiert; sonst <code>bad-key</code></td></tr>
-      <tr><td>trust</td><td>Liste von PEM-Texten, 1 bis 64, Pflicht</td><td>Vertrauensanker: die Entscheidung des Aufrufers. Jeder Eintrag muss als PEM lesbar sein (sonst <code>bad-pem</code>)</td></tr>
+      <tr><td>trust</td><td>Liste von PEM-Texten, 1 bis 64, oder Zuordnung <code>{ Dienstkennung: PEM-Liste }</code> mit genau einem Eintrag je Dienst aus <code>services</code>, Pflicht</td><td>Vertrauensanker: die Entscheidung des Aufrufers. Bei der Zuordnung wird ein Token nur gegen die Anker des gefragten Dienstes geprüft. Jeder Eintrag muss als PEM lesbar sein (sonst <code>bad-pem</code>)</td></tr>
       <tr><td>services</td><td>Liste von Dienstkennungen, 1 bis 16, verschieden, Pflicht</td><td>In der Reihenfolge der Vorliebe; der erste wird zuerst versucht, die anderen sind der Failover</td></tr>
       <tr><td>fetch</td><td>Funktion, optional</td><td>Vorgabe: das <code>fetch</code> der Umgebung. Bekommt <code>redirect: 'error'</code>, <code>credentials: 'omit'</code>, <code>cache: 'no-store'</code></td></tr>
       <tr><td>now</td><td>() → Zahl, optional</td><td>Uhr in Unix-Millisekunden (Vorgabe <code>Date.now</code>); keine endliche Zahl beim Aufruf: <code>bad-options</code></td></tr>
@@ -208,6 +208,7 @@
       <tr><td>maxClockOffsetMs</td><td>Zahl 0 bis 86400000, optional</td><td>Größter Uhrversatz, den der <code>Date</code>-Kopf eines <code>401</code> korrigieren darf (Vorgabe 65000); mehr bleibt <code>401</code>, damit ein Relay die Frischeprüfung nicht beliebig verschieben kann</td></tr>
       <tr><td>monoNow</td><td>() → Zahl, optional</td><td>Monotone Uhr in Millisekunden (Vorgabe <code>performance.now</code>): misst Gesamtfrist und Pause nach <code>429</code>, damit eine verstellte Geräteuhr keine von beiden dehnt; keine endliche Zahl: <code>bad-options</code></td></tr>
       <tr><td>attemptTimeoutMs</td><td>Zahl 1000 bis 600000, optional</td><td>Frist <strong>einer</strong> Sendung (mit Antwort); läuft sie ab, kommt der nächste Dienst (Failover wie bei einem Netzfehler, Ergebnis am Ende <code>timeout</code>). Vorgabe: keine (nur <code>timeoutMs</code>)</td></tr>
+      <tr><td>expectedPolicy</td><td>Text oder Liste von 1 bis 16 Texten, optional</td><td>Policy-OID(s), die das Token tragen muss; wird an <code>verifyTimestampToken</code> durchgereicht (<code>policy-mismatch</code>). Vorgabe: jede</td></tr>
     </table>
     <h3>ClientFailure (Fehlerform von <code>stamp</code>)</h3>
     <table>

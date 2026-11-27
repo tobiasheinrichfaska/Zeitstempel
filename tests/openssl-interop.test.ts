@@ -15,7 +15,7 @@ const usable = probe.status === 0 && major >= 3;
 if (!usable) it.skip('tokens written by openssl ts -reply are read (needs OpenSSL 3)', () => {});
 
 let tmp = '';
-const at = (name: string) => join(tmp, name);
+const at = (name: string) => join(tmp, name).replaceAll('\\', '/'); // openssl config files read a backslash as an escape
 function run(args: string[], what: string): string {
   const r = spawnSync('openssl', args, { encoding: 'utf8', cwd: tmp });
   if (r.status !== 0) throw new Error(`openssl ${what} failed: ${r.stderr}`);

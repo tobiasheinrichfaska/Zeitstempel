@@ -13,7 +13,7 @@
 - [x] **Unterzeichner über `subjectKeyIdentifier` (SignerInfo Version 3)** — beide Formen gelesen, Version und Form müssen zusammenpassen (`unsupported-version`), Kandidatenwahl über den Hash des `signingCertificate`-Attributs, ein Zertifikat ohne die Erweiterung wird nie gefunden (`tests/ski-signer.test.ts`; Gegenprobe mit `openssl cms -verify` und einem von OpenSSL geschriebenen Token in `tests/openssl.test.ts`; noch kein echter Dienst, der so stempelt)
 - [x] **Merkle-Baum gegen veröffentlichte RFC-6962-Werte** — Wurzeln und Prüfpfade der acht Testblätter (`tests/batch-vectors.test.ts`)
 - [x] **Kern ohne Node-Importe** — Wächter-Test (`tests/coupling.test.ts`)
-- [x] **Läuft in einem Browser** — nur Headless-Chromium 157: Relay-Authentifizierung am 2026-11-24 per Prüfskript (nicht im Repo) geprüft: signierte Aufrufe, CORS-Preflight, Sammelbetrieb, Solo, vier Fixtures: 47 Prüfungen ohne Unterschied zu Node; Firefox und Safari nicht geprüft. Das eingecheckte `scripts/browser-check.mjs` ist die ältere Fassung ohne Anmeldung
+- [x] **Läuft in einem Browser** — nur Headless-Chromium 157, 57 Prüfungen in `scripts/browser-check.mjs` (Bibliothek, signierte Relay-Aufrufe, CORS-Preflight, Sammelbetrieb, Solo, vier Fixtures), kein Unterschied zu Node. Firefox und Safari nicht geprüft; der Client (`zeitstempel/client`) ist darin nicht enthalten
 
 ## Relay
 
@@ -30,6 +30,15 @@
 - [x] **Grenzen** — Körpergröße, Zähler, Fristen, Größe der Antwort
 - [x] **Echte Dienste** — `npm run probe -- --service freetsa` und `npm run spike` (von Hand, Netz nötig)
 - [ ] **Betrieb** — nicht ausgerollt, kein Image
+
+## Client und Beleg (`zeitstempel/client`)
+
+- [x] **Stempeln über das Relay** — `createRelayClient(...).stamp(hash)` signiert, sendet, prüft das Token mit der Vertrauensentscheidung des Aufrufers und liefert einen Beleg; `minGenTime` ist Pflicht-Frische (`tests/client.test.ts`, `tests/client-port.test.ts`)
+- [x] **Vertrauen je Dienst, erwartete Richtlinie** — Zuordnung `{ Dienst: PEM-Liste }`, `expectedPolicy` wird durchgereicht (`tests/client-trust.test.ts`)
+- [x] **Ausfall und Pause** — nächster Dienst bei Netzfehler, `Retry-After` (Sekunden oder Datum) hält die Pause über Aufrufe, kein Wechsel nach einem Token, das die Prüfung nicht besteht (`tests/client-audit8.test.ts`, `tests/client-audit11.test.ts`)
+- [x] **Fristen enden mit dem richtigen Grund** — Gesamtfrist und Abbruch des Aufrufers ergeben `timeout` bzw. `aborted`, auch während der Antwortkörper gelesen wird; kein Zuhörer und kein Zeitgeber bleibt zurück (`tests/client-audit11.test.ts`)
+- [x] **Uhrversatz** — der `Date`-Kopf eines `401` korrigiert höchstens einmal je Aufruf und kann die Frische nur verschärfen (`tests/client.test.ts`)
+- [x] **Beleg lesen, schreiben, prüfen** — `readEvidence`, `serializeEvidence`, `verifyEvidence` (Form, Hash, Token, Zeit, Richtlinie, Ablauf des Unterzeichners) (`tests/client-package.test.ts`, `tests/client-trust.test.ts`)
 
 | Path                                                                        | Impact                             | Audit Check                                                                                                         |
 | --------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- |

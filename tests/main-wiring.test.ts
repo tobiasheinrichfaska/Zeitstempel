@@ -333,7 +333,8 @@ describe('relay/main.ts as a process', () => {
     expect(await until(async () => (await p.probe(KEY_B)) === 401, 15_000)).toBe(true);
     expect(await p.probe(KEY_A)).toBe(400);
     p.child.kill('SIGTERM');
-    expect((await p.exited).code).toBe(0);
+    const end = await p.exited;
+    if (posix) expect(end.code).toBe(0); // Windows ends a SIGTERM hard, no handler runs
   }, 45_000);
 
   it('key file version 3: an empty list at the start warns clearly, a reload to revoked or to an empty list blocks within one look', async () => {
@@ -371,7 +372,8 @@ describe('relay/main.ts as a process', () => {
     writeFileSync(keysPath, text([e(KEY_A)]));
     expect(await until(async () => (await p.probe(KEY_A)) === 400, 15_000)).toBe(true);
     p.child.kill('SIGTERM');
-    expect((await p.exited).code).toBe(0);
+    const end = await p.exited;
+    if (posix) expect(end.code).toBe(0); // Windows ends a SIGTERM hard, no handler runs
   }, 90_000);
 
   it('the reload knows the service ids too: an unknown id in `services` makes the file invalid and the old set stays', async () => {
@@ -394,7 +396,8 @@ describe('relay/main.ts as a process', () => {
     writeFileSync(keysPath, text([e(KEY_A), e(KEY_B, { services: ['freetsa'] })]));
     expect(await until(async () => (await p.probe(KEY_B)) === 400, 15_000)).toBe(true);
     p.child.kill('SIGTERM');
-    expect((await p.exited).code).toBe(0);
+    const end = await p.exited;
+    if (posix) expect(end.code).toBe(0); // Windows ends a SIGTERM hard, no handler runs
   }, 45_000);
 
   it('readConfig: an empty list gives the warning, a services entry names only known service ids', () => {
@@ -533,18 +536,22 @@ describe('relay/main.ts as a process', () => {
     60_000,
   );
 
-  it('SIGTERM closes the relay (a waiting request gets 503 shutting-down) and the process ends with 0', async () => {
-    writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
-    const p = await startMain({ RELAY_BATCH_MS: '5000' });
-    const waiting = p.stampRequest(KEY_A); // opens a window of 5 s: nothing is stamped before the signal
-    await new Promise((r) => setTimeout(r, 600));
-    p.child.kill('SIGTERM');
-    const res = await waiting;
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'shutting-down' });
-    const end = await p.exited;
-    expect(end).toEqual({ code: 0, signal: null });
-  }, 20_000);
+  it.skipIf(!posix)(
+    'SIGTERM closes the relay (a waiting request gets 503 shutting-down) and the process ends with 0',
+    async () => {
+      writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
+      const p = await startMain({ RELAY_BATCH_MS: '5000' });
+      const waiting = p.stampRequest(KEY_A); // opens a window of 5 s: nothing is stamped before the signal
+      await new Promise((r) => setTimeout(r, 600));
+      p.child.kill('SIGTERM');
+      const res = await waiting;
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'shutting-down' });
+      const end = await p.exited;
+      expect(end).toEqual({ code: 0, signal: null });
+    },
+    20_000,
+  );
 
   it.skipIf(!posix)(
     'a key file that turns writable for group or others is warned about once, with path and mode only',
@@ -589,48 +596,62 @@ describe('relay/main.ts as a process', () => {
         'POST /v1/stamp/freetsa HTTP/1.1\r\nHost: x\r\nContent-Length: 32\r\n\r\nabc',
     };
     for (const [name, head] of Object.entries(halfRequests)) {
-      it(`SIGTERM with ${name} ends the process with 0 within the hard deadline`, async () => {
+      it.skipIf(!posix)(
+        `SIGTERM with ${name} ends the process with 0 within the hard deadline`,
+        async () => {
+          writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
+          const p = await startMain();
+          const sock = connect(p.port, '127.0.0.1');
+          sock.on('error', () => undefined);
+          await new Promise<void>((r) => sock.once('connect', () => r()));
+          sock.write(head);
+          await new Promise((r) => setTimeout(r, 300));
+          const t0 = Date.now();
+          p.child.kill('SIGTERM');
+          const end = await Promise.race([
+            p.exited,
+            new Promise<'hang'>((r) =>
+              setTimeout(() => r('hang'), RELAY_LIMITS.shutdownHardMs + 3000),
+            ),
+          ]);
+          sock.destroy();
+          expect(end).toEqual({ code: 0, signal: null });
+          expect(Date.now() - t0).toBeLessThan(RELAY_LIMITS.shutdownHardMs + 2000);
+        },
+        30_000,
+      );
+    }
+
+    it.skipIf(!posix)(
+      'restartAfter with half a request ends the process with 0 as well',
+      async () => {
         writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
         const p = await startMain();
         const sock = connect(p.port, '127.0.0.1');
         sock.on('error', () => undefined);
         await new Promise<void>((r) => sock.once('connect', () => r()));
-        sock.write(head);
-        await new Promise((r) => setTimeout(r, 300));
-        const t0 = Date.now();
-        p.child.kill('SIGTERM');
+        sock.write('GET /health HTTP/1.1\r\nHost: x\r\nX-A:');
+        // a restart time after the start that has passed at the next look of the watcher (every 5 s)
+        const restartAfter = Math.floor(Date.now() / 1000) + 1;
+        writeFileSync(
+          keysPath,
+          JSON.stringify({ version: 2, restartAfter, keys: [entry(KEY_A)] }),
+          {
+            mode: 0o600,
+          },
+        );
         const end = await Promise.race([
           p.exited,
           new Promise<'hang'>((r) =>
-            setTimeout(() => r('hang'), RELAY_LIMITS.shutdownHardMs + 3000),
+            setTimeout(() => r('hang'), 8000 + RELAY_LIMITS.shutdownHardMs),
           ),
         ]);
         sock.destroy();
         expect(end).toEqual({ code: 0, signal: null });
-        expect(Date.now() - t0).toBeLessThan(RELAY_LIMITS.shutdownHardMs + 2000);
-      }, 30_000);
-    }
-
-    it('restartAfter with half a request ends the process with 0 as well', async () => {
-      writeFileSync(keysPath, keyFile([KEY_A]), { mode: 0o600 });
-      const p = await startMain();
-      const sock = connect(p.port, '127.0.0.1');
-      sock.on('error', () => undefined);
-      await new Promise<void>((r) => sock.once('connect', () => r()));
-      sock.write('GET /health HTTP/1.1\r\nHost: x\r\nX-A:');
-      // a restart time after the start that has passed at the next look of the watcher (every 5 s)
-      const restartAfter = Math.floor(Date.now() / 1000) + 1;
-      writeFileSync(keysPath, JSON.stringify({ version: 2, restartAfter, keys: [entry(KEY_A)] }), {
-        mode: 0o600,
-      });
-      const end = await Promise.race([
-        p.exited,
-        new Promise<'hang'>((r) => setTimeout(() => r('hang'), 8000 + RELAY_LIMITS.shutdownHardMs)),
-      ]);
-      sock.destroy();
-      expect(end).toEqual({ code: 0, signal: null });
-      expect(p.out.some((l) => l.includes('restart-after'))).toBe(true);
-    }, 40_000);
+        expect(p.out.some((l) => l.includes('restart-after'))).toBe(true);
+      },
+      40_000,
+    );
   });
 });
 

@@ -12,7 +12,8 @@ function project(withTypescript: boolean): string {
   for (const name of ['scripts', 'src', 'package.json', 'tsconfig.json', 'tsconfig.build.json']) {
     cpSync(join(REPO, name), join(dir, name), { recursive: true });
   }
-  if (withTypescript) symlinkSync(join(REPO, 'node_modules'), join(dir, 'node_modules'), 'dir');
+  if (withTypescript)
+    symlinkSync(join(REPO, 'node_modules'), join(dir, 'node_modules'), 'junction');
   return dir;
 }
 

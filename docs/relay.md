@@ -938,7 +938,7 @@ bliebe ein gesperrter Schlüssel gültig). Das Lesen ist billig: die Datei ist h
   `keyFileCheckMs`, auch wenn Änderungszeit, Größe und Inode gleich geblieben sind); das ist der Weg, einen Schlüssel
   zu **sperren**. Auch eine geänderte Art (`solo`) und eine geänderte `services`-Liste gelten sofort für **neue** Anfragen (`403`). Eine schon angenommene, wartende
   Anfrage wird beim Stempeln noch einmal geprüft (siehe die Grenzen der Anmeldung, Widerruf eines Schlüssels: entfernt, gesperrt, abgelaufen, `services` ohne den Dienst, Solo ohne Art 2) und bekommt `401`
-  (auch bei geänderter `services`/`solo`, nicht `403`); ein schon laufender Aufruf beim Dienst wird fertig. Wird eine Kennung mit **anderem öffentlichen Schlüssel** neu eingetragen, gilt für die wartende Anfrage der neue Eintrag nicht anders als der alte: sie wird nicht erneut gegen die Signatur geprüft.
+  (auch bei geänderter `services`/`solo`, nicht `403`); ein schon laufender Aufruf beim Dienst wird fertig. Wird eine Kennung mit **anderem öffentlichen Schlüssel** neu eingetragen, gilt für die wartende Anfrage: sie wird beim Stempeln erneut gegen den neuen Schlüssel geprüft und bekommt `401`.
 - **Ungültige Datei** (kein JSON, Regelverstoß, halb geschrieben, **gelöscht oder unlesbar**): der **alte Satz bleibt aktiv**
   (auch bei einer gelöschten Datei: nicht „kein Schlüssel“, sondern der letzte gültige Satz),
   `keyReloadFailed` zählt, es wird nichts aus der Datei protokolliert. **Alle sperren** geht also nicht durch Löschen der

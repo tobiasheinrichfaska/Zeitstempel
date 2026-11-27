@@ -451,7 +451,11 @@ class Session {
     const timer = setTimeout(() => control.abort(), this.c.timeoutMs);
     try {
       const run = await this.run(hash, mode, order, control.signal, startedAt);
-      if (!run.ok && control.signal.aborted && run.reason === 'network-error') {
+      if (
+        !run.ok &&
+        control.signal.aborted &&
+        (run.reason === 'network-error' || run.reason === 'bad-response')
+      ) {
         return failure(cause);
       }
       return run;

@@ -4,6 +4,7 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net, { type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { toBase64Url } from '../src/index.ts';
 import { loadServices } from '../relay/load.ts';
 import { RELAY_LIMITS } from '../relay/limits.ts';
@@ -274,7 +275,7 @@ net.Server.prototype.listen = function (...args) {
   it('after the start the variable and its value are gone from process.env, and the relay did read it', async () => {
     const child = spawn(
       process.execPath,
-      ['--import', join(dir, 'probe.mjs'), join(dir, 'relay', 'main.ts')],
+      ['--import', pathToFileURL(join(dir, 'probe.mjs')).href, join(dir, 'relay', 'main.ts')],
       {
         cwd: dir,
         env: {
@@ -308,7 +309,7 @@ net.Server.prototype.listen = function (...args) {
   it('control: without the variable the same start ends with a config-error that names the variable', async () => {
     const child = spawn(
       process.execPath,
-      ['--import', join(dir, 'probe.mjs'), join(dir, 'relay', 'main.ts')],
+      ['--import', pathToFileURL(join(dir, 'probe.mjs')).href, join(dir, 'relay', 'main.ts')],
       {
         cwd: dir,
         env: {

@@ -5,7 +5,7 @@ der einer Datei) **spätestens zu einem bestimmten Zeitpunkt** existierte. Dazu 
 bei einem Zeitstempel-Dienst und prüft es.
 
 **Stand: 0.1.0, Entwurf, nicht auf npm, nicht von einem Menschen sicherheitsgeprüft.** Die Bibliothek ist unter
-Node 24 getestet; im Browser nur in **Headless-Chromium 157** geprüft, am 2026-11-24 einschließlich Relay-Anmeldung, CORS-Preflight, Sammelbetrieb, Solo-Stempel und den vier Fixtures (47 Prüfungen ohne Unterschied zu Node; das Prüfskript liegt nicht im Repo). **Firefox und Safari nicht geprüft.**
+Node 24 getestet; im Browser nur in **Headless-Chromium 157** geprüft, am 2026-11-24 einschließlich Relay-Anmeldung, CORS-Preflight, Sammelbetrieb, Solo-Stempel und den vier Fixtures (57 Prüfungen ohne Unterschied zu Node; `scripts/browser-check.mjs`). **Firefox und Safari nicht geprüft.**
 
 ## Bausteine
 

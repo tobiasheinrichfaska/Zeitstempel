@@ -38,7 +38,9 @@ export function isRelayAddress(value: unknown): value is string {
     const url = new URL(value);
     const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
     return (
-      (url.protocol === 'https:' || (url.protocol === 'http:' && local)) && url.username === ''
+      (url.protocol === 'https:' || (url.protocol === 'http:' && local)) &&
+      url.username === '' &&
+      url.password === ''
     );
   } catch {
     return false;

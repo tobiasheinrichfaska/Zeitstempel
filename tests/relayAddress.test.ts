@@ -22,6 +22,7 @@ describe('relay addresses', () => {
       'http://relay.example/x',
       'ftp://relay.example',
       'https://user@relay.example',
+      'https://:secret@relay.example',
       'https://relay.example/a b',
       'https://relay.example/\n',
       'not an address',
