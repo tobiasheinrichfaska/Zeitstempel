@@ -1,13 +1,13 @@
 # Weiterarbeit: Stand, Arbeitsweise, Roadmap (Übergabe für eine neue Sitzung)
 
-Stand: 2026-11-27, Entwicklungszweig `claude/confident-cori-19i12m`, letzter Stand `b694422`. Nichts ist veröffentlicht,
+Stand: 2026-11-27, Entwicklungszweig `claude/confident-cori-19i12m`, letzter Stand `2cac700`. Nichts ist veröffentlicht,
 getaggt oder ausgerollt (das entscheidet nur Tobias). Die Regeln, Grenzen und Entscheidungen des Codes stehen in
 `CLAUDE.md` (Abschnitt „Known Limitations“, ein Bullet je Welle/Audit); dieses Dokument sagt, **wie weitergearbeitet wird**
 und **was offen ist**. Geschäftliches (Anbieter, Kosten, Verträge, Pilot) steht im Begleitrepo, nicht hier.
 
 ## 1. Zustand in Zahlen
 
-- Prüfungen: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (71 Dateien, 2064 bestanden, 2 sichtbar
+- Prüfungen: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (74 Dateien, 2249 bestanden, 2 sichtbar
   übersprungen), `npm run build`. Alles grün ist die Bedingung für jeden Commit.
 - Browser: `node scripts/browser-check.mjs` (nach `npm run build`, Chromium + Playwright sind vorinstalliert): 87 Prüfungen
   (A und B: Bibliothek und Relay-Anmeldung, C: Client), rund 80 s, Exitcode 0/1/2. Firefox und Safari nie gelaufen. Der
@@ -30,7 +30,7 @@ Regeln für den Hauptagenten:
 2. **Widerlegung = erst ein fehlschlagender Test.** Jeder Befund wird mit einem Test nachgestellt, der vor der Behebung rot
    ist; lässt er sich nicht nachstellen, wird nichts geändert und das gemeldet. Neue Tests werden gegen den Mutanten geprüft
    (Mutation einbauen, Test muss rot werden, Mutation zurücknehmen).
-3. **Agenten committen nicht** und ändern `CLAUDE.md` nicht; sie liefern einen Satzvorschlag, der Hauptagent trägt ihn ein
+3. **Agenten committen nicht** (Ausnahme: arbeitet nur EIN Agent zur Zeit, committet er lokal, einzeln mit `git add <Datei>`, ohne Push; der Hauptagent prüft selbst und pusht) und ändern `CLAUDE.md` nicht; sie liefern einen Satzvorschlag, der Hauptagent trägt ihn ein
    (ganze Zeilen/neue Bullets, knapp). Nach jedem Block: `npx prettier --write CLAUDE.md` (Prettier bricht die Tabelle neu
    um, das ergibt große, aber harmlose Diffs).
 4. **Audits sind nur lesend** und arbeiten in einer Kopie (`cp -r` ohne `.git`, `node_modules` per Symlink) unter dem
@@ -64,7 +64,9 @@ Regeln für den Hauptagenten:
 Audit 8 (Relay: wartende Anfragen, Rückgaben, Replay-Cache; Client) → Audit 9 (Freigaben, `services`/Solo bei Wartenden) →
 Audit 10 (Kennung mit anderem öffentlichen Schlüssel) → Paket A/B/C (`/metrics`, Offline-CRL, Client im Browser) →
 Audit 11 (CRL) und 12 (`/metrics`) → `relay.gauges()` und Aufteilung von `relay.ts` → Audit 13 (verhaltensneutral:
-3500 Differenzläufe, 896 Startfehlerkombinationen). Keine offenen Befunde. Die Berichte selbst lagen im Scratchpad der
+3500 Differenzläufe, 896 Startfehlerkombinationen) → Einzelbetrieb-Zähler monoton, Name Constraints (Audit 14: 600 Zufallskonstellationen
+gegen OpenSSL), Erneuerungskette (Audit 15), RFC-4998-Record (Audit 16). Keine offenen Befunde; bekannte dokumentierte Lücken:
+Name Constraints N4 (Kette endet am ersten Anker), `crls` je Glied nur zur Prüfzeit des Glieds. Die Berichte selbst lagen im Scratchpad der
 Sitzung und sind **nicht** gesichert; was dauerhaft zählt, steht in `CLAUDE.md`, `docs/grenzen.md` und den Tests.
 
 ## 5. Offene Technik (Reihenfolge nach Nutzen)
