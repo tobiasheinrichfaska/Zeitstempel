@@ -59,6 +59,31 @@ Der Auftrag verlangt, **nach jeder Runde Tobias zu fragen, ob eine weitere läuf
 - Relay nicht ausgerollt, kein Image.
 - Firefox und Safari ungeprüft: nur Tobias mit echtem Gerät.
 
+**E. Relay auf Bunny Magic Containers (Entscheidung Tobias 2026-11-27: Instanz A zuerst, Instanz B später)**
+
+Stand der Recherche (Bunny-Doku, nur oberflächlich gelesen, nicht ausprobiert):
+
+- Magic Containers haben **persistente Volumes** (Name, Mount-Pfad, Größe; das Verzeichnis gehört `root`; Volumes sind regional, ohne Backup) und **Umgebungsvariablen** (per API setzbar, ein PUT ersetzt alle). Ein Feature, das eine Konfigurationsdatei oder ein Secret als Datei einhängt, wurde **nicht gefunden**. `RELAY_KEYS_FILE` verlangt aber eine Datei.
+- Quellen: <https://docs.bunny.net/magic-containers/persistent-volumes>, <https://docs.bunny.net/magic-containers/environment-variables>.
+
+Offene Entscheidung (Tobias), bevor etwas gebaut wird: **Wie kommen die öffentlichen Schlüssel ins Relay?**
+
+1. Neue Option, die die Schlüssel aus einer Umgebungsvariable liest (Empfehlung). Das ist eine Änderung am Relay: strikter Leser wie bei der Datei, derselbe Versions- und Regelsatz, derselbe Test-Satz; ein Widerruf wirkt dann durch Neustart statt durch die Neu-Lesung alle 5 s, und `docs/betrieb.md` (Notfall, Rotation) muss das sagen.
+2. Die Datei ins Image einbacken (nur öffentliche Schlüssel; jeder Wechsel braucht Bau und Rollout).
+3. Volume plus ein Befüllschritt (kein sauberer Weg bekannt).
+
+Plan, wenn Tobias zugestimmt hat:
+
+- **Image:** eine GitHub-Action baut aus `deploy/Dockerfile` das Image und legt es auf `ghcr.io` ab. Das Repo ist öffentlich, im Image ist kein Geheimnis: das Image kann öffentlich liegen, dann braucht Bunny kein Pull-Passwort. Diese Action gibt es noch nicht. (Ein Deploy-Schlüssel für GitHub ist nicht nötig: Bunny zieht ein Image, keinen Quelltext.)
+- **Ausrollen:** nicht über GitHub Actions (die Minuten des privaten Ausroll-Repos sind verbraucht), sondern von Tobias' PC aus mit einem Skript nach dem Vorbild der bestehenden PC-Rollouts; es setzt über die Bunny-API den neuen Image-Tag. Das Skript liegt auf dem PC außerhalb dieses Repos und wird erst nach Tobias' Ja angelegt. Der Bunny-API-Schlüssel gilt für das ganze Konto und liegt nur im DPAPI-Speicher auf dem PC; weder lesen noch ausgeben noch in ein öffentliches Repo oder einen öffentlichen Workflow legen.
+- **Instanz A** (zuerst): ein Konto, eine Instanz, eine Region. `RELAY_SERVICES=freetsa`, eigene `RELAY_AUDIENCE`, eigene `RELAY_ORIGINS`, eigene Schlüssel. Danach der Erstlauf von Hand (`docs/betrieb.md`).
+- **Instanz B** (später, anderes Konto): dasselbe Image, andere Konfiguration (eigene Audience, Herkünfte, Schlüssel, Pull-Zone). **Nicht anfangen**, bevor Tobias geklärt hat, ob freie, nicht qualifizierte Dienste mit ungeklärten Bedingungen für diesen Zweck überhaupt eingesetzt werden dürfen. Dieser Punkt gilt unabhängig von der Zahl der Instanzen.
+- **Mehrere Apps an einem Relay** geht (mehrere Herkünfte, je App ein Schlüssel, `RELAY_KEY_SHARE=50`), ist aber für Apps mit Bezug zu Mandantendaten nicht vorgesehen.
+- **TLS und Limit je Adresse:** TLS macht Bunny. Das Limit je Adresse (5 je Minute, Burst 3) kennt das Relay nicht; es müsste an der Pull-Zone entstehen. Ob und wie das bei Bunny geht, ist **nicht geprüft**. In `docs/betrieb.md` eine eigene Bunny-Fassung der Prüfliste schreiben, ehrlich mit „nicht geprüft“.
+- **Dienstbudget:** FreeTSA zählt laut `docs/dienste.md` je IP. Teilen sich Magic Containers verschiedener Kunden eine ausgehende Adresse, kann FreeTSA ablehnen; ob das so ist, ist unbekannt. Mindestens einen zweiten Dienst in `RELAY_SERVICES` aufnehmen, damit der Client wechseln kann, oder eine feste ausgehende Adresse erfragen.
+- **Zeit:** die Uhr des Containers lässt sich nicht prüfen oder steuern; das Relay verlangt einen laufend abgeglichenen Takt. Im Erstlauf `Date` im Antwortkopf mit der Gegenstelle vergleichen.
+- **Was nicht ins öffentliche Repo darf:** Konten, Konto-Kennungen, Adressen, Betreiber- und Hosterangaben, Auftragsverarbeitung. Das gehört in das nicht öffentliche Begleitrepo. Im öffentlichen Repo nur „Instanz A/B“.
+
 ## 5. Wie du arbeitest
 
 - Kleine Agenten mit kleinen Aufgaben, der Haupt-Chat bleibt schlank: nur Ergebnisse und Entscheidungen.
@@ -70,4 +95,6 @@ Der Auftrag verlangt, **nach jeder Runde Tobias zu fragen, ob eine weitere läuf
 ## 6. Was Tobias noch tun muss
 
 - Dieses Projekt in der Liste der in die Cloud umgestellten Projekte im Workspace-`CLAUDE.md` eintragen (Abschnitt „Division of work“), damit die lokalen Sessions am PC hier keinen Code mehr ändern.
-- Die beiden Audit-Commits pushen lassen (oder freigeben); ohne Push sieht die Cloud sie nicht.
+- Die Audit-Commits pushen lassen (oder freigeben); ohne Push sieht die Cloud sie nicht.
+- Die Frage zu E entscheiden (wie kommen die Schlüssel ins Relay), das PC-Rollout-Skript freigeben und den Bunny-Schlüssel selbst in den DPAPI-Speicher legen.
+- Die Frage klären lassen, ob freie, nicht qualifizierte Dienste für Instanz B zulässig sind (rechtlich, nicht technisch).
