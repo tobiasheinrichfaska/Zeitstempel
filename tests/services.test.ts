@@ -54,6 +54,8 @@ describe('readServices refuses', () => {
       'https://user:pw@x.example/',
       'https://x.example/tsr?a=b',
       'https://x.example/#f',
+      'https://x.example/tsr?', // an empty query is still a query: href keeps the ?
+      'https://x.example/tsr#',
       'not a url',
     ]) {
       expect(bad((d) => (d.services[0]!.url = url)).ok, url).toBe(false);

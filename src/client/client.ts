@@ -424,7 +424,7 @@ class Session {
     const control = new AbortController();
     let cause: 'aborted' | 'timeout' = 'timeout';
     const onAbort = () => {
-      cause = 'aborted';
+      if (!control.signal.aborted) cause = 'aborted'; // a deadline that fired first stays the cause
       control.abort();
     };
     let startedAt: number;
@@ -454,7 +454,7 @@ class Session {
       if (
         !run.ok &&
         control.signal.aborted &&
-        (run.reason === 'network-error' || run.reason === 'bad-response')
+        (run.reason === 'network-error' || (run.reason === 'bad-response' && run.detail === 'json'))
       ) {
         return failure(cause);
       }

@@ -188,6 +188,8 @@ function readServicesUnchecked(data: unknown): Result<Service[]> {
       url.username ||
       url.password ||
       url.search ||
+      url.href.includes('?') || // an empty query is dropped from .search but kept in .href
+      url.href.includes('#') ||
       url.hash
     ) {
       return fail('bad-services');

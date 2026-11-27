@@ -154,4 +154,26 @@ describe('audit 2026-11-25, low findings', () => {
     );
     expect(failure(await client.stamp(hash))).toMatchObject({ reason: 'timeout' });
   });
+
+  it('a caller abort after the total deadline already fired keeps the first cause: timeout', async () => {
+    const user = new AbortController();
+    const client = make(
+      async (_url, init) => ({
+        status: 200,
+        headers: { get: () => null },
+        text: () =>
+          new Promise<string>((_resolve, reject) => {
+            // the body read ends a little after the deadline fired, so the caller can abort in between
+            init.signal.addEventListener('abort', () =>
+              setTimeout(() => reject(new Error('aborted')), 300),
+            );
+          }),
+      }),
+      { maxAttempts: 1, attemptTimeoutMs: 5000, timeoutMs: 1000 },
+    );
+    setTimeout(() => user.abort(), 1150);
+    expect(failure(await client.stamp(hash, { signal: user.signal }))).toMatchObject({
+      reason: 'timeout',
+    });
+  });
 });
