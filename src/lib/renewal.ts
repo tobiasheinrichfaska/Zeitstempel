@@ -1,4 +1,4 @@
-import { concat, copyBytes } from './bytes.ts';
+import { copyBytes } from './bytes.ts';
 import { verifyBatchedTimestamp, type BatchProof } from './batch.ts';
 import { DER_LIMITS } from './der.ts';
 import { ReaderError, fail, ok, type Result } from './result.ts';
@@ -14,7 +14,8 @@ import {
 /**
  * The renewal chain: a time stamp loses weight when the signer certificate expires or its key leaks, so BEFORE that
  * the whole evidence (the hash and every token so far) is stamped again. Link 0 stamps the hash; link i > 0 stamps
- * `renewalImprint` of the chain up to link i - 1. The chain then says: "this hash existed at the latest at the
+ * `renewalImprint` of the chain up to link i - 1 (SHA-256 of the token of link i - 1, the binding of RFC 4998, so the
+ * chain can be exported as an evidence record, `src/lib/ers.ts`). The chain then says: "this hash existed at the latest at the
  * time of link 0, and that stamp existed at the latest at the time of link 1, ..." (docs/client.md, docs/grenzen.md).
  */
 
@@ -63,20 +64,19 @@ export interface VerifiedRenewalChain {
   weakestLink: { index: number; marginMs: number } | null;
 }
 
-const TAG = new TextEncoder().encode('zeitstempel-renewal-v1\n');
 const LINK_FIELDS = ['token', 'batch'];
 const INPUT_FIELDS = ['hash', 'links', 'trust', 'options'];
 
 const bad = (detail: string) => fail('bad-renewal', detail);
 
-async function sha256(data: Uint8Array): Promise<Uint8Array | null> {
+export async function sha256(data: Uint8Array): Promise<Uint8Array | null> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) return null;
   return new Uint8Array(await subtle.digest('SHA-256', data as BufferSource));
 }
 
 /** The own fields of a plain object through their descriptors (a getter is never run), else null. */
-function fieldsOf(
+export function fieldsOf(
   value: unknown,
   allowed: readonly string[],
   required: readonly string[],
@@ -101,13 +101,13 @@ function fieldsOf(
   }
 }
 
-interface ReadLink {
+export interface ReadLink {
   token: Uint8Array;
   batch: unknown;
 }
 
 /** The links by length and index (never the iterator), 1 to `max`, each a copy; a bad one is `bad-renewal`. */
-function readLinks(value: unknown, max: number): Result<ReadLink[]> {
+export function readLinks(value: unknown, max: number): Result<ReadLink[]> {
   let count: unknown;
   try {
     if (!Array.isArray(value)) return bad('links');
@@ -136,12 +136,10 @@ function readLinks(value: unknown, max: number): Result<ReadLink[]> {
 }
 
 /** What link j must stamp: `[hash, imprint 1, imprint 2, ...]` (one more entry than there are tokens). */
-async function expectedHashes(hash: Uint8Array, links: readonly ReadLink[]) {
+export async function expectedHashes(hash: Uint8Array, links: readonly ReadLink[]) {
   const out: Uint8Array[] = [hash];
   for (const link of links) {
-    const tokenHash = await sha256(link.token);
-    if (tokenHash === null) return null;
-    const next = await sha256(concat(TAG, tokenHash, out[out.length - 1]!));
+    const next = await sha256(link.token);
     if (next === null) return null;
     out.push(next);
   }
@@ -149,11 +147,13 @@ async function expectedHashes(hash: Uint8Array, links: readonly ReadLink[]) {
 }
 
 /**
- * The value the NEXT link of the chain must stamp: `SHA-256("zeitstempel-renewal-v1\n" || SHA-256(token of the
- * last link) || state)`, where `state` is the hash for the first link and, after that, the imprint the last link
- * stamped. Every imprint therefore binds the original hash, every token before it and its own predecessor
- * (fixed lengths, nothing to parse). `links` are the stamps so far (1 to 63: a chain has at most 64 links); the
- * receipt of a collecting relay is not part of the imprint (the token's tree root fixes it). Never throws.
+ * The value the NEXT link of the chain must stamp: the SHA-256 of the DER of the token of the last link (RFC 4998
+ * section 5.2, time stamp renewal: "the content of the timeStamp field of the old Archive Timestamp has to be
+ * hashed"; the token is the ContentInfo that field holds). The hash and every token before it are bound
+ * transitively: the last token signs its own imprint, which is the hash of the token before it, down to the hash
+ * (nothing to parse, nothing of our own). `hash` is checked (32 bytes) but is not part of the value. `links` are the stamps so far
+ * (1 to 63: a chain has at most 64 links); the receipt of a collecting relay is not part of the imprint (the token's
+ * tree root fixes it). Never throws.
  */
 export async function renewalImprint(chain: RenewalChain): Promise<Result<Uint8Array>> {
   try {
@@ -173,7 +173,7 @@ export async function renewalImprint(chain: RenewalChain): Promise<Result<Uint8A
 
 /**
  * Checks a renewal chain: link 0 is a token over `hash`, link i > 0 a token over `renewalImprint` of the links
- * before it (a link that binds another predecessor, a reordered, doubled or missing link is `imprint-mismatch`).
+ * before it (SHA-256 of the token before it, RFC 4998 section 5.2) (a link that binds another predecessor, a reordered, doubled or missing link is `imprint-mismatch`).
  * Every link goes through `verifyTimestampToken` (`verifyBatchedTimestamp` when it carries `batch`) with `at` =
  * the time of the NEXT link, so the certificates count at the moment the stamp was covered by a newer one; for
  * the last link `at` is `options.at`, else `options.now`, else none. The times must not fall (`bad-renewal`); a

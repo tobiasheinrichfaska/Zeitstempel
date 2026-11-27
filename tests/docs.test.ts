@@ -74,6 +74,9 @@ const REASONS: Record<lib.Reason, true> = {
   revoked: true,
   'bad-renewal': true,
   'renewal-too-late': true,
+  'bad-evidence-record': true,
+  'ers-unsupported': true,
+  'export-unsupported': true,
 };
 
 describe('docs against the code', () => {

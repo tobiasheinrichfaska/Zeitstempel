@@ -30,52 +30,42 @@ const verify = (
   });
 
 describe('renewalImprint', () => {
-  const enc = new TextEncoder();
-  const tag = enc.encode('zeitstempel-renewal-v1\n');
   const sha256 = (...p: Uint8Array[]) => {
     const h = createHash('sha256');
     for (const x of p) h.update(x);
     return new Uint8Array(h.digest());
   };
 
-  it('is SHA-256 of the tag, the hash of the last token and the state (fixed known answer)', async () => {
+  it('is SHA-256 of the DER of the last token (RFC 4998 section 5.2; fixed known answer)', async () => {
     const hash = new Uint8Array(32).fill(7);
     const t0 = Uint8Array.of(1, 2, 3);
     const r = await renewalImprint({ hash, links: [{ token: t0 }] });
     expect(r.ok && Buffer.from(r.value).toString('hex')).toBe(
-      Buffer.from(sha256(tag, sha256(t0), hash)).toString('hex'),
+      Buffer.from(sha256(t0)).toString('hex'),
     );
-    // pinned bytes: a change of the tag, the order or the state breaks this
+    // pinned bytes: a change of the algorithm or of what is hashed breaks this
     expect(r.ok && Buffer.from(r.value).toString('hex')).toBe(
-      '55d7779de7959a5710602096446610f22a0a736b34eaf08458956bcbc7f66057',
+      '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
     );
   });
-  it('the next imprint also binds the one before (the state) and the second token', async () => {
+  it('the next imprint is the hash of the second token alone (the first is bound through it)', async () => {
     const hash = new Uint8Array(32).fill(7);
     const t0 = Uint8Array.of(1, 2, 3);
     const t1 = Uint8Array.of(4, 5, 6);
-    const a = await renewalImprint({ hash, links: [{ token: t0 }] });
     const b = await renewalImprint({ hash, links: [{ token: t0 }, { token: t1 }] });
-    expect(a.ok && b.ok).toBe(true);
-    if (!a.ok || !b.ok) return;
-    expect(Buffer.from(b.value)).toEqual(Buffer.from(sha256(tag, sha256(t1), a.value)));
+    expect(b.ok && Buffer.from(b.value)).toEqual(Buffer.from(sha256(t1)));
   });
-  it('every input changes the result', async () => {
+  it('every token changes the result; the hash is checked but is not part of the value', async () => {
     const hash = new Uint8Array(32).fill(7);
     const base = await renewalImprint({ hash, links: [{ token: Uint8Array.of(1) }] });
-    const other = [
-      await renewalImprint({
-        hash: new Uint8Array(32).fill(8),
-        links: [{ token: Uint8Array.of(1) }],
-      }),
-      await renewalImprint({ hash, links: [{ token: Uint8Array.of(2) }] }),
-      await renewalImprint({
-        hash,
-        links: [{ token: Uint8Array.of(1) }, { token: Uint8Array.of(1) }],
-      }),
-    ];
+    const other = [await renewalImprint({ hash, links: [{ token: Uint8Array.of(2) }] })];
     for (const o of other)
       expect(o.ok && base.ok && Buffer.compare(o.value, base.value)).not.toBe(0);
+    const again = await renewalImprint({
+      hash: new Uint8Array(32).fill(8),
+      links: [{ token: Uint8Array.of(1) }],
+    });
+    expect(again).toEqual(base);
   });
   it('a batch receipt is not part of the imprint (the root fixes it)', async () => {
     const hash = new Uint8Array(32).fill(7);

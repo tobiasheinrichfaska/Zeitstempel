@@ -213,13 +213,17 @@ Ein Beleg verliert Beweiskraft, wenn das Zeitstempel-Zertifikat abläuft oder se
 `client.renew(beleg)` stempelt dazu nicht den Hash, sondern `renewalImprint` (Bibliothek, `docs/data-model.html`):
 
 ```
-imprint(i) = SHA-256( "zeitstempel-renewal-v1\n" ‖ SHA-256(Token des Glieds i-1) ‖ Stand(i-1) )
-Stand(0) = der gestempelte Hash,  Stand(i) = imprint(i)
+imprint(i) = SHA-256( DER des Tokens des Glieds i-1 )        für i > 0;   Glied 0 stempelt den Hash selbst
 ```
 
-Glied 0 ist der ursprüngliche Stempel über den Hash, Glied i > 0 stempelt `imprint(i)`. Jeder Wert bindet damit den Hash, **alle** Token davor und
-seinen unmittelbaren Vorgänger (feste Längen, nichts wird ausgelegt). Die Kette sagt: „dieser Hash existierte spätestens zu T0, und der Stempel
-T0 existierte spätestens zu T1, und …“. Der Dienst sieht nur einen Hash, wie immer.
+Das ist die Bindung von **RFC 4998 Abschnitt 5.2** (Zeitstempel-Erneuerung: „the content of the timeStamp field of the old Archive
+Timestamp has to be hashed and timestamped by a new Archive Timestamp“; das Token ist die `ContentInfo`, die dieses Feld hält). Glied 0 ist der
+ursprüngliche Stempel über den Hash, Glied i > 0 stempelt `imprint(i)`. Jeder Wert bindet den Hash und **alle** früheren Token **mittelbar**: das Token
+des Glieds i-1 trägt (signiert) seinen eigenen Abdruck, und der ist wieder der Hash des Tokens davor, bis hinunter zum Hash. Die Kette sagt: „dieser Hash
+existierte spätestens zu T0, und der Stempel T0 existierte spätestens zu T1, und …“. Der Dienst sieht nur einen Hash, wie immer. _Vorgänger:_ Der
+erste Entwurf stempelte `SHA-256("zeitstempel-renewal-v1\n" ‖ SHA-256(Token) ‖ Stand)`; er ist vor jeder Veröffentlichung auf die Bindung von RFC 4998
+umgestellt worden (nichts war getaggt oder gedruckt), damit die Kette als Evidence Record ausgegeben werden kann (Abschnitt „ERS-Export“).
+Die Bindung an den Hash und die früheren Token ging dabei nicht verloren, sie ist nur mittelbar statt unmittelbar.
 
 ```ts
 const erneuert = await client.renew(beleg); // beleg: Objekt oder Text; optionen wie bei stamp (mode, signal, service)
@@ -278,8 +282,80 @@ aus, hängt nicht die ganze Kette daran. Die Kette wird nicht von selbst erneuer
   verschiedenen Richtlinien eine Liste übergeben).
 - Der Beleg eines Baumstempels (`batch`) gehört nicht in den Wert der nächsten Erneuerung: die Wurzel im Token legt ihn fest.
 - Der Beleg wächst mit jedem Glied (ein Token mit Zertifikaten hat rund 5 bis 8 KB); der Text ist auf 500000 Zeichen begrenzt, das reicht für etwa 50 Glieder.
-- Kein rechtlicher Wert: die freien Dienste sind nicht qualifiziert (`docs/dienste.md`), eine Kette macht daraus keinen qualifizierten Zeitstempel und ist kein Evidence Record nach RFC 4998 / 6283 (der Export als solcher ist offen, `docs/weiterarbeit.md`).
+- Kein rechtlicher Wert: die freien Dienste sind nicht qualifiziert (`docs/dienste.md`), eine Kette macht daraus keinen qualifizierten Zeitstempel. Als Evidence Record nach RFC 4998 lässt sie sich ausgeben (Abschnitt „ERS-Export“, mit Einschränkungen), ein Evidence Record nach RFC 6283 (XML) ist es nicht.
 - Nur unter Node gegen ein echtes Relay mit Stub-Dienst und gegen aufgezeichnete Token getestet, einzelne Glieder gegen `openssl ts -verify -attime`; **nicht** im Browser (`scripts/browser-check.mjs` kennt `renew` noch nicht) und mit keinem echten Dienst.
+
+## ERS-Export: der Beleg als Evidence Record (RFC 4998)
+
+Ein **Evidence Record** (ERS, RFC 4998, ASN.1 DER) ist das Austauschformat der Langzeitarchivierung (LTANS): `EvidenceRecord ::= SEQUENCE { version, digestAlgorithms,
+cryptoInfos [0] OPTIONAL, encryptionInfo [1] OPTIONAL, archiveTimeStampSequence }`, darin je Hash-Algorithmus eine `ArchiveTimeStampChain`, darin je
+Zeitstempel ein `ArchiveTimeStamp { digestAlgorithm [0] OPTIONAL, attributes [1] OPTIONAL, reducedHashtree [2] OPTIONAL, timeStamp ContentInfo }`. Die Bibliothek
+kann die Erneuerungskette so ausgeben und einen so geschriebenen Record lesen und prüfen. Sie macht **nicht** alles, was der RFC beschreibt; der Umfang ist
+bewusst klein:
+
+```ts
+import { exportEvidenceRecord, readEvidenceRecord, verifyEvidenceRecord } from 'zeitstempel';
+import { serializeEvidenceRecord } from 'zeitstempel/client';
+
+const bytes = await serializeEvidenceRecord(beleg); // Beleg (Objekt oder Text), auch mit `renewals` -> DER-Bytes
+// oder von Hand: await exportEvidenceRecord({ hash, links: [{ token }, { token }, ...] })
+if (!bytes.ok) throw new Error(bytes.reason);
+const r = await verifyEvidenceRecord({
+  bytes: bytes.value,
+  hash,
+  trust: [ankerPem],
+  options: { minGenTime },
+});
+const gelesen = readEvidenceRecord(bytes.value); // { version: 1, digestAlgorithm: 'sha256', tokens: Uint8Array[] }
+```
+
+**Was geschrieben wird.** Version 1, `digestAlgorithms` = SHA-256 (mit `NULL`-Parameter wie in der RFC-3161-Anfrage), **eine** `ArchiveTimeStampChain` mit **einem**
+`ArchiveTimeStamp` je Glied, jeder mit `[0]` SHA-256, **ohne** `attributes` und **ohne** `reducedHashtree`; `timeStamp` ist das Token (die `ContentInfo`) Byte für Byte. Der
+erste `ArchiveTimeStamp` stempelt den Hash des Datenobjekts selbst (RFC 4998 Abschnitt 4.2: ohne Baum ist es „simply an ordinary timestamp“), jeder weitere den
+SHA-256 des `timeStamp` des vorigen (Abschnitt 5.2, Zeitstempel-Erneuerung, „Timestamp Renewal“; die Folge gehört in dieselbe Kette). Das ist **dieselbe Bindung wie `renewalImprint`**: eine
+Erneuerungskette der Bibliothek ist ohne Umrechnung ein gültiger Evidence Record, und `verifyEvidenceRecord` ist `verifyRenewalChain` über die gelesenen Token
+(gleiches Ergebnis, gleiche Fehlercodes, `detail` `link i`). Der Export prüft vorher, dass jedes Glied ein lesbares Token über SHA-256 ist und den
+richtigen Wert stempelt (`imprint-mismatch`); Signaturen und Ketten prüft erst `verifyEvidenceRecord` mit den Ankern des Aufrufers.
+
+**Was gelesen wird (`readEvidenceRecord`).** Nur DER (BER, unbestimmte Länge, eine gelogene oder nicht kürzeste Länge, Anhang, Tiefe über 24, mehr als 524288 Byte: die Codes des DER-Lesers),
+das Schema des RFC im Umfang oben, jedes Feld einmal und in der Reihenfolge des ASN.1-Textes: andere Version als 1 `unsupported-version`, anderer Algorithmus (in der
+Liste, im `[0]` oder im Token) `unsupported-hash`, jede andere Form `bad-evidence-record` (`detail` nennt die Stelle: leere Folge oder Kette, ein Algorithmus zu viel oder doppelt, ein
+Element zu viel oder in falscher Reihenfolge, ein Parameter, der nicht `NULL` ist). Gültige Formen **außerhalb** des Umfangs sind `ers-unsupported`: ein `reducedHashtree`, `attributes`, `cryptoInfos`,
+`encryptionInfo` oder **mehr als eine Kette**. Jedes `timeStamp` muss ein lesbares TimeStampToken über SHA-256 sein; 1 bis 64 `ArchiveTimeStamp`, mehr ist `too-large`.
+Der Algorithmus darf mit oder ohne `NULL` geschrieben sein, das `[0]` darf fehlen (dann gilt der des Tokens, RFC 4998 Abschnitt 4.1).
+
+**Entscheidung 1: Sammelbetrieb-Belege werden nicht exportiert (`export-unsupported`).** Der RFC bildet viele Datenobjekte über den `reducedHashtree` ab, aber **nicht** unseren Baum:
+
+- _Anderer Knoten-Hash._ RFC 4998 Abschnitt 4.2/4.3 hasht `H(sortierte Verkettung der Kinder)` (aufsteigend nach Bytes, ohne Vorsilbe, ein einzelner Wert bleibt
+  unverändert). Der Baum des Relays ist der von RFC 9162/6962: `H(0x01 ‖ links ‖ rechts)` an **fester Stelle** (links/rechts nach Lage im Baum), Blatt `H(0x00 ‖ Salz ‖ Hash)`. Ein Prüfer nach RFC 4998 rechnet
+  mit der Sortierung und ohne Vorsilben und kommt auf eine **andere Wurzel**; die `PartialHashtree` (`SEQUENCE OF OCTET STRING`, nur sortierte Hashes, **ohne** Angabe von links
+  oder rechts) kennt die Lage nicht, die wir zum Nachrechnen brauchen.
+- _Anderer gestempelter Wert._ Das Token deckt nicht die Wurzel, sondern `SHA-256("zeitstempel-batch-v1\n" ‖ uint32be(Blattzahl) ‖ Wurzel)` (`docs/relay.md`). Nach RFC 4998 Abschnitt 4.3 Schritt 4 muss
+  die berechnete Wurzel gleich dem `hashedMessage` des Tokens sein; ein solcher Wert lässt sich in der Form nicht ausdrücken.
+- _Blendung._ Das Blatt trägt ein Salz, das der Beleg in `batch.salt` liefert; ein `ArchiveTimeStamp` hat dafür kein Feld (die Hashes der Liste sind die einzigen Daten).
+
+Man könnte den Baum **ändern** (sortiert, ohne Vorsilben, das Token direkt auf der Wurzel), aber das gäbe die Gründe auf, aus denen er so gebaut ist (feste Lage für den Pfad, Vorsilben
+gegen Verwechslung von Blatt und Knoten, die Blendung, damit der Dienst nie einen einzelnen Hash sieht); das ist eine andere Entscheidung als ein Export und hier **nicht** getroffen. Ein Beleg mit `batch` in irgendeinem Glied
+(auch in einer Erneuerung) ist daher `export-unsupported` (`detail` `link i batch`); wer einen Evidence Record braucht, stempelt im Einzelbetrieb oder mit `mode: 'solo'` (Schlüsselart 2). Ein Record, den ein anderes
+Werkzeug mit `reducedHashtree` schrieb, ist `ers-unsupported` (nicht „gelesen und teilweise geprüft“).
+
+**Entscheidung 2: die Bindung der Erneuerung ist die des RFC (`renewalImprint` umgestellt).** RFC 4998 Abschnitt 5.2 verlangt für die Zeitstempel-Erneuerung den Hash des
+`timeStamp` des alten `ArchiveTimeStamp`; der **erste Entwurf** (`SHA-256(Vorsilbe ‖ SHA-256(Token) ‖ Stand)`) war davon verschieden und hätte nur mit Umrechnung (oder gar nicht: ein Prüfer des RFC kennt
+die Vorsilbe nicht) exportiert werden können. Da das Format nirgends veröffentlicht oder getaggt war, wurde die Bindung **umgestellt** (Tests und Doku mit): ein neuer Wert ist `SHA-256(Token des Vorgängers)`. Der Wortlaut
+„Hash des Datenobjekts **plus** Hash des alten Zeitstempels“ gehört **nicht** zur Zeitstempel-Erneuerung, sondern zur **Hash-Erneuerung** (Abschnitt 5.2, zweiter Fall: neuer Hash-Algorithmus, **neue Kette** mit `H(h(i) ‖ H(ArchiveTimeStampSequence))`); die ist **nicht**
+gebaut (nur SHA-256, nur eine Kette): ein Record mit mehreren Ketten ist `ers-unsupported`.
+
+**Kein Rückweg.** Ein Record trägt weder `service` noch `receivedAtMs` noch die wiederholten Angaben (`genTime`, `policy`, `signerNotAfter` lassen sich aus den Token neu
+bilden, die ersten beiden nicht). Es gibt deshalb **kein** `evidenceRecordToEvidence`; der Beleg bleibt die Quelle, der Record ist ein Ausgabeformat für Werkzeuge, die RFC 4998 lesen. Und er enthält
+**nicht den Hash**: das Datenobjekt (sein Hash) kommt wie im RFC von außen (`verifyEvidenceRecord({ hash })`).
+
+**Gegenprobe.** OpenSSL kennt kein ERS. Geprüft wird (`tests/ers.test.ts`): die Struktur mit `openssl asn1parse` (DER ohne Fehler, die Felder des RFC an ihrer Stelle, `[0]` je Stempel, kein `[1]`
+oder `[2]`), **jedes** Token, das ein eigener Referenz-Leser aus dem Record schneidet, mit `openssl ts -verify -attime` gegen den Wert des RFC (`openssl dgst -sha256` des vorigen Tokens), und ein
+**handgeschriebener Referenz-Leser und -Schreiber** (`tests/ers-reference.ts`, aus dem ASN.1-Text der RFC, ohne Code aus `src/lib`), damit nicht nur der eigene Leser den eigenen Schreiber prüft.
+Mit einem **fremden** ERS-Werkzeug (Bouncy Castle, `ers-tools`, einer LTA-Software) wurde **nicht** geprüft: ob es unseren Record liest, ist offen.
+
+**Grenzen.** Kein rechtlicher Wert (freie Dienste, `docs/dienste.md`); nur Einzelstempel; keine Hash-Erneuerung (SHA-256 bleibt, solange es sicher ist; ein anderer Algorithmus braucht eine neue Fassung dieses Teils); kein XML-Format (RFC 6283); ein Record wächst mit jedem Glied (bis
+524288 Byte); die Prüfung ist die der Kette (`docs/grenzen.md` „Langzeitaussage“), nicht die Archivrichtlinie eines LTA.
 
 ## Failover
 

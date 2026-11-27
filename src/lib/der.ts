@@ -85,18 +85,18 @@ function readOne(buf: Uint8Array, pos: number, end: number): { node: Node; next:
  * through the iterator. A `Uint8Array` of another realm is fine; anything else (another typed array such as `Uint16Array`, a proxy, an
  * array, a string) is `malformed`.
  */
-export function ownBytes(bytes: unknown): Uint8Array {
+export function ownBytes(bytes: unknown, maxBytes: number = DER_LIMITS.maxBytes): Uint8Array {
   const length = uint8Length(bytes);
   if (length === null) throw new ReaderError('malformed');
-  if (length > DER_LIMITS.maxBytes) throw new ReaderError('too-large');
+  if (length > maxBytes) throw new ReaderError('too-large');
   const copy = copyKnown(bytes as Uint8Array, length);
   if (!copy) throw new ReaderError('malformed');
   return copy;
 }
 
-/** Reads exactly one element that spans all of `bytes` (nothing may follow it). */
-export function parseDer(bytes: Uint8Array): Node {
-  if (bytes.length > DER_LIMITS.maxBytes) throw new ReaderError('too-large');
+/** Reads exactly one element that spans all of `bytes` (nothing may follow it); `maxBytes` raises the size bound for a container of tokens. */
+export function parseDer(bytes: Uint8Array, maxBytes: number = DER_LIMITS.maxBytes): Node {
+  if (bytes.length > maxBytes) throw new ReaderError('too-large');
   const { node, next } = readOne(bytes, 0, bytes.length);
   if (next !== bytes.length) throw new ReaderError('trailing-bytes');
   checkDepth(node, 1);

@@ -57,7 +57,11 @@ export type Reason =
   | 'revoked'
   // renewal chain
   | 'bad-renewal'
-  | 'renewal-too-late';
+  | 'renewal-too-late'
+  // evidence record (RFC 4998)
+  | 'bad-evidence-record'
+  | 'ers-unsupported'
+  | 'export-unsupported';
 
 export interface Failure {
   ok: false;

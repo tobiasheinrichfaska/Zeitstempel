@@ -24,3 +24,5 @@ export type {
   VerifiedRenewalChain,
   VerifiedRenewalLink,
 } from './renewal.ts';
+export { exportEvidenceRecord, readEvidenceRecord, verifyEvidenceRecord } from './ers.ts';
+export type { EvidenceRecordContent, EvidenceRecordInput } from './ers.ts';

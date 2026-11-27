@@ -17,3 +17,4 @@ export type {
   VerifiedEvidence,
   VerifyEvidenceOptions,
 } from './evidence.ts';
+export { serializeEvidenceRecord } from './record.ts';

@@ -33,7 +33,7 @@ describe('the renewal chain is written down', () => {
   });
   it('client.md explains the format, the order, the 30 days and the honest limits', () => {
     for (const text of [
-      'zeitstempel-renewal-v1',
+      'RFC 4998 Abschnitt 5.2',
       '`renewals`',
       '`renew`',
       '`weakestLink`',

@@ -64,7 +64,6 @@ describe.skipIf(!canRun)('renewal chain against openssl ts -verify', () => {
   it('every link verifies alone over the imprint OpenSSL computes, at the time of the next link', async () => {
     const links = await makeChain(HASH, STEPS);
     expect((await verifyRenewalChain({ hash: HASH, links, trust: TRUST })).ok).toBe(true);
-    const tag = Buffer.from('zeitstempel-renewal-v1\n');
     let state = Buffer.from(HASH).toString('hex');
     for (const [i, link] of links.entries()) {
       // what link i must have stamped: i = 0 the hash, else the imprint of the chain before it
@@ -76,11 +75,8 @@ describe.skipIf(!canRun)('renewal chain against openssl ts -verify', () => {
       expect(wrong.ok, `link ${i} with another digest`).toBe(false);
       writeFileSync(path('tok.bin'), link.token);
       const tokenHash = dgst(path('tok.bin'));
-      writeFileSync(
-        path('imprint.in'),
-        Buffer.concat([tag, Buffer.from(tokenHash, 'hex'), Buffer.from(state, 'hex')]),
-      );
-      state = dgst(path('imprint.in'));
+      // RFC 4998 section 5.2: the next link stamps the hash of the token before it
+      state = tokenHash;
     }
   });
   it('the first link alone says no when judged at a time after its certificate ended (renewal-too-late)', async () => {
