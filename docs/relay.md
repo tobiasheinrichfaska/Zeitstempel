@@ -2,7 +2,7 @@
 
 Ein kleiner Server, der **nur** Hashes an feste Zeitstempel-Dienste weiterreicht, weil Browser die Dienste
 wegen CORS nicht direkt erreichen. Er läuft mit Node 24 und nur mit `node:`-Modulen; es gibt keine
-Abhängigkeit zur Laufzeit. **Nicht ausgerollt:** es gibt kein Image und keine Einrichtung; das entscheidet
+Abhängigkeit zur Laufzeit. **Stand 2026-11-27:** die CI veröffentlicht ein Image; eine Instanz läuft zum Testen, nicht für echten Betrieb. Ausrollen entscheidet
 der Betreiber.
 
 **Nicht im Paket:** Das Paket (`npm install git+…`) enthält nur die Bibliothek, `services.json` und `anchors/`
@@ -733,7 +733,7 @@ Länge, falscher Typ oder falsche Größe eines Feldes, unbekanntes Feld), ist *
 
 - `perMinuteTotal` (60) und `perMinutePerKey` (20) bremsen die Fenstergröße; für große Fenster müssten sie im Sammelbetrieb
   je Fenster statt je Anfrage zählen oder höher stehen (Entscheidung des Eigentümers, derzeit nicht geändert).
-- Nicht ausgerollt, nicht von einem Menschen geprüft; im Browser nur mit Chromium geprüft (Prüfskript vom 2026-11-24, nicht im
+- Nur zum Testen ausgerollt, nicht von einem Menschen geprüft; im Browser nur mit Chromium geprüft (Prüfskript vom 2026-11-24, nicht im
   Repo); der Test nutzt einen Stub als Dienst, gegen einen echten Dienst lief der Sammelbetrieb nicht (kein Netz).
 - Einzelbetrieb: Die Mengenzähler (gesamt, je Schlüssel, je Spur) zählen die Annahme auf der Wanduhr, nicht den Aufruf auf
   der monotonen Uhr. Folgen: Das Minutenbudget kann ausgegeben sein, ohne dass der Dienst einen Aufruf sah (`429` bei
@@ -1127,7 +1127,7 @@ nach dem Lesen aus `process.env`). Eigene Werte des Relays nie in das Repository
 - **Nicht abgedeckt:** Dienste, die über die **IP-Freigabe** zugelassen werden (z. B. SK) oder ein **Zertifikat** verlangen
   (z. B. Disig, D-Trust), passen nicht zu diesem Verfahren; **Privatschlüssel von Zertifikaten werden nicht übertragen**.
   Es gibt nur `basic`, `bearer` und einen Namenskopf.
-- Nicht ausgerollt, gegen keinen echten bezahlten Dienst getestet (kein Netz; Stubs im Test, ein TLS-Stub für den
+- Nie mit bezahltem Dienst ausgerollt, gegen keinen echten bezahlten Dienst getestet (kein Netz; Stubs im Test, ein TLS-Stub für den
   Weg nach draußen), nicht von einem Menschen geprüft, im Browser nur mit Chromium geprüft und dort nur ohne `upstream`. Mitgelieferte Dienste haben kein `auth`:
   es gibt noch **keinen** Eintrag in `services.json`, der es nutzt.
 

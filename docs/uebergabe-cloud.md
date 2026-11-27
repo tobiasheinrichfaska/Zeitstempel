@@ -56,7 +56,7 @@ Der Auftrag verlangt, **nach jeder Runde Tobias zu fragen, ob eine weitere läuf
 **D. Offene Punkte aus dem Auftrag**
 
 - Keine Prüfung auf Widerruf (Revocation), keine Name- und Pfad-Beschränkungen, keine Policy-Prüfung der Kette (`docs/grenzen.md`). Wenn beauftragt: erst Entwurf, nicht gleich bauen.
-- Relay nicht ausgerollt, kein Image.
+- Relay: Instanz A läuft zum Testen (Abschnitt E); für echten Betrieb fehlen Limit je Adresse, TLS-Zwang und Überwachung.
 - Firefox und Safari ungeprüft: nur Tobias mit echtem Gerät.
 
 **E. Relay auf Bunny Magic Containers (Entscheidung Tobias 2026-11-27: Instanz A zuerst, Instanz B später)**
@@ -67,6 +67,8 @@ Stand der Recherche (Bunny-Doku, nur oberflächlich gelesen, nicht ausprobiert):
 - Quellen: <https://docs.bunny.net/magic-containers/persistent-volumes>, <https://docs.bunny.net/magic-containers/environment-variables>.
 
 **Entschieden und gebaut (2026-11-27):** `relay/container-start.ts` schreibt `RELAY_KEYS_JSON` in eine Datei und startet das Relay unverändert; ein Widerruf wirkt durch Neustart. Der Job „Image“ in `.github/workflows/tests.yml` baut, startet (`/health`) und legt von `main` aus `ghcr.io/<Konto>/zeitstempel-relay:<Commit>` ab. Anleitung: `docs/betrieb.md`, „Container-Dienst ohne Datei-Mount“.
+
+**Stand 2026-11-27: Instanz A läuft zum Testen** (Image aus der CI, im Dashboard angelegt, ein echter Stempel mit OK). Erfahrungen: `docs/betrieb.md`, „Erfahrung mit Bunny Magic Containers“. Adresse, Kennungen und Werte der Instanz stehen nur im nicht öffentlichen Begleitrepo. Offen: TLS erzwingen, Limit je Adresse, Überwachung, Verbrauch, Browser-Aufruf mit `RELAY_ORIGINS`. Apps, die im Browser stempeln, brauchen eine `https`-Herkunft (eine aus der Datei geöffnete Seite kann nicht stempeln) und je Gerät einen eigenen Schlüssel in `RELAY_KEYS_JSON`.
 
 Für den **ersten** Betrieb legt Tobias die App einmal im Dashboard an; ein Rollout-Skript ist erst danach nötig. Der **private** Schlüssel einer Instanz kommt in kein Repo (auch nicht ins nicht öffentliche Begleitrepo).
 
@@ -90,6 +92,6 @@ Für den **ersten** Betrieb legt Tobias die App einmal im Dashboard an; ein Roll
 ## 6. Was Tobias noch tun muss
 
 - Dieses Projekt in der Liste der in die Cloud umgestellten Projekte im Workspace-`CLAUDE.md` eintragen (Abschnitt „Division of work“), damit die lokalen Sessions am PC hier keinen Code mehr ändern.
-- Die Audit-Commits pushen lassen (oder freigeben); ohne Push sieht die Cloud sie nicht.
-- Zu E: das Image-Paket einmal öffentlich stellen, die App im Bunny-Dashboard anlegen; später (optional) das PC-Rollout-Skript freigeben und den Bunny-Schlüssel selbst ablegen.
+
+- Zu E: die Herkünfte der ersten App nennen; später (optional) das PC-Rollout-Skript freigeben und den Bunny-Schlüssel selbst ablegen.
 - Die Frage klären lassen, ob freie, nicht qualifizierte Dienste für Instanz B zulässig sind (rechtlich, nicht technisch).

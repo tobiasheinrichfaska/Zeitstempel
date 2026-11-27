@@ -131,7 +131,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   operator pages and the system trust store (network only; FreeTSA has no second source, Sectigo's download is
   http). The tests judge certificate validity at the stamped time, so the recorded answers stay valid after their
   certificates expire.
-- **Relay (not rolled out, no image, no authentication towards a paid (qualified) service).** The relay knows no
+- **Relay (one instance runs for testing since 2026-11-27, no per-address limit there yet; no authentication test against a paid (qualified) service).** The relay knows no
   addresses: a reverse proxy with a connection and rate limit per address is mandatory for operation. Its server
   limits the open connections (256) and the time for a whole request, headers included (5 s) (`relay/limits.ts`).
   The counters are global (all services, each service) and per key id; they live in memory only. With the shipped

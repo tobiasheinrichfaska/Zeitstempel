@@ -29,7 +29,7 @@
 - [x] **Zugangsdaten zu bezahlten Diensten** — `auth` streng gelesen (nur https), `upstream` im signierten Körper (`400 bad-upstream`, kein CR/LF, kein `:` im Benutzernamen), Quellen `relay`/`client`/`either`, Kopf nur nach https, Fenster und Dienstbudget je Identität nie gemischt, Obergrenze der Identitäten, nichts davon in Protokoll, Zählern oder Fehlern (`tests/upstream-auth.test.ts`, `tests/upstream-network.test.ts`; nur gegen Stubs, nie gegen einen echten bezahlten Dienst)
 - [x] **Grenzen** — Körpergröße, Zähler, Fristen, Größe der Antwort
 - [x] **Echte Dienste** — `npm run probe -- --service freetsa` und `npm run spike` (von Hand, Netz nötig)
-- [ ] **Betrieb** — nicht ausgerollt, kein Image
+- [ ] **Betrieb** — Image aus der CI, eine Instanz läuft zum Testen (ein echter Stempel am 2026-11-27); kein Limit je Adresse, keine Überwachung, daher nicht abgehakt
 
 ## Client und Beleg (`zeitstempel/client`)
 
