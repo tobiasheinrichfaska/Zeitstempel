@@ -41,7 +41,7 @@ describe('Dockerfile', () => {
     for (const l of start) expect(l).toMatch(/^(ENTRYPOINT|CMD) \[/);
   });
   it('starts the relay as it runs unbuilt and copies only what it needs', () => {
-    expect(lines).toContain('ENTRYPOINT ["node", "relay/main.ts"]');
+    expect(lines).toContain('ENTRYPOINT ["node", "relay/container-start.ts"]');
     const copies = lines.filter((l) => /^(COPY|ADD)\s/.test(l));
     expect(copies.some((l) => /^(COPY|ADD)\s+(--\S+\s+)*\.\s/.test(l))).toBe(false);
     const sources = copies.flatMap((l) =>

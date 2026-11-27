@@ -66,15 +66,10 @@ Stand der Recherche (Bunny-Doku, nur oberflächlich gelesen, nicht ausprobiert):
 - Magic Containers haben **persistente Volumes** (Name, Mount-Pfad, Größe; das Verzeichnis gehört `root`; Volumes sind regional, ohne Backup) und **Umgebungsvariablen** (per API setzbar, ein PUT ersetzt alle). Ein Feature, das eine Konfigurationsdatei oder ein Secret als Datei einhängt, wurde **nicht gefunden**. `RELAY_KEYS_FILE` verlangt aber eine Datei.
 - Quellen: <https://docs.bunny.net/magic-containers/persistent-volumes>, <https://docs.bunny.net/magic-containers/environment-variables>.
 
-Offene Entscheidung (Tobias), bevor etwas gebaut wird: **Wie kommen die öffentlichen Schlüssel ins Relay?**
+**Entschieden und gebaut (2026-11-27):** `relay/container-start.ts` schreibt `RELAY_KEYS_JSON` in eine Datei und startet das Relay unverändert; ein Widerruf wirkt durch Neustart. Der Job „Image“ in `.github/workflows/tests.yml` baut, startet (`/health`) und legt von `main` aus `ghcr.io/<Konto>/zeitstempel-relay:<Commit>` ab. Anleitung: `docs/betrieb.md`, „Container-Dienst ohne Datei-Mount“.
 
-1. Neue Option, die die Schlüssel aus einer Umgebungsvariable liest (Empfehlung). Das ist eine Änderung am Relay: strikter Leser wie bei der Datei, derselbe Versions- und Regelsatz, derselbe Test-Satz; ein Widerruf wirkt dann durch Neustart statt durch die Neu-Lesung alle 5 s, und `docs/betrieb.md` (Notfall, Rotation) muss das sagen.
-2. Die Datei ins Image einbacken (nur öffentliche Schlüssel; jeder Wechsel braucht Bau und Rollout).
-3. Volume plus ein Befüllschritt (kein sauberer Weg bekannt).
+Für den **ersten** Betrieb legt Tobias die App einmal im Dashboard an; ein Rollout-Skript ist erst danach nötig. Der **private** Schlüssel einer Instanz kommt in kein Repo (auch nicht ins nicht öffentliche Begleitrepo).
 
-Plan, wenn Tobias zugestimmt hat:
-
-- **Image:** eine GitHub-Action baut aus `deploy/Dockerfile` das Image und legt es auf `ghcr.io` ab. Das Repo ist öffentlich, im Image ist kein Geheimnis: das Image kann öffentlich liegen, dann braucht Bunny kein Pull-Passwort. Diese Action gibt es noch nicht. (Ein Deploy-Schlüssel für GitHub ist nicht nötig: Bunny zieht ein Image, keinen Quelltext.)
 - **Ausrollen:** nicht über GitHub Actions (die Minuten des privaten Ausroll-Repos sind verbraucht), sondern von Tobias' PC aus mit einem Skript nach dem Vorbild der bestehenden PC-Rollouts; es setzt über die Bunny-API den neuen Image-Tag. Das Skript liegt auf dem PC außerhalb dieses Repos und wird erst nach Tobias' Ja angelegt. Der Bunny-API-Schlüssel gilt für das ganze Konto und liegt nur im DPAPI-Speicher auf dem PC; weder lesen noch ausgeben noch in ein öffentliches Repo oder einen öffentlichen Workflow legen.
 - **Instanz A** (zuerst): ein Konto, eine Instanz, eine Region. `RELAY_SERVICES=freetsa`, eigene `RELAY_AUDIENCE`, eigene `RELAY_ORIGINS`, eigene Schlüssel. Danach der Erstlauf von Hand (`docs/betrieb.md`).
 - **Instanz B** (später, anderes Konto): dasselbe Image, andere Konfiguration (eigene Audience, Herkünfte, Schlüssel, Pull-Zone). **Nicht anfangen**, bevor Tobias geklärt hat, ob freie, nicht qualifizierte Dienste mit ungeklärten Bedingungen für diesen Zweck überhaupt eingesetzt werden dürfen. Dieser Punkt gilt unabhängig von der Zahl der Instanzen.
@@ -96,5 +91,5 @@ Plan, wenn Tobias zugestimmt hat:
 
 - Dieses Projekt in der Liste der in die Cloud umgestellten Projekte im Workspace-`CLAUDE.md` eintragen (Abschnitt „Division of work“), damit die lokalen Sessions am PC hier keinen Code mehr ändern.
 - Die Audit-Commits pushen lassen (oder freigeben); ohne Push sieht die Cloud sie nicht.
-- Die Frage zu E entscheiden (wie kommen die Schlüssel ins Relay), das PC-Rollout-Skript freigeben und den Bunny-Schlüssel selbst in den DPAPI-Speicher legen.
+- Zu E: das Image-Paket einmal öffentlich stellen, die App im Bunny-Dashboard anlegen; später (optional) das PC-Rollout-Skript freigeben und den Bunny-Schlüssel selbst ablegen.
 - Die Frage klären lassen, ob freie, nicht qualifizierte Dienste für Instanz B zulässig sind (rechtlich, nicht technisch).

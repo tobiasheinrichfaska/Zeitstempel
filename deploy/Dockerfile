@@ -13,6 +13,9 @@
 # Das VERZEICHNIS wird eingehängt, nicht die Datei: das Relay liest die Datei alle 5 s neu, und eine atomar ersetzte
 # Datei (neue Datei schreiben, umbenennen) bliebe bei einem Einzeldatei-Mount im Container die alte.
 #
+# Container-Dienst ohne Datei-Mount: den Inhalt der Schlüsseldatei als RELAY_KEYS_JSON setzen (relay/container-start.ts
+# schreibt ihn in eine Datei und startet das Relay; ein Wechsel wirkt mit dem Neustart).
+#
 # Das Relay hat keine Abhängigkeit zur Laufzeit: kein "npm install", kein Bau. Es läuft ungebaut mit dem Type-Stripping
 # von Node 24 (relay/*.ts importiert src/*.ts und liest services.json und anchors/*.pem relativ zum Wurzelordner).
 
@@ -55,4 +58,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||'8080')+'/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 
 # Exec-Form, kein Shell-Wrapper: node ist PID 1 und bekommt SIGTERM selbst (das Relay hat einen eigenen Handler).
-ENTRYPOINT ["node", "relay/main.ts"]
+ENTRYPOINT ["node", "relay/container-start.ts"]
