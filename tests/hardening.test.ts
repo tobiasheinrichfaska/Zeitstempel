@@ -142,8 +142,8 @@ describe('L2: critical unknown extension in a chain certificate', () => {
       }),
     ).toBe('ok');
   });
-  it('refuses a critical name constraint, which this library does not evaluate', async () => {
-    expect(await reason({ extraTsaExts: [ext('2.5.29.30', true, seq())] })).toBe('bad-certificate');
+  it('ignores a name constraint in the signer itself (it constrains what is below a CA, nothing below the signer)', async () => {
+    expect(await reason({ extraTsaExts: [ext('2.5.29.30', true, seq())] })).toBe('ok');
   });
 });
 
@@ -428,7 +428,7 @@ describe('N3: the intermediate certificate and trust anchors', () => {
   it('accepts the same extension in the intermediate when it is not critical', async () => {
     expect(await reason({ intermediate: { extraExts: [unknownPlain] } })).toBe('ok');
   });
-  it('refuses a critical name constraint in the intermediate', async () => {
+  it('refuses an unreadable (empty) critical name constraint in the intermediate', async () => {
     expect(await reason({ intermediate: { extraExts: [ext('2.5.29.30', true, seq())] } })).toBe(
       'bad-certificate',
     );

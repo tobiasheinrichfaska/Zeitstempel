@@ -13,6 +13,7 @@ import {
   parseDer,
 } from './der.ts';
 import { CRL_LIMITS, parseCrl, revokedAt, type Crl } from './crl.ts';
+import { checkNameConstraints } from './nameconstraints.ts';
 import { CURVES, HASHES, OID, SIGNATURES, type HashName } from './oids.ts';
 import { ReaderError, fail, guard, ok, type Result } from './result.ts';
 import { MAX_CERTIFICATES, readToken, type ParsedToken, type TstInfo } from './token.ts';
@@ -667,7 +668,7 @@ function crlJudge(
  * imprint, nonce (when given), the CMS signature, the signing-certificate attribute, the key usage of
  * the signer, the validity of every certificate at the stamped time (and at `at`, when given), and a chain
  * that ends in one of the given trust anchors. The age of the token is checked only with `minGenTime`.
- * Revocation: only offline lists the caller gives (`crls`), no OCSP, nothing is downloaded; name constraints are not evaluated (`pathLenConstraint` is) (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
+ * Revocation: only offline lists the caller gives (`crls`), no OCSP, nothing is downloaded; name constraints (`nameConstraints`) and `pathLenConstraint` are evaluated (see docs/grenzen.md). Never throws or rejects, whatever it is given (a hostile proxy included).
  */
 export async function verifyTimestampToken(
   tokenBytes: Uint8Array,
@@ -807,13 +808,14 @@ async function verifyChecked(
     for (const crl of crls) {
       if (crl.thisUpdate > crlTime || crlTime > crl.nextUpdate) throw new ReaderError('bad-crl');
     }
+    const judgeCrls = crlJudge(crls, info.genTime, anchors);
     const length = await buildChain(
       signer,
       anchors,
       pool,
       times,
       opts.minRsaBits,
-      crlJudge(crls, info.genTime, anchors),
+      async (path) => checkNameConstraints(path) ?? (await judgeCrls(path)),
     );
     return ok({
       genTime: new Date(info.genTime).toISOString(),

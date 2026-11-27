@@ -51,6 +51,7 @@ export type Reason =
   | 'not-a-ca'
   | 'untrusted-chain'
   | 'chain-too-long'
+  | 'name-constraint-violation'
   // revocation (offline lists given by the caller)
   | 'bad-crl'
   | 'revoked';

@@ -57,6 +57,12 @@ export interface Certificate {
    * SignerInfo that names a key identifier).
    */
   subjectKeyIdentifier: Uint8Array | null;
+  /**
+   * The nameConstraints extension as it stands (the DER inside the extension's OCTET STRING and its critical
+   * flag), or null when absent. It is read only when a certificate below it is checked (`nameconstraints.ts`),
+   * so a broken one makes only the paths through this certificate unusable.
+   */
+  nameConstraints: { value: Uint8Array; critical: boolean } | null;
   /** True when a critical extension is present that this reader does not know (RFC 5280 § 4.2). */
   unknownCritical: boolean;
 }
@@ -127,6 +133,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
   let eku: Certificate['eku'] = null;
   let subjectAltName: Uint8Array | null = null;
   let subjectKeyIdentifier: Uint8Array | null = null;
+  let nameConstraints: Certificate['nameConstraints'] = null;
   let unknownCritical = false;
   const extNode = fields.find((f) => f.tag === ctx(3));
   if (extNode) {
@@ -156,6 +163,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
       keyUsage = bits.value[1] ?? 0;
     }
     subjectAltName = exts.get(OID.extSubjectAltName)?.value ?? null;
+    nameConstraints = exts.get(OID.extNameConstraints) ?? null;
     const skiExt = exts.get(OID.extSubjectKeyIdentifier);
     if (skiExt) {
       // an OCTET STRING (the key identifier) inside the extension's OCTET STRING, 1 to 64 bytes
@@ -192,6 +200,7 @@ function parseCertificateStrict(der: Uint8Array): Certificate {
     eku,
     subjectAltName,
     subjectKeyIdentifier,
+    nameConstraints,
     unknownCritical,
   };
 }
@@ -257,16 +266,19 @@ function nameValue(node: Node): string {
   return `s:${folded}`;
 }
 
-const canonicalNames = new WeakMap<Uint8Array, string | null>();
+const canonicalNames = new WeakMap<Uint8Array, string[] | null>();
 
-/** The name as a comparable text (attribute types exact, values as `nameValue`), or null when unreadable. */
-function canonicalName(name: Uint8Array): string | null {
+/**
+ * The name as a list of comparable texts, one per RDN (attribute types exact, values as `nameValue`, the
+ * attributes of a multi-valued RDN sorted), or null when unreadable. Two names are the same when the lists are.
+ */
+export function canonicalRdns(name: Uint8Array): string[] | null {
   const known = canonicalNames.get(name);
   if (known !== undefined) return known;
-  let out: string | null;
+  let out: string[] | null;
   try {
-    out = JSON.stringify(
-      children(expect(parseDer(name), TAG.sequence)).map((rdn) =>
+    out = children(expect(parseDer(name), TAG.sequence)).map((rdn) =>
+      JSON.stringify(
         children(expect(rdn, TAG.set))
           .map((atv) => {
             const parts = children(expect(atv, TAG.sequence));
@@ -292,9 +304,9 @@ function canonicalName(name: Uint8Array): string | null {
  */
 export function sameName(a: Uint8Array, b: Uint8Array): boolean {
   if (equalBytes(a, b)) return true;
-  const x = canonicalName(a);
-  const y = canonicalName(b);
-  return x !== null && y !== null && x === y;
+  const x = canonicalRdns(a);
+  const y = canonicalRdns(b);
+  return x !== null && y !== null && x.length === y.length && x.every((r, i) => r === y[i]);
 }
 
 /** Reads every certificate of a PEM text (a bundle may hold several). */

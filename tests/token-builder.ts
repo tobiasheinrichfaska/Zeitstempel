@@ -183,6 +183,14 @@ export interface Opts {
   tsaInnerSigAlg?: Uint8Array;
   /** Likewise for the root (trust anchor). */
   caInnerSigAlg?: Uint8Array;
+  /** Replaces the subject name (DER) of the signer certificate (default `CN=TSA`). */
+  tsaSubject?: Uint8Array;
+  /** Replaces the subject name (DER) of the intermediate (default `CN=INT`); the signer's issuer name follows. Needs `intermediate`. */
+  intSubject?: Uint8Array;
+  /** Extra extensions of each certificate of `deepChain` (I1 first). */
+  deepExts?: (Uint8Array[] | undefined)[];
+  /** Extra extensions of the self-issued `rollover` certificate. */
+  rolloverExts?: Uint8Array[];
 }
 const hashOf = (name: 'sha1' | 'sha256', b: Uint8Array) => u(createHash(name).update(b).digest());
 function essAttribute(kind: Opts['essCertId'], cert: Uint8Array): Uint8Array {
@@ -206,7 +214,7 @@ export function build(o: Opts = {}) {
   const spki = (k: any) => u(k.publicKey.export({ type: 'spki', format: 'der' }));
   const validity = seq(gt('20200101000000Z'), gt('20400101000000Z'));
   const mkCert = (
-    subject: string,
+    subject: string | Uint8Array,
     issuer: string | Uint8Array,
     k: any,
     signKey: any,
@@ -225,7 +233,7 @@ export function build(o: Opts = {}) {
       innerAlg ?? alg,
       typeof issuer === 'string' ? name(issuer) : issuer,
       validityOverride ?? validity,
-      name(subject),
+      typeof subject === 'string' ? name(subject) : subject,
       spkiOverride ?? spki(k),
       ...(v1 ? [] : [tlv(ctx(3), seq(...exts))]),
     );
@@ -285,7 +293,7 @@ export function build(o: Opts = {}) {
     ...extra,
   ];
   const intCert = mkCert(
-    'INT',
+    o.intSubject ?? 'INT',
     'CA',
     mid,
     ca,
@@ -318,7 +326,7 @@ export function build(o: Opts = {}) {
   );
   // further certificates carried in the token (deep chain, maze)
   const more: Uint8Array[] = [];
-  let tsaIssuer = o.intermediate ? 'INT' : 'CA';
+  let tsaIssuer: string | Uint8Array = o.intermediate ? (o.intSubject ?? 'INT') : 'CA';
   let tsaIssuerKey = o.intermediate ? mid : ca;
   if (o.deepChain) {
     let parentName = 'CA';
@@ -331,7 +339,7 @@ export function build(o: Opts = {}) {
           parentName,
           k,
           parentKey,
-          caExts([], true, true, false, o.deepPathLens?.[j - 1]),
+          caExts(o.deepExts?.[j - 1] ?? [], true, true, false, o.deepPathLens?.[j - 1]),
           Uint8Array.of(60 + j),
         ),
       );
@@ -374,7 +382,7 @@ export function build(o: Opts = {}) {
         'CA',
         mid,
         ca,
-        caExts([], true, true, false, o.rollover.pathLen),
+        caExts(o.rolloverExts ?? [], true, true, false, o.rollover.pathLen),
         Uint8Array.of(120),
       ),
     );
@@ -411,7 +419,7 @@ export function build(o: Opts = {}) {
     ? seq(gt(o.tsaValidity[0]), gt(o.tsaValidity[1]))
     : undefined;
   const tsaCert = mkCert(
-    'TSA',
+    o.tsaSubject ?? 'TSA',
     tsaIssuerDer,
     tsa,
     tsaIssuerKey,
@@ -476,7 +484,11 @@ export function build(o: Opts = {}) {
     (o.sid === 'ski'
       ? tlv(0x80, o.sidSki ?? tsaSki ?? tsaSkiDefault)
       : seq(
-          o.sidIssuerName ? nameWith(o.sidIssuerName.tag, o.sidIssuerName.text) : name(tsaIssuer),
+          o.sidIssuerName
+            ? nameWith(o.sidIssuerName.tag, o.sidIssuerName.text)
+            : typeof tsaIssuer === 'string'
+              ? name(tsaIssuer)
+              : tsaIssuer,
           tlv(2, o.signerSerialRaw ?? tsaSerial),
           ...(o.sidExtra ?? []),
         ));

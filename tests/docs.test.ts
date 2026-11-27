@@ -69,6 +69,7 @@ const REASONS: Record<lib.Reason, true> = {
   'not-a-ca': true,
   'untrusted-chain': true,
   'chain-too-long': true,
+  'name-constraint-violation': true,
   'bad-crl': true,
   revoked: true,
 };
