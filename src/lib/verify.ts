@@ -239,7 +239,7 @@ function dateMs(d: unknown): number | null {
 const NONCE_BYTES = { min: 1, max: 16 } as const;
 
 /** The options as read once and checked; the rest of the verification uses only this. */
-interface OptionSnapshot {
+export interface OptionSnapshot {
   readonly now: number | undefined;
   readonly at: number | undefined;
   readonly minGenTime: number | undefined;
@@ -305,7 +305,7 @@ function readCrlBytes(value: unknown): readonly Uint8Array[] {
  * getter is read once and one that throws gives `bad-options`; `Date` values become milliseconds (read
  * once with the built-in `getTime`) and the nonce is copied.
  */
-function checkOptions(options: unknown): OptionSnapshot {
+export function checkOptions(options: unknown): OptionSnapshot {
   const bad = () => new ReaderError('bad-options');
   const snapshot = (read: (key: string) => unknown): OptionSnapshot => {
     const now = read('now');

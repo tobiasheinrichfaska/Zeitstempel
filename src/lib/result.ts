@@ -54,7 +54,10 @@ export type Reason =
   | 'name-constraint-violation'
   // revocation (offline lists given by the caller)
   | 'bad-crl'
-  | 'revoked';
+  | 'revoked'
+  // renewal chain
+  | 'bad-renewal'
+  | 'renewal-too-late';
 
 export interface Failure {
   ok: false;

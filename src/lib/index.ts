@@ -16,3 +16,11 @@ export { signRelayRequest } from './auth.ts';
 export type { SignRelayRequestInput } from './auth.ts';
 export { verifyBatchedTimestamp } from './batch.ts';
 export type { BatchProof, BatchedInput, VerifiedBatchedTimestamp } from './batch.ts';
+export { renewalImprint, verifyRenewalChain } from './renewal.ts';
+export type {
+  RenewalChain,
+  RenewalInput,
+  RenewalLink,
+  VerifiedRenewalChain,
+  VerifiedRenewalLink,
+} from './renewal.ts';

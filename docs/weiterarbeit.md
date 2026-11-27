@@ -7,7 +7,7 @@ und **was offen ist**. Geschäftliches (Anbieter, Kosten, Verträge, Pilot) steh
 
 ## 1. Zustand in Zahlen
 
-- Prüfungen: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (64 Dateien, 1925 bestanden, 2 sichtbar
+- Prüfungen: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (69 Dateien, 2018 bestanden, 2 sichtbar
   übersprungen), `npm run build`. Alles grün ist die Bedingung für jeden Commit.
 - Browser: `node scripts/browser-check.mjs` (nach `npm run build`, Chromium + Playwright sind vorinstalliert): 87 Prüfungen
   (A und B: Bibliothek und Relay-Anmeldung, C: Client), rund 80 s, Exitcode 0/1/2. Firefox und Safari nie gelaufen. Der
@@ -72,8 +72,9 @@ Sitzung und sind **nicht** gesichert; was dauerhaft zählt, steht in `CLAUDE.md`
 1. **Echte Dienste** prüfen (`npm run spike`, `scripts/probe.ts`, `manual_tests/`): braucht Netz, also Tobias oder eine
    Umgebung mit Netz. Danach ggf. neue Fixtures.
 2. **CI-Browserjob** einmal auf GitHub laufen lassen; GitHub-Actions per SHA pinnen (offline nicht prüfbar).
-3. **Erneuerungskette** (Beleg vor Ablauf des Signierzertifikats neu stempeln, Kette prüfen) und **RFC-4998-Export**
-   (Evidence Record) als Bibliotheksfunktion mit Tests gegen OpenSSL, wo möglich.
+3. **RFC-4998-Export** (Evidence Record) als Bibliotheksfunktion mit Tests gegen OpenSSL, wo möglich. (Die Erneuerungskette
+   ist gebaut, `renew`/`renewals`; offen daran: Browser-Check `scripts/browser-check.mjs` um `renew` erweitern, ein echter Dienst, und der
+   Umgang mit Sperrlisten über mehrere Glieder, `docs/client.md` „Ehrliche Grenzen“.)
 4. **Weitere Sperrprüfung**: `crls` bis in `stamp`/Relay durchreichen? (heute bewusst nicht, `docs/grenzen.md` Punkt 16),
    Brainpool/Ed25519.
 5. **Planer**: ein gemeinsamer Planer für beide Betriebsarten (Differenztest-Treiber aus Audit 13 wiederverwenden: alte gegen

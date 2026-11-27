@@ -548,6 +548,15 @@ folgt ehrlich:
   nicht.
 - Ein frisch ausgestelltes Token prüft man mit `minGenTime` (s. „Frische“ oben), solange man weiß, wann man es
   angefordert hat; später nicht mehr.
+- **Erneuerungskette** (`renewalImprint`, `verifyRenewalChain`, `client.renew`, `docs/client.md`): der Beleg wird **vor**
+  `signerNotAfter` mit seinem ganzen Inhalt (Hash, alle Token bis dahin) neu gestempelt, jedes Glied bindet genau seinen Vorgänger.
+  Die Prüfung beurteilt die Zertifikate jedes Glieds **zur Zeit des nächsten Glieds** (`at`) und verlangt nicht fallende Zeiten;
+  war ein Zertifikat zur Erneuerung schon abgelaufen, ist das `renewal-too-late`. Was die Kette **nicht** leistet: sie ist so stark wie
+  ihr schwächstes rechtzeitig erneuertes Glied (`weakestLink`), sie beruht auf der Annahme, dass die Dienste ihre Zeit zum jeweiligen
+  Zeitpunkt wahrheitsgemäß angaben und ihre Schlüssel bis zur Erneuerung nicht kompromittiert waren; ein früher Glied-Schlüssel, der
+  schon vor seiner Erneuerung gestohlen war, wird nicht erkannt (nur eine gelieferte Sperrliste mit `keyCompromise` hilft, und jede Liste
+  muss zur Prüfzeit des Glieds gültig sein, `docs/client.md`). Keine Erneuerung von selbst, kein Evidence Record nach RFC 4998, kein
+  rechtlicher Wert.
 
 ## Solo-Stempel (Schlüsselart 2)
 

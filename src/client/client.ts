@@ -4,7 +4,8 @@ import { verifyBatchedTimestamp, type BatchProof } from '../lib/batch.ts';
 import { fail, ok, type Reason, type Result } from '../lib/result.ts';
 import { verifyTimestampToken, type TrustAnchors } from '../lib/verify.ts';
 import { parsePemCertificates } from '../lib/x509.ts';
-import { readEvidence, type Evidence } from './evidence.ts';
+import { renewalImprint, type RenewalLink } from '../lib/renewal.ts';
+import { readEvidence, verifyEvidence, type Evidence, type RenewalEvidence } from './evidence.ts';
 import { listItems, plainFields } from './plain.ts';
 
 /**
@@ -96,6 +97,13 @@ export type ClientResult<T> = { ok: true; value: T } | ClientFailure;
 
 export interface RelayClient {
   stamp(hash: Uint8Array, options?: StampOptions): Promise<ClientResult<Evidence>>;
+  /**
+   * Renews evidence before its signer certificate expires: stamps the `renewalImprint` of the whole evidence (the hash and
+   * every token so far) through the relay, with the rules of `stamp`, and returns the evidence with the new link appended.
+   * The evidence must verify against `trust` now (else its failure code, nothing is sent), and so must the result.
+   * Same options as `stamp`. Never rejects.
+   */
+  renew(evidence: unknown, options?: StampOptions): Promise<ClientResult<Evidence>>;
 }
 
 const KEY_ID = /^[a-z][a-z0-9-]{0,31}$/;
@@ -245,7 +253,10 @@ export function createRelayClient(options: RelayClientOptions): Result<RelayClie
       slack,
       maxOffset,
     });
-    return ok({ stamp: (hash, stampOptions) => state.stamp(hash, stampOptions) });
+    return ok({
+      stamp: (hash, stampOptions) => state.stamp(hash, stampOptions),
+      renew: (evidence, stampOptions) => state.renew(evidence, stampOptions),
+    });
   } catch {
     return fail('bad-options'); // not reachable by design
   }
@@ -366,6 +377,73 @@ class Session {
       } catch {
         // a hostile signal must not turn the result into a rejection
       }
+    }
+  }
+
+  /** The clock for a chain check: `now` (no token from the future) and `at` (the last signer must be valid now). */
+  private checkTime(): { now: Date; at: Date } {
+    const t = new Date(this.now(this.offsetMs));
+    return { now: t, at: t };
+  }
+
+  async renew(
+    evidenceInput: unknown,
+    stampOptions?: StampOptions,
+  ): Promise<ClientResult<Evidence>> {
+    try {
+      const read = readEvidence(evidenceInput);
+      if (!read.ok)
+        return failure(read.reason, read.detail === undefined ? {} : { detail: read.detail });
+      const evidence = read.value;
+      const hash = fromBase64Url(evidence.hash)!;
+      const chain: RenewalLink[] = [
+        {
+          token: fromBase64Url(evidence.token)!,
+          ...(evidence.batch ? { batch: evidence.batch } : {}),
+        },
+        ...(evidence.renewals ?? []).map((r) => ({
+          token: fromBase64Url(r.token)!,
+          ...(r.batch ? { batch: r.batch } : {}),
+        })),
+      ];
+      // a chain that is already broken or expired is not worth another stamp
+      const before = await verifyEvidence(evidence, hash, {
+        trust: this.c.trust,
+        ...this.checkTime(),
+      });
+      if (!before.ok)
+        return failure(before.reason, before.detail === undefined ? {} : { detail: before.detail });
+      const imprint = await renewalImprint({ hash, links: chain });
+      if (!imprint.ok)
+        return failure(
+          imprint.reason,
+          imprint.detail === undefined ? {} : { detail: imprint.detail },
+        );
+      const stamped = await this.stamp(imprint.value, stampOptions);
+      if (!stamped.ok) return stamped;
+      const s = stamped.value;
+      const link: RenewalEvidence = {
+        kind: s.kind,
+        service: s.service,
+        receivedAtMs: s.receivedAtMs,
+        token: s.token,
+        ...(s.batch === undefined ? {} : { batch: s.batch }),
+        ...(s.policy === undefined ? {} : { policy: s.policy }),
+        genTime: s.genTime,
+        ...(s.signerNotAfter === undefined ? {} : { signerNotAfter: s.signerNotAfter }),
+      };
+      const renewed = readEvidence({ ...evidence, renewals: [...(evidence.renewals ?? []), link] });
+      if (!renewed.ok) return failure('bad-renewal', { detail: renewed.detail ?? 'renewals' });
+      // the whole chain once more: the previous signer must have been valid when the new link was made
+      const after = await verifyEvidence(renewed.value, hash, {
+        trust: this.c.trust,
+        ...this.checkTime(),
+      });
+      if (!after.ok)
+        return failure(after.reason, after.detail === undefined ? {} : { detail: after.detail });
+      return renewed;
+    } catch (e) {
+      return failure('bad-options', { detail: e instanceof BadClock ? 'now' : 'unexpected' });
     }
   }
 

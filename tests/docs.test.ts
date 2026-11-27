@@ -72,6 +72,8 @@ const REASONS: Record<lib.Reason, true> = {
   'name-constraint-violation': true,
   'bad-crl': true,
   revoked: true,
+  'bad-renewal': true,
+  'renewal-too-late': true,
 };
 
 describe('docs against the code', () => {
