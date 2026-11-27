@@ -7,7 +7,7 @@ und **was offen ist**. Geschäftliches (Anbieter, Kosten, Verträge, Pilot) steh
 
 ## 1. Zustand in Zahlen
 
-- Prüfungen: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (62 Dateien, 1643 bestanden, 2 sichtbar
+- Prüfungen: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (63 Dateien, 1649 bestanden, 2 sichtbar
   übersprungen), `npm run build`. Alles grün ist die Bedingung für jeden Commit.
 - Browser: `node scripts/browser-check.mjs` (nach `npm run build`, Chromium + Playwright sind vorinstalliert): 87 Prüfungen
   (A und B: Bibliothek und Relay-Anmeldung, C: Client), rund 80 s, Exitcode 0/1/2. Firefox und Safari nie gelaufen. Der
@@ -76,8 +76,9 @@ Sitzung und sind **nicht** gesichert; was dauerhaft zählt, steht in `CLAUDE.md`
    (Evidence Record) als Bibliotheksfunktion mit Tests gegen OpenSSL, wo möglich.
 4. **Weitere Sperrprüfung**: `crls` bis in `stamp`/Relay durchreichen? (heute bewusst nicht, `docs/grenzen.md` Punkt 16),
    Name Constraints, Brainpool/Ed25519.
-5. **Planer**: Mengenzähler des Einzelbetriebs auf die monotone Uhr, ein gemeinsamer Planer für beide Betriebsarten
-   (Differenztest-Treiber aus Audit 13 wiederverwenden: alte gegen neue Fassung, virtuelle Uhren).
+5. **Planer**: ein gemeinsamer Planer für beide Betriebsarten (Differenztest-Treiber aus Audit 13 wiederverwenden: alte gegen
+   neue Fassung, virtuelle Uhren). Die Mengenzähler des Einzelbetriebs laufen seit 2026-11-27 auf der monotonen Uhr
+   (Test-Parameter `countersNow`); offen bleibt, sie an den Aufruf statt an die Annahme zu binden (`docs/relay.md`).
 6. **Mehr Browser**: Firefox, Safari (Teil C erweitern); Client mit `upstream`-Zugangsdaten im Browser.
 7. **Betriebsvorlagen** gegen echtes nginx, Caddy und Docker prüfen (heute nur statisch), Basis-Image-Digest setzen,
    Gesamtlauf mit echtem Proxy (Adressgrenzen, `/metrics`-Sperre).

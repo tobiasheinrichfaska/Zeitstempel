@@ -118,6 +118,7 @@ async function start(
     random: over.random ?? (() => FREETSA_NONCE),
     now: () => clock.now,
     monotonicNow: fastMonotonic(), // the minimum distance has its own tests (single-spacing.test.ts)
+    countersNow: () => clock.now, // the counters per minute follow the clock of the test (it moves them by hand)
     keys: over.keys ?? KEYS,
     audience: TEST_AUDIENCE,
     ...(over.verifySignature === undefined ? {} : { verifySignature: over.verifySignature }),

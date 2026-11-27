@@ -148,6 +148,7 @@ async function start(
     // single operation: the minimum distance has its own tests (single-spacing.test.ts); collecting operation: the planner
     // runs on the monotonic clock, which here follows the clock of the test (it moves it to let budgets expire)
     monotonicNow: over.batch || over.followClock ? () => clock.now : fastMonotonic(),
+    countersNow: () => clock.now,
     keys: KEYS,
     audience: TEST_AUDIENCE,
     upstreamAuth: over.upstreamAuth ?? RELAY_CREDS,

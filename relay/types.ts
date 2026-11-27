@@ -55,6 +55,12 @@ export interface RelayOptions {
    * let it jump.
    */
   monotonicNow?: () => number;
+  /**
+   * Test parameter: the clock of the counters per minute of single operation (default: `monotonicNow`, so the monotonic
+   * clock). Only a test sets it, to let the counters run on a clock it moves by hand while the minimum distance (which
+   * always reads `monotonicNow`) is already over. Collecting operation ignores it (one clock for the whole planner).
+   */
+  countersNow?: () => number;
   /** Window of the budget counters in ms (default `RELAY_LIMITS.windowMs`); a parameter so a test need not wait a minute. */
   budgetWindowMs?: number;
   /**
@@ -165,7 +171,7 @@ export interface RelayContext {
   maxWaitMs: number;
   /** The monotonic clock in ms. */
   mono: () => number;
-  /** The clock of the planner and the counters: the monotonic one in collecting operation, the wall clock in single operation. */
+  /** The clock of the planner and the counters per minute: the monotonic one (`mono`) in both operations. */
   tick: () => number;
   /** Does the relay run with authentication (`options.keys` is a list)? */
   authRequired: boolean;

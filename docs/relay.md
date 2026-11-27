@@ -287,9 +287,8 @@ minIntervalMs`, bei FreeTSA 12, bei 15 s 4) **eine** Schlüsselkennung in der gl
   (Eine **angenommene** Anfrage, die danach beim Warten abbricht oder `503 busy`/`shutting-down` bekommt, gibt ihren Anteil
   und ihr Budget zurück, solange nichts an den Dienst gesendet wurde; ihr Wiederholungseintrag bleibt.)
   Der Kopf einer abgewiesenen Anfrage ist also keine Wiederholung und gilt noch, bis der Anteil wieder frei ist.
-- **Einzelbetrieb.** Gezählt wird die **Annahme** je (Spur, Kennung) in der gleitenden Minute, **auf der Wanduhr** wie die
-  anderen Mengenzähler dieser Betriebsart (Dienstbudget, `perMinuteTotal`, `perMinutePerKey`); der Mindestabstand läuft
-  weiter auf der monotonen Uhr. Das Dienstbudget und der Anteil zählen dieselben Annahmen, der Anteil nur je Kennung.
+- **Einzelbetrieb.** Gezählt wird die **Annahme** je (Spur, Kennung) in der gleitenden Minute, **auf der monotonen Uhr** wie die
+  anderen Mengenzähler dieser Betriebsart (Dienstbudget, `perMinuteTotal`, `perMinutePerKey`) und der Mindestabstand. Das Dienstbudget und der Anteil zählen dieselben Annahmen, der Anteil nur je Kennung.
 - **Sammelbetrieb (entschieden: nur Solo).** Jeder **Solo-Stempel** (Schlüsselart 2) nimmt einen ganzen Platz des Dienstes
   und zählt gegen den Anteil (monotone Uhr, wie der ganze Planer). **Hashes in einem Fenster teilen sich einen Platz:** ein
   Fenster ist ein Platz für alle seine Hashes, eine Anfrage, die ein offenes Fenster betritt, nimmt keinen Platz und
@@ -724,16 +723,14 @@ Länge, falscher Typ oder falsche Größe eines Feldes, unbekanntes Feld), ist *
   je Fenster statt je Anfrage zählen oder höher stehen (Entscheidung des Eigentümers, derzeit nicht geändert).
 - Nicht ausgerollt, nicht von einem Menschen geprüft; im Browser nur mit Chromium geprüft (Prüfskript vom 2026-11-24, nicht im
   Repo); der Test nutzt einen Stub als Dienst, gegen einen echten Dienst lief der Sammelbetrieb nicht (kein Netz).
-- Einzelbetrieb: Die Mengenzähler (gesamt, je Schlüssel, je Spur) zählen die Annahme auf der Wanduhr, nicht den Aufruf auf
-  der monotonen Uhr. Folgen: Das Minutenbudget kann ausgegeben sein, ohne dass der Dienst einen Aufruf sah (`429` bei
+- Einzelbetrieb: Die Mengenzähler (gesamt, je Schlüssel, je Spur) zählen die Annahme (Tür, monotone Uhr), nicht den Aufruf beim
+  Dienst. Folgen: Das Minutenbudget kann ausgegeben sein, ohne dass der Dienst einen Aufruf sah (`429` bei
   freiem Dienst; Beispiel FreeTSA: sieben Anfragen bei 0 s, sechs bei 50 s, die sechste bekommt `429`, obwohl der Dienst
   in dieser Minute höchstens neun Aufrufe sieht). Und nach einem Stillstand des Relays kann der Dienst kurz mehr Aufrufe je
   Minute sehen als das Budget erlaubt (Beispiel: Abstand 25 s, Budget 2: drei Aufrufe in 50 s); nur der Abstand bleibt dabei
-  hart gewahrt. Entscheidung des Eigentümers: die Mengenzähler des Einzelbetriebs auf die monotone Uhr und an den Aufruf
-  binden. Derzeit nicht umgesetzt. Auch ein Sprung der Wanduhr **nach vorn** (nicht nur ein Stillstand) gibt dort Plätze des
-  Mengenbudgets zurück: Beispiel Abstand 7 s, Budget 8 je Minute: ein Sprung lässt neun Aufrufe in einer gleitenden Minute
-  zu; der Abstand bleibt in jedem Fall gewahrt. Bei den Abständen der mitgelieferten Dienste (5 s, 15 s) ohne Wirkung, weil
-  der Abstand allein schon auf 12 beziehungsweise 4 Aufrufe je Minute begrenzt.
+  hart gewahrt. Entscheidung des Eigentümers: die Mengenzähler des Einzelbetriebs an den Aufruf binden. Derzeit nicht
+  umgesetzt. Erledigt (2026-11-27): Die Zähler laufen auf der monotonen Uhr; ein Sprung der Wanduhr **nach vorn** gibt keine
+  Plätze des Mengenbudgets mehr zurück (`tests/single-clock.test.ts`).
 
 ## Schlüsselarten und Solo-Stempel
 
@@ -1301,7 +1298,7 @@ Je Schlüsselkennung gilt zusätzlich `perMinutePerKey`. Je Dienst gilt zusätzl
 **Dienst** in jedem gleitenden Fenster von einer Minute höchstens so viele Aufrufe sieht; danach kommen Anfragen mit `429`
 und `Retry-After` (oder, im Sammelbetrieb, eine kurze Wartezeit). Im **Sammelbetrieb** zählt der Zeitpunkt des **Stempels**
 (des Aufrufs beim Dienst; Fenster und Solo-Stempel, siehe „Der Planer je Dienst“), im **Einzelbetrieb** dagegen die
-**Annahme** der Anfrage (Tür, Wanduhr; siehe unten). **Im Sammelbetrieb** gilt zusätzlich der
+**Annahme** der Anfrage (Tür, monotone Uhr; siehe unten). **Im Sammelbetrieb** gilt zusätzlich der
 **Mindestabstand** `minIntervalMs` zwischen zwei Aufrufen desselben Dienstes (und derselben Zugangsdaten-Identität), in
 **beiden Betriebsarten**: im Sammelbetrieb für Solo-Stempel und Fenster, im **Einzelbetrieb** für jeden Stempel. Im
 Einzelbetrieb nimmt eine Anfrage den nächsten freien Zeitpunkt ihrer Spur (Reihenfolge des Eingangs) und wartet darauf,
@@ -1311,14 +1308,14 @@ Identität) warten, eine weitere bekommt `503 busy`. Läuft ein Aufruf später a
 Anfrage dadurch die Wartegrenze um mehr als `WAIT_TOLERANCE_MS` (50 ms: Verspätungen der Zeitgeber werden toleriert)
 überschreiten (verglichen wird der Zeitpunkt, zu dem der Zeitgeber wirklich feuert, nicht nur der gebuchte), bekommt sie
 `503 busy`, ohne gestempelt zu werden; im Sammelbetrieb gilt dasselbe für eine Anfrage in der Warteschlange auf einen Platz; `close()` beantwortet alle
-Wartenden mit `503 shutting-down`. Das Mengenbudget gilt zusätzlich; im Einzelbetrieb zählt es die Annahme (Tür, Wanduhr),
+Wartenden mit `503 shutting-down`. Das Mengenbudget gilt zusätzlich; im Einzelbetrieb zählt es die Annahme (Tür, monotone Uhr),
 nicht den Aufruf beim Dienst. Gemessen wird auf der
-monotonen Uhr des Prozesses (`performance.now()`), nicht auf der Wanduhr. **Welche Zähler auf welcher Uhr laufen:** im Sammelbetrieb
-**alle** Zähler je Minute (Dienst je Spur, gesamt `perMinuteTotal`, je Schlüssel `perMinutePerKey`, Solo je Schlüssel) sowie
-Abstand und Wartezeiten auf der monotonen Uhr; im Einzelbetrieb der Mindestabstand und der Ablauf einer Zugangsdaten-Identität (sie endet frühestens
+monotonen Uhr des Prozesses (`performance.now()`), nicht auf der Wanduhr. **Welche Zähler auf welcher Uhr laufen:** in **beiden Betriebsarten**
+**alle** Zähler je Minute (Dienst je Spur, gesamt `perMinuteTotal`, je Schlüssel `perMinutePerKey`, Anteil, im Sammelbetrieb Solo je Schlüssel) sowie
+Abstand und Wartezeiten auf der monotonen Uhr; im Einzelbetrieb außerdem der Ablauf einer Zugangsdaten-Identität (sie endet frühestens
 `max(60 s, minIntervalMs)` nach dem Ende ihrer letzten Anfrage; der Abstand bleibt davon unberührt, weil der letzte Aufruf
-vor diesem Ende liegt). Die Mengenzähler dort (gesamt, je Schlüssel, je Spur) bleiben auf der Wanduhr: ein Sprung der
-Wanduhr nach vorn gibt dort Plätze des Mengenbudgets zurück. Die Anmeldung (60 s) und die Prüfung von `genTime` (±60 s)
+vor diesem Ende liegt). Ein Sprung der Wanduhr nach vorn (30 s oder 59 s) gibt auch im Einzelbetrieb keine Plätze
+des Mengenbudgets zurück (`tests/single-clock.test.ts`). Die Anmeldung (60 s) und die Prüfung von `genTime` (±60 s)
 werden von der Wartezeit nicht berührt: der Kopf wird beim Eingang geprüft und gemerkt, die Wartegrenze ist höchstens 60 s,
 und der Token wird erst beim Senden an den Dienst (nach dem Warten) angefordert und gegen diesen Zeitpunkt geprüft.
 
@@ -1328,8 +1325,8 @@ Schlüssel hat, kann sein Budget und das gemeinsame Limit für alle ausschöpfen
 Aufrufer ist Aufgabe der Infrastruktur davor.
 
 **Uhr zurückgestellt:** Die Zähler der Fenster (gesamt, je Dienst, je Kennung) und die Restzeit der Einträge des
-Wiederholungsspeichers rechnen Zeitpunkte in der Zukunft beim Lesen als „jetzt“. (Im Sammelbetrieb läuft der Planer mit den
-Zählern je Minute auf der monotonen Uhr und sieht die Wanduhr nicht; die Regel gilt dort für die Wanduhr-Teile, also den
+Wiederholungsspeichers rechnen Zeitpunkte in der Zukunft beim Lesen als „jetzt“. (In beiden Betriebsarten laufen die
+Zähler je Minute auf der monotonen Uhr und sehen die Wanduhr nicht; die Regel gilt für die Wanduhr-Teile, also den
 Wiederholungsspeicher, und gegen eine künstlich zurückgesetzte monotone Uhr.) Ein Rückwärtssprung der Uhr sperrt
 das Budget also nicht für die Länge des Sprungs: nach höchstens einem Fenster (60 s) ist es wieder frei, und
 `Retry-After` nennt nie mehr als ein Fenster (beim Wiederholungsspeicher nie mehr als die Lebensdauer eines Eintrags). Die Zusage „höchstens 125 s“ gilt für den

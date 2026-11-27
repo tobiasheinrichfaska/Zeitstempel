@@ -33,11 +33,13 @@ export function createRelay(options: RelayOptions): Relay {
   const maxWaitMs = options.maxWaitMs ?? RELAY_LIMITS.maxWaitDefaultMs;
   // The one place single operation reads the time of its waits (the monotonic clock of the process).
   const mono = options.monotonicNow ?? (() => performance.now());
-  // The time of the planner and of the counters per minute: the monotonic clock in collecting operation (a jump of the
-  // wall clock must not give back a distance or a budget), the wall clock in single operation (its sliding budget and
-  // counters stay as they were; its minimum distance runs on `mono`). The wall clock stays for the authentication (`ts`,
-  // replay cache), `genTime` and the start time.
-  const tick = (): number => (options.batch === undefined ? options.now() : mono());
+  // The time of the planner and of all counters per minute (service, total, per key, share, solo): the monotonic clock in
+  // both operations (a jump of the wall clock must not give back a distance or a budget). The wall clock stays for the
+  // authentication (`ts`, replay cache), `genTime` and the start time.
+  const tick = (): number =>
+    options.batch === undefined && options.countersNow !== undefined
+      ? options.countersNow()
+      : mono();
   const stats: RelayStats = { stamped: 0, refused: {}, ...(batch ? { batched: 0 } : {}) };
   const timedOut = new WeakSet<Duplex>(); // connections the server itself ended for being too slow
   const life = { closed: false };

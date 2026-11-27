@@ -526,7 +526,7 @@ describe('key types, solo stamps and the key file read again are written down wh
     expect(doc).toContain('Abbruch während des Wartens');
     expect(doc).toContain('(16 Plätze je Spur, also je Dienst und Identität, nicht je Dienst)');
     expect(doc).toContain('nicht nur der gebuchte');
-    expect(doc).toContain('die Mengenzähler des Einzelbetriebs auf die monotone Uhr');
+    expect(doc).toContain('Die Zähler laufen auf der monotonen Uhr');
     const limitsSource = readFileSync(new URL('../relay/limits.ts', import.meta.url), 'utf8');
     expect(limitsSource).toContain('export const WAIT_TOLERANCE_MS = 50;');
     expect(flat(readme)).toContain('Kette der auf den Mindestabstand wartenden Fenster');
@@ -962,7 +962,7 @@ describe('RELAY_KEY_SHARE (share of one key at a service budget) is written down
       'max(1, floor(Dienstbudget * Prozent / 100))',
       '**Hashes in einem Fenster teilen sich einen Platz:**',
       '(entschieden: nur Solo)',
-      '**auf der Wanduhr**',
+      '**auf der monotonen Uhr**',
       'Die Abweisung verbraucht nichts',
       '`RELAY_KEY_SHARE=50`',
     ]) {

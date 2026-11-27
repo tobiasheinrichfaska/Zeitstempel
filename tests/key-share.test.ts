@@ -112,7 +112,7 @@ describe('RELAY_KEY_SHARE in single operation', () => {
     expect((await h.stamp(h1('c', 0), { key: KEY_C })).status).toBe(200); // the place of C
     const refusedOnce = await h.stamp(h1('z', 0), { key: KEY_C, raw: text, head: fixed });
     expect(refusedOnce.status).toBe(429);
-    h.clock.offset += 1100; // the window of the counters is over
+    h.mono.offset += 1100; // the window of the counters is over
     await sleep(100);
     const again = await h.stamp(h1('z', 0), { key: KEY_C, raw: text, head: fixed });
     expect(again.status).toBe(200); // a replay entry would make it 401
@@ -130,10 +130,10 @@ describe('RELAY_KEY_SHARE in single operation', () => {
     const r1 = await h.stamp(h1('r', 1), { key: KEY_A });
     expect(r1.status).toBe(429);
     expect(r1.headers.get('retry-after')).toBe('6');
-    h.clock.offset += 3000;
+    h.mono.offset += 3000;
     const r2 = await h.stamp(h1('r', 2), { key: KEY_A });
     expect(r2.headers.get('retry-after')).toBe('3');
-    h.clock.offset += 3100;
+    h.mono.offset += 3100;
     expect((await h.stamp(h1('r', 3), { key: KEY_A })).status).toBe(200);
   });
 
@@ -203,7 +203,7 @@ describe('RELAY_KEY_SHARE in single operation', () => {
       expect((await h.stamp(h1('m', 0), { key: k })).status).toBe(200);
     }
     expect(h.relay.heldForTests().shares).toBe(4);
-    h.clock.offset += 1100;
+    h.mono.offset += 1100;
     expect((await h.stamp(h1('m', 1), { key: KEY_D })).status).toBe(200);
     expect(h.relay.heldForTests().shares).toBe(1);
   });
