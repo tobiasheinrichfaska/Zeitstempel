@@ -18,7 +18,7 @@ Dienste** brauchen und deshalb nicht in die automatische Prüfung gehören (die 
 
 ## Ohne Netz: `node scripts/browser-check.mjs`
 
-Prüft Bibliothek und Relay-Schnittstelle in Headless-Chromium; erwartet werden sechs Zeilen `OK`.
+Prüft Bibliothek und Relay-Schnittstelle in Headless-Chromium; erwartet wird am Ende `… 0 failed` (Teil A Bibliothek, Teil B Relay-Anmeldung); Exitcode 0.
 Voraussetzungen:
 
 - Node 24 und `npm install` (`vite` baut das Bündel; es kommt als Abhängigkeit von `vitest` mit und ist deshalb

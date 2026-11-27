@@ -2,8 +2,9 @@
 // declaration files; consumers would then look for `./x.tsx` next to `x.d.ts`. Rewrite them here.
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('../dist', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+const root = fileURLToPath(new URL('../dist', import.meta.url));
 let changed = 0;
 
 function walk(dir) {

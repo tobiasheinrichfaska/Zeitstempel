@@ -89,6 +89,22 @@ umbenennen) würde im Container bei einem Einzeldatei-Mount die alte bleiben. Zu
 das Relay seine 10 s zum Beenden hat. Der Container läuft als Benutzer 10001; die Schlüsseldatei muss für ihn lesbar sein
 (Gruppe 10001 oder Modus `0644`, nie für andere schreibbar).
 
+## Container-Dienst ohne Datei-Mount
+
+Für Dienste, die ein Image starten, aber keine Datei einhängen können. **Noch bei keinem Anbieter erprobt**; die CI baut
+das Image, startet es mit einem Wegwerf-Schlüssel und fragt `/health`, mehr nicht.
+
+1. **Image:** der Job „Image“ der Prüfung „Tests“ legt `ghcr.io/<Konto>/zeitstempel-relay:<Commit>` ab (nur von `main`,
+   nur nach grünen Prüfungen). Das Paket ist beim ersten Mal privat: einmal auf öffentlich stellen oder dem Dienst einen
+   Lesezugang geben. Im Image ist kein Geheimnis.
+2. **Einstellungen:** `RELAY_SERVICES`, `RELAY_AUDIENCE`, `RELAY_ORIGINS` und **`RELAY_KEYS_JSON`** (der Inhalt der
+   Schlüsseldatei in einer Zeile). `RELAY_HOST`, `PORT=8080` und der Pfad setzt das Image selbst.
+3. **Genau eine Instanz**, kein automatisches Skalieren; Health Check `GET /health` auf Port 8080.
+4. **Schlüsselwechsel und Notfall:** die Variable ändern und neu starten. Das Neulesen alle 5 s hilft hier nicht; ein
+   Widerruf wirkt erst, wenn der neue Container läuft und der alte beendet ist.
+5. **Offen je Anbieter, vor echtem Betrieb zu prüfen:** TLS und das Limit je Adresse (nur `/v1/stamp/`), Weitergabe der
+   Köpfe `X-Zeitstempel-Auth` und `Origin`, kein Zwischenspeichern, Uhr des Containers, Lese-Frist mindestens 50 s.
+
 ## Zähler beobachten
 
 Alle fünf Minuten schreibt das Relay eine Zeile `{"event":"counts",…}` ins Protokoll (stdout; systemd: `journalctl -u
@@ -224,5 +240,5 @@ sieht Adresse und Zeit jeder Anfrage; das ist Sache des Betreibers, `relay.md`, 
   „dieser Hash bestand spätestens zur Zeit T“ mit begrenztem rechtlichem Gewicht (`docs/grenzen.md`).
 - **Keine Sicherheitsprüfung durch einen Menschen**, keine Widerrufsprüfung der Zertifikate, kein Schutz vor einem
   ausgelesenen Schlüssel außer dem Sperren durch Entfernen (`SECURITY.md`, `docs/grenzen.md`).
-- **Nicht veröffentlicht, nicht getaggt:** kein Paket auf npm, kein veröffentlichtes Image; Bau und Betrieb liegen
+- **Nicht auf npm veröffentlicht.** Die CI legt von `main` ein Image ohne Geheimnisse auf `ghcr.io` ab; Betrieb liegt
   beim Betreiber, und ohne Zustimmung des Projektinhabers wird nichts ausgerollt.

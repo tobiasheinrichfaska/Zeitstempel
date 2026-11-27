@@ -139,4 +139,41 @@ describe('audit 2026-11-25, low findings', () => {
     expect(client.pausedForMs()).toBeGreaterThan(100_000);
     expect(sent).toBe(1);
   });
+
+  it('the total deadline firing while a 200 body is read ends with timeout, not bad-response', async () => {
+    const client = make(
+      async (_url, init) => ({
+        status: 200,
+        headers: { get: () => null },
+        text: () =>
+          new Promise<string>((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      }),
+      { maxAttempts: 1, attemptTimeoutMs: 5000, timeoutMs: 1000 },
+    );
+    expect(failure(await client.stamp(hash))).toMatchObject({ reason: 'timeout' });
+  });
+
+  it('a caller abort after the total deadline already fired keeps the first cause: timeout', async () => {
+    const user = new AbortController();
+    const client = make(
+      async (_url, init) => ({
+        status: 200,
+        headers: { get: () => null },
+        text: () =>
+          new Promise<string>((_resolve, reject) => {
+            // the body read ends a little after the deadline fired, so the caller can abort in between
+            init.signal.addEventListener('abort', () =>
+              setTimeout(() => reject(new Error('aborted')), 300),
+            );
+          }),
+      }),
+      { maxAttempts: 1, attemptTimeoutMs: 5000, timeoutMs: 1000 },
+    );
+    setTimeout(() => user.abort(), 1150);
+    expect(failure(await client.stamp(hash, { signal: user.signal }))).toMatchObject({
+      reason: 'timeout',
+    });
+  });
 });

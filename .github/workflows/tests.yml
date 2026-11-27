@@ -56,3 +56,43 @@ jobs:
           npx playwright@1.63.0 install --with-deps chromium
       - name: Browser check
         run: node scripts/browser-check.mjs
+
+  # The relay's container image: built and started on every pull request and push; pushed to ghcr.io (tag = commit)
+  # only from main and only after both checks above and the container's own check. The image holds no secret.
+  image:
+    name: Image
+    needs: [tests, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/zeitstempel-relay:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Build
+        run: docker build --platform linux/amd64 -f deploy/Dockerfile --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" -t "$IMAGE" .
+      - name: Start it with a throwaway key and ask /health
+        run: |
+          entry=$(node scripts/make-key.ts ci 2>/dev/null | tail -n 1)
+          docker run -d --name relay -p 127.0.0.1:8080:8080 \
+            -e RELAY_SERVICES=freetsa -e RELAY_AUDIENCE=https://ci.invalid \
+            -e RELAY_KEYS_JSON="{\"version\":3,\"keys\":[$entry]}" "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health; then docker logs relay; exit 0; fi
+            sleep 1
+          done
+          docker logs relay
+          exit 1
+      - name: Push (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE"
+          docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"

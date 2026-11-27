@@ -408,7 +408,7 @@ export function stopServer(
   setTimeout(() => exit(0), limits.hardMs).unref();
 }
 
-function main(): void {
+export function main(): void {
   let config: ReturnType<typeof readConfig>;
   try {
     config = readConfig(process.env);
