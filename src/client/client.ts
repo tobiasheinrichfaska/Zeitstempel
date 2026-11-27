@@ -5,7 +5,14 @@ import { fail, ok, type Reason, type Result } from '../lib/result.ts';
 import { verifyTimestampToken, type TrustAnchors } from '../lib/verify.ts';
 import { parsePemCertificates } from '../lib/x509.ts';
 import { renewalImprint, type RenewalLink } from '../lib/renewal.ts';
-import { readEvidence, verifyEvidence, type Evidence, type RenewalEvidence } from './evidence.ts';
+import {
+  EVIDENCE_LIMITS,
+  readEvidence,
+  serializeEvidence,
+  verifyEvidence,
+  type Evidence,
+  type RenewalEvidence,
+} from './evidence.ts';
 import { listItems, plainFields } from './plain.ts';
 
 /**
@@ -92,6 +99,12 @@ export interface ClientFailure {
   status?: number;
   /** The relay's `error` code, for `relay-error`. */
   code?: string;
+  /**
+   * Only for `renew` with `evidence-too-large` AFTER the stamp was made (`detail: 'stamp spent'`): the verified new
+   * evidence as an object. It exists, but its JSON text would be over the limit of `readEvidence`: keep the object (or
+   * start a new chain), the text form cannot hold it.
+   */
+  evidence?: Evidence;
 }
 export type ClientResult<T> = { ok: true; value: T } | ClientFailure;
 
@@ -280,8 +293,11 @@ interface Config {
 
 const failure = (
   reason: ClientReason,
-  extra: { detail?: string; status?: number; code?: string } = {},
+  extra: { detail?: string; status?: number; code?: string; evidence?: Evidence } = {},
 ): ClientFailure => ({ ok: false, reason, ...extra });
+
+/** Characters one more link needs besides its token (its fields, a receipt of a collecting relay included), as a reserve. */
+const RENEW_LINK_OVERHEAD_CHARS = 1000;
 
 class BadClock extends Error {}
 
@@ -413,6 +429,20 @@ class Session {
       });
       if (!before.ok)
         return failure(before.reason, before.detail === undefined ? {} : { detail: before.detail });
+      // a stamp that cannot be put in front of the previous one, or an evidence that has no room for the next link
+      // (its text would be over the limit of `readEvidence`), is refused BEFORE a stamp is spent
+      const lastGenTime = Date.parse((evidence.renewals ?? []).at(-1)?.genTime ?? evidence.genTime);
+      if (lastGenTime > this.checkTime().now.getTime())
+        return failure('bad-renewal', { detail: 'order' });
+      const text = serializeEvidence(evidence);
+      if (!text.ok)
+        return failure(text.reason, text.detail === undefined ? {} : { detail: text.detail });
+      const widest = Math.max(
+        evidence.token.length,
+        ...(evidence.renewals ?? []).map((r) => r.token.length),
+      );
+      if (text.value.length + widest + RENEW_LINK_OVERHEAD_CHARS > EVIDENCE_LIMITS.MAX_JSON_CHARS)
+        return failure('evidence-too-large', { detail: 'before sending' });
       const imprint = await renewalImprint({ hash, links: chain });
       if (!imprint.ok)
         return failure(
@@ -441,6 +471,10 @@ class Session {
       });
       if (!after.ok)
         return failure(after.reason, after.detail === undefined ? {} : { detail: after.detail });
+      // the new link was larger than expected (another service): the object is fine, its text would not be
+      const written = serializeEvidence(renewed.value);
+      if (!written.ok)
+        return failure(written.reason, { detail: 'stamp spent', evidence: renewed.value });
       return renewed;
     } catch (e) {
       return failure('bad-options', { detail: e instanceof BadClock ? 'now' : 'unexpected' });

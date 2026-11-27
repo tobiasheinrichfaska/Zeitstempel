@@ -48,7 +48,7 @@ export interface VerifiedRenewalLink extends VerifiedTimestamp {
   batch?: { size: number; index: number };
   /** The time of the next link (the moment this stamp was covered by a newer one); null for the last link. */
   renewedAt: string | null;
-  /** `signerNotAfter` minus `renewedAt` in milliseconds (>= 0 when the chain is ok); null for the last link. */
+  /** `chainNotAfter` (the earliest end of any certificate of the chain) minus `renewedAt` in milliseconds (>= 0 when the chain is ok); null for the last link. */
   marginMs: number | null;
 }
 
@@ -57,8 +57,10 @@ export interface VerifiedRenewalChain {
   genTime: string;
   /** The time of the last link (the latest renewal). */
   lastGenTime: string;
-  /** End of the signer certificate of the last link: renew before it. */
+  /** End of the signer certificate of the last link (`lastChainNotAfter` is the one to renew before). */
   lastSignerNotAfter: string;
+  /** The earliest end of validity in the certificate chain of the last link (signer, intermediates, anchor): renew before it. */
+  lastChainNotAfter: string;
   links: VerifiedRenewalLink[];
   /** The renewed link with the smallest margin (the earliest in a tie); null when there is only one link. */
   weakestLink: { index: number; marginMs: number } | null;
@@ -248,7 +250,7 @@ export async function verifyRenewalChain(
       results.push({
         ...v,
         renewedAt: next === undefined ? null : new Date(next).toISOString(),
-        marginMs: next === undefined ? null : Date.parse(v.signerNotAfter) - next,
+        marginMs: next === undefined ? null : Date.parse(v.chainNotAfter) - next,
       });
     }
     let weakest: { index: number; marginMs: number } | null = null;
@@ -260,6 +262,7 @@ export async function verifyRenewalChain(
       genTime: results[0]!.genTime,
       lastGenTime: results[last]!.genTime,
       lastSignerNotAfter: results[last]!.signerNotAfter,
+      lastChainNotAfter: results[last]!.chainNotAfter,
       links: results,
       weakestLink: weakest,
     });

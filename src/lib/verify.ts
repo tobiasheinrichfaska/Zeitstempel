@@ -95,6 +95,12 @@ export interface VerifiedTimestamp {
   signerNotBefore: string;
   /** End of the validity of the signer certificate, ISO 8601 (UTC); see `signerNotBefore`. */
   signerNotAfter: string;
+  /**
+   * The EARLIEST end of validity among the certificates of the chain that was found (signer, intermediates and the
+   * trust anchor, all of which the verification checked): the proof loses its weight at the latest then, so this is
+   * the date to renew before. It is never later than `signerNotAfter`.
+   */
+  chainNotAfter: string;
 }
 
 const MAX_CHAIN = 6;
@@ -809,14 +815,13 @@ async function verifyChecked(
       if (crl.thisUpdate > crlTime || crlTime > crl.nextUpdate) throw new ReaderError('bad-crl');
     }
     const judgeCrls = crlJudge(crls, info.genTime, anchors);
-    const length = await buildChain(
-      signer,
-      anchors,
-      pool,
-      times,
-      opts.minRsaBits,
-      async (path) => checkNameConstraints(path) ?? (await judgeCrls(path)),
-    );
+    let chainNotAfter = signer.notAfter;
+    const length = await buildChain(signer, anchors, pool, times, opts.minRsaBits, async (path) => {
+      const refusal = checkNameConstraints(path) ?? (await judgeCrls(path));
+      // the path that is accepted ends the search, so the last value kept is the one of the chain found
+      if (!refusal) chainNotAfter = Math.min(...path.map((c) => c.notAfter));
+      return refusal;
+    });
     return ok({
       genTime: new Date(info.genTime).toISOString(),
       accuracyMs: info.accuracyMs,
@@ -826,6 +831,7 @@ async function verifyChecked(
       chainLength: length,
       signerNotBefore: new Date(signer.notBefore).toISOString(),
       signerNotAfter: new Date(signer.notAfter).toISOString(),
+      chainNotAfter: new Date(chainNotAfter).toISOString(),
     });
   } catch (e) {
     return fail(e instanceof ReaderError ? e.reason : 'malformed');

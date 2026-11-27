@@ -206,13 +206,15 @@ describe('renew against a scripted relay', () => {
     expect(failure(await client.renew(first)).reason).toBe('imprint-mismatch');
   });
 
-  it('a renewal that lies before the stamp it covers makes no evidence (bad-renewal)', async () => {
+  it('a renewal that would lie before the stamp it covers is refused before it is sent (bad-renewal, order)', async () => {
     // the first stamp is two minutes ahead of the clock (inside the five minutes of skew), the renewal is on time
     const f = await relayAt((n) => (n === 0 ? Date.now() + 120_000 : Date.now()));
     const client = make(options(f.origin));
     const first = evidenceOf(await client.stamp(sha256('ahead')));
     const r = failure(await client.renew(first));
     expect(r.reason).toBe('bad-renewal');
+    expect(r.detail).toBe('order');
+    expect(f.seen).toHaveLength(1); // no stamp was spent on it
   });
 
   it('fails over to the next service like a stamp', async () => {

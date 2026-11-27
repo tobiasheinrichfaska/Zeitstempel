@@ -11,7 +11,7 @@ const limitsDoc = read('docs/grenzen.md').replace(/\s+/g, ' ');
 
 describe('the renewal chain is written down', () => {
   it('data-model.html lists the new codes, the functions and the limits with their values', () => {
-    for (const code of ['bad-renewal', 'renewal-too-late'])
+    for (const code of ['bad-renewal', 'renewal-too-late', 'evidence-too-large'])
       expect(model).toContain(`<td>${code}</td>`);
     for (const name of ['renewalImprint', 'verifyRenewalChain']) {
       expect(typeof (lib as Record<string, unknown>)[name], name).toBe('function');
@@ -43,6 +43,10 @@ describe('the renewal chain is written down', () => {
       'so stark wie das schwächste',
       'Kein rechtlicher Wert',
       'nicht** im Browser',
+      '`lastChainNotAfter`',
+      '`evidence-too-large`',
+      '`stamp spent`',
+      'vertauschtes** Glied',
     ]) {
       expect(clientDoc, text).toContain(text);
     }

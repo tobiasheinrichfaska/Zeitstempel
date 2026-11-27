@@ -86,16 +86,19 @@ const must = (node: Node | undefined, tag: number, where: string): Node => {
   return node;
 };
 
-/** The content of an AlgorithmIdentifier (`SEQUENCE { OID [, NULL] }`, also the IMPLICIT `[0]` form): SHA-256 or an error. */
-function sha256Algorithm(parts: Node[], where: string): void {
+/** The OID of an AlgorithmIdentifier (`SEQUENCE { OID [, NULL] }`, also the IMPLICIT `[0]` form); another shape is `bad-evidence-record`. */
+function algorithmOid(parts: Node[], where: string): string {
   if (parts.length < 1 || parts.length > 2) throw bad(where);
   if (parts.length === 2) {
     const nul = must(parts[1], TAG.null, where);
     if (nul.value.length !== 0) throw bad(where);
   }
-  if (oid(must(parts[0], TAG.oid, where)) !== SHA256_OID) {
-    throw new Located('unsupported-hash', where);
-  }
+  return oid(must(parts[0], TAG.oid, where));
+}
+
+/** The content of an AlgorithmIdentifier: SHA-256 or an error. */
+function sha256Algorithm(parts: Node[], where: string): void {
+  if (algorithmOid(parts, where) !== SHA256_OID) throw new Located('unsupported-hash', where);
 }
 
 function parse(bytes: unknown): EvidenceRecordContent {
@@ -110,11 +113,13 @@ function parse(bytes: unknown): EvidenceRecordContent {
   // digestAlgorithms SEQUENCE OF AlgorithmIdentifier
   const algorithms = children(must(parts[at], TAG.sequence, 'digestAlgorithms'));
   at += 1;
-  if (algorithms.length !== 1) throw bad('digestAlgorithms');
-  sha256Algorithm(
-    children(must(algorithms[0], TAG.sequence, 'digestAlgorithms')),
-    'digestAlgorithms',
+  if (algorithms.length === 0) throw bad('digestAlgorithms');
+  // RFC 4998 section 3.1: the union of every algorithm used; a hash renewal (SHA-1 -> SHA-256) lists two
+  const listed = algorithms.map((a) =>
+    algorithmOid(children(must(a, TAG.sequence, 'digestAlgorithms')), 'digestAlgorithms'),
   );
+  if (new Set(listed).size !== listed.length) throw bad('digestAlgorithms');
+  if (!listed.includes(SHA256_OID)) throw new Located('unsupported-hash', 'digestAlgorithms');
   // cryptoInfos [0] and encryptionInfo [1]: valid, but not read
   if (parts[at]?.tag === CTX_0) throw unsupported('cryptoInfos');
   if (parts[at]?.tag === CTX_1) throw unsupported('encryptionInfo');
@@ -124,6 +129,7 @@ function parse(bytes: unknown): EvidenceRecordContent {
   const chains = children(sequence);
   if (chains.length === 0) throw bad('archiveTimeStampSequence');
   if (chains.length > 1) throw unsupported('several chains (hash-tree renewal)');
+  if (listed.length > 1) throw unsupported('several digest algorithms (hash renewal)');
   const stamps = children(must(chains[0], TAG.sequence, 'archiveTimeStampChain'));
   if (stamps.length === 0) throw bad('archiveTimeStampChain');
   if (stamps.length > ERS_LIMITS.MAX_ARCHIVE_TIME_STAMPS) throw new ReaderError('too-large');
@@ -208,6 +214,15 @@ export async function exportEvidenceRecord(chain: RenewalChain): Promise<Result<
       tlv(TAG.sequence, tlv(TAG.sequence, ...stamps)),
     );
     if (out.length > ERS_LIMITS.MAX_BYTES) return fail('too-large');
+    // the record sits four levels above the token: the reader's depth budget may refuse what the token alone passes
+    try {
+      parse(out);
+    } catch (e) {
+      return fail(
+        e instanceof ReaderError && e.reason === 'too-deep' ? 'export-unsupported' : 'malformed',
+        e instanceof ReaderError && e.reason === 'too-deep' ? 'depth' : undefined,
+      );
+    }
     return ok(out);
   } catch {
     return fail('malformed');

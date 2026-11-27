@@ -237,13 +237,14 @@ describe('readEvidenceRecord', () => {
       code(read(writeRecord({ version: der(0x04, Uint8Array.of(1)), chains: [stamps(t)] }))),
     ).toBe('bad-evidence-record');
   });
-  it('the algorithm: another hash is unsupported-hash (list, [0] and inside a token), two, none, a duplicate or odd parameters are bad-evidence-record', () => {
+  it('the algorithm: another hash is unsupported-hash (list, [0] and inside a token), two, none, a duplicate or odd parameters are bad-evidence-record, two different ones (hash renewal) ers-unsupported', () => {
     const t = tokens();
     const withAlgs = (a: Uint8Array[]) => read(writeRecord({ algorithms: a, chains: [stamps(t)] }));
     expect(code(withAlgs([ALG_SHA1]))).toBe('unsupported-hash');
     expect(code(withAlgs([ALG_SHA384]))).toBe('unsupported-hash');
     expect(code(withAlgs([ALG_SHA256, ALG_SHA256]))).toBe('bad-evidence-record');
-    expect(code(withAlgs([ALG_SHA256, ALG_SHA384]))).toBe('bad-evidence-record');
+    expect(code(withAlgs([ALG_SHA256, ALG_SHA384]))).toBe('ers-unsupported'); // the union of a hash renewal
+    expect(code(withAlgs([ALG_SHA1, ALG_SHA384]))).toBe('unsupported-hash');
     expect(code(withAlgs([]))).toBe('bad-evidence-record');
     expect(
       code(withAlgs([der(0x30, ALG_SHA256.subarray(2, 13), der(0x05, Uint8Array.of(0)))])),

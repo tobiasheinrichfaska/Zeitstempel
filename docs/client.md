@@ -235,7 +235,7 @@ if (r.ok)
     r.value.genTime,
     r.value.renewalLinks,
     r.value.weakestLink,
-    r.value.lastSignerNotAfter,
+    r.value.lastChainNotAfter,
   );
 ```
 
@@ -253,19 +253,34 @@ es kann ein Einzelstempel oder ein Sammelbeleg sein). (4) Das Glied anhängen un
 zurückgegeben (eine Erneuerung, die vor dem vorigen Stempel liegt, wäre `bad-renewal`). Mehr als 64 Glieder: `bad-renewal`. Der alte Beleg wird nicht
 verändert.
 
+**Was `renew` vor dem Senden ablehnt (es wird dann kein Stempel verbraucht).** (a) Liegt die `genTime` des letzten Glieds nach der Uhr des Clients (ein Stempel von
+bis zu 5 Minuten „in der Zukunft“ ist als Beleg noch gültig), würde die Erneuerung davor liegen: `bad-renewal`, `detail` `order`. (b) **Größe des Textes:** der JSON-Text
+eines Belegs ist auf 500000 Zeichen begrenzt (`readEvidence` liest nicht mehr). `serializeEvidence` schreibt keinen längeren Text, sondern meldet `evidence-too-large`
+(`detail` `text`); `renew` meldet **vor dem Senden** `evidence-too-large` (`detail` `before sending`), wenn der Text des Belegs plus **ein weiteres Glied von der Größe
+des breitesten bisherigen Tokens plus 1000 Zeichen** nicht mehr hineinpasste. Kommt von einem anderen Dienst ein größeres Token als erwartet, ist der Stempel gemacht, die
+Kette geprüft, aber der Text zu lang: dann ist das Ergebnis `evidence-too-large` mit `detail` `stamp spent` und dem geprüften neuen Beleg als **Objekt** in `evidence`
+(nicht still verloren; als Text lässt er sich nicht ablegen, also das Objekt anders aufbewahren oder eine neue Kette beginnen). **Wie viele Glieder passen:** ein Glied kostet rund
+4/3 der Tokengröße plus etwa 350 Zeichen. Bei den aufgezeichneten Tokens (4,6 KB FreeTSA, 6,0 KB DigiCert und Certum, 6,6 KB Sectigo) sind das 6500 bis 9200 Zeichen: **alle 64 Glieder
+passen bei FreeTSA, rund 58 bei DigiCert und Certum, rund 54 bei Sectigo**; ein Token mit langer Zertifikatskette von 13 KB (RSA-4096) lässt nur etwa **27** zu.
+
 **Prüfung.** `verifyEvidence` prüft bei vorhandenem `renewals` die Kette mit `verifyRenewalChain`: jedes Glied mit `verifyTimestampToken` (bei `batch`
 `verifyBatchedTimestamp`) gegen seinen Wert, die Zertifikate eines Glieds **zur Zeit des nächsten Glieds** (`at`; beim letzten Glied zu `at`, sonst
 `now`, sonst nur zur eigenen `genTime`), die Zeiten nicht fallend, `crls` je Glied durchgereicht, `minGenTime` nur für Glied 0, jede andere Option für
 jedes Glied (`expectedNonce` gibt es nicht). Danach werden `genTime`, `policy`, `signerNotAfter` jedes Glieds mit der Prüfung verglichen
 (`bad-evidence`, `detail` `renewals[i].feld`). Das Ergebnis trägt die Werte des **ursprünglichen** Stempels (`genTime`: der Hash lag spätestens dann vor) und
 zusätzlich `renewalLinks` (Zahl der Erneuerungen), `weakestLink` (`{ index, marginMs }`: das Glied, dessen Zertifikat bei seiner Erneuerung am kürzesten
-noch galt, also `signerNotAfter` minus Zeit des Nachfolgers; `null` ohne Erneuerung), `lastGenTime` und `lastSignerNotAfter` (**vor diesem Zeitpunkt**
-wieder erneuern). Fehler tragen `detail` `link i` (die Nummer des ersten schlechten Glieds von vorn). Ein Glied, dessen Zertifikat zur Zeit der Erneuerung nicht
+noch galt, also `chainNotAfter` minus Zeit des Nachfolgers; `null` ohne Erneuerung), `lastGenTime`, `lastSignerNotAfter` (Ende des Zeitstempel-Zertifikats des letzten Glieds) und `lastChainNotAfter` (**vor diesem Zeitpunkt**
+wieder erneuern: das **früheste** Ende unter allen Zertifikaten der gefundenen Kette, Zeitstempel-Zertifikat, Zwischenzertifikate und Anker). Fehler tragen `detail` `link i` (die Nummer des ersten schlechten Glieds von vorn). Ein Glied, dessen Zertifikat zur Zeit der Erneuerung nicht
 mehr galt, ist `renewal-too-late`; ein gesperrtes `revoked`; ein vertauschtes, doppeltes, fehlendes Glied oder eines, das einen anderen Vorgänger bindet,
 `imprint-mismatch`; fallende Zeiten `bad-renewal` (`detail` `order i`).
+**Welcher Code bei welchem Fehler:** die Zeiten werden zuerst gelesen, ein **vertauschtes** Glied (die Zeiten fallen) ist deshalb `bad-renewal` (`detail` `order i`) und nur bei
+**gleichen** Zeiten `imprint-mismatch`; ein **fehlendes mittleres** Glied ist `imprint-mismatch`, kann aber `renewal-too-late` heißen, wenn das Zertifikat bis zum übernächsten
+Glied schon abgelaufen wäre (abgelehnt wird in beiden Fällen, nur die Ursache heißt anders). Zeiten werden auf Millisekunden gekürzt: Bruchteile unter 1 ms zählen nicht, gleiche Zeiten
+sind erlaubt. Ein Beleg als **Text** mit doppeltem JSON-Schlüssel (`"token":"A","token":"B"`) wird gelesen wie von `JSON.parse` (der **letzte** gewinnt); wer Texte vergleicht oder
+Prüfsummen über den Rohtext bildet, sollte erst `serializeEvidence(readEvidence(text))` bilden. Das Abbruchsignal (`signal`) wirkt erst beim Senden, nicht während der Vorprüfung der Kette.
 
-**Wann erneuern.** Empfehlung: wenn `lastSignerNotAfter` in weniger als **30 Tagen** liegt (und bei Bedarf früher, wenn der Dienst sein Zertifikat ersichtlich
-wechselt). Der Abstand zwischen `signerNotAfter` und der Erneuerung steht als `marginMs` je Glied im Ergebnis; ein Glied mit kleinem Abstand ist das
+**Wann erneuern.** Empfehlung: wenn `lastChainNotAfter` in weniger als **30 Tagen** liegt (nicht `lastSignerNotAfter`: ein Zwischenzertifikat oder der Anker kann früher enden als das des Dienstes, und dann ist die Kette früher nicht mehr verlängerbar) (und bei Bedarf früher, wenn der Dienst sein Zertifikat ersichtlich
+wechselt). Der Abstand zwischen `chainNotAfter` und der Erneuerung steht als `marginMs` je Glied im Ergebnis; ein Glied mit kleinem Abstand ist das
 schwächste. Wer mehrere Dienste nutzt, erneuert über einen **anderen** Dienst als den des letzten Glieds (`service`): fällt ein Dienst oder sein Schlüssel
 aus, hängt nicht die ganze Kette daran. Die Kette wird nicht von selbst erneuert; das Anwendungsprogramm entscheidet Zeitpunkt und Dienst.
 
@@ -281,7 +296,8 @@ aus, hängt nicht die ganze Kette daran. Die Kette wird nicht von selbst erneuer
 - `minGenTime` gilt nur für das erste Glied (die Frische der Erneuerungen sichert `renew` beim Stempeln); `expectedPolicy` gilt für **jedes** Glied (bei Diensten mit
   verschiedenen Richtlinien eine Liste übergeben).
 - Der Beleg eines Baumstempels (`batch`) gehört nicht in den Wert der nächsten Erneuerung: die Wurzel im Token legt ihn fest.
-- Der Beleg wächst mit jedem Glied (ein Token mit Zertifikaten hat rund 5 bis 8 KB); der Text ist auf 500000 Zeichen begrenzt, das reicht für etwa 50 Glieder.
+- Der Beleg wächst mit jedem Glied (ein Token mit Zertifikaten hat rund 5 bis 8 KB); der Text ist auf 500000 Zeichen begrenzt: je nach Dienst passen etwa 27 bis 64 Glieder
+  (Zahlen bei „Was `renew` vor dem Senden ablehnt“), danach ist `evidence-too-large` die Antwort statt eines nicht mehr lesbaren Textes.
 - Kein rechtlicher Wert: die freien Dienste sind nicht qualifiziert (`docs/dienste.md`), eine Kette macht daraus keinen qualifizierten Zeitstempel. Als Evidence Record nach RFC 4998 lässt sie sich ausgeben (Abschnitt „ERS-Export“, mit Einschränkungen), ein Evidence Record nach RFC 6283 (XML) ist es nicht.
 - Nur unter Node gegen ein echtes Relay mit Stub-Dienst und gegen aufgezeichnete Token getestet, einzelne Glieder gegen `openssl ts -verify -attime`; **nicht** im Browser (`scripts/browser-check.mjs` kennt `renew` noch nicht) und mit keinem echten Dienst.
 
@@ -321,8 +337,18 @@ richtigen Wert stempelt (`imprint-mismatch`); Signaturen und Ketten prüft erst 
 das Schema des RFC im Umfang oben, jedes Feld einmal und in der Reihenfolge des ASN.1-Textes: andere Version als 1 `unsupported-version`, anderer Algorithmus (in der
 Liste, im `[0]` oder im Token) `unsupported-hash`, jede andere Form `bad-evidence-record` (`detail` nennt die Stelle: leere Folge oder Kette, ein Algorithmus zu viel oder doppelt, ein
 Element zu viel oder in falscher Reihenfolge, ein Parameter, der nicht `NULL` ist). Gültige Formen **außerhalb** des Umfangs sind `ers-unsupported`: ein `reducedHashtree`, `attributes`, `cryptoInfos`,
-`encryptionInfo` oder **mehr als eine Kette**. Jedes `timeStamp` muss ein lesbares TimeStampToken über SHA-256 sein; 1 bis 64 `ArchiveTimeStamp`, mehr ist `too-large`.
+`encryptionInfo`, **mehr als eine Kette** oder **mehr als ein Algorithmus** in `digestAlgorithms` (RFC 4998 Abschnitt 3.1 verlangt dort die Vereinigung aller benutzten Verfahren: eine
+Hash-Erneuerung, etwa SHA-1 auf SHA-256, trägt zwei; dieselbe Kennung zweimal ist dagegen `bad-evidence-record`, und eine Liste ohne SHA-256 `unsupported-hash`). Jedes `timeStamp` muss ein lesbares TimeStampToken über SHA-256 sein; 1 bis 64 `ArchiveTimeStamp`, mehr ist `too-large`.
 Der Algorithmus darf mit oder ohne `NULL` geschrieben sein, das `[0]` darf fehlen (dann gilt der des Tokens, RFC 4998 Abschnitt 4.1).
+
+**Tiefe und Größe beim Schreiben.** Der Record legt vier Ebenen über das Token (Record, Folge, Kette, `ArchiveTimeStamp`); das Tiefenbudget des Lesers (24) zählt ab dem Record. Ein Token, das allein
+lesbar ist, aber tiefer als 20 Ebenen geschachtelt (etwa durch ein unsigniertes Attribut), würde im Record `too-deep` ergeben. Der Export liest den fertigen Record deshalb einmal mit dem eigenen Leser zurück und
+meldet in diesem Fall `export-unsupported` (`detail` `depth`), statt Bytes zu liefern, die der eigene Leser ablehnt. Ein Record über 524288 Byte ist `too-large` (der Export prüft das; dafür braucht es
+etwa drei Token von je rund 200 KB, ein Token allein darf bis 262144 Byte haben).
+
+**Prüfzeit.** `verifyEvidenceRecord` prüft den Record, auch mit nur einem `ArchiveTimeStamp`, über `verifyRenewalChain`: das letzte Glied zu `at`, sonst `now`, und gibt nach Ablauf seines Zertifikats
+`certificate-not-valid-at-time`. `verifyEvidence` ohne `renewals` prüft dagegen den Einzelstempel nur zur eigenen `genTime` (und zu `at`, wenn gegeben). Für Ketten mit zwei und mehr Gliedern ist das Ergebnis dasselbe,
+für den Einzelstempel nicht (der letzte Stempel eines Records muss nach RFC zur Prüfzeit gültig sein; fail-safe, aber anders).
 
 **Entscheidung 1: Sammelbetrieb-Belege werden nicht exportiert (`export-unsupported`).** Der RFC bildet viele Datenobjekte über den `reducedHashtree` ab, aber **nicht** unseren Baum:
 

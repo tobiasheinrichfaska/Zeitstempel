@@ -32,6 +32,7 @@ const REASONS: Record<lib.Reason, true> = {
   'bad-key-file': true,
   'bad-batch': true,
   'bad-evidence': true,
+  'evidence-too-large': true,
   'evidence-hash-mismatch': true,
   'too-large': true,
   malformed: true,

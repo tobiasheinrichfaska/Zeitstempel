@@ -61,7 +61,7 @@ export interface RenewalEvidence {
 export const EVIDENCE_LIMITS = {
   /** Longest token (DER) in bytes: the limit of the library's readers. */
   MAX_TOKEN_BYTES: 262144,
-  /** Longest evidence as JSON text, in characters. */
+  /** Longest evidence as JSON text, in characters (`serializeEvidence` refuses a longer one: `evidence-too-large`). */
   MAX_JSON_CHARS: 500000,
   /** Longest policy OID text. */
   MAX_POLICY_CHARS: 128,
@@ -269,6 +269,7 @@ const orderedBatch = (b: BatchProof) => ({
 export function serializeEvidence(evidence: Evidence): Result<string> {
   const read = readEvidence(evidence);
   if (!read.ok) return read;
+  // never write a text that `readEvidence` would refuse for its size (the object stays usable, the text does not exist)
   const e = read.value;
   const ordered: Record<string, unknown> = {
     v: e.v,
@@ -297,7 +298,9 @@ export function serializeEvidence(evidence: Evidence): Result<string> {
           })),
         }),
   };
-  return ok(JSON.stringify(ordered));
+  const text = JSON.stringify(ordered);
+  if (text.length > EVIDENCE_LIMITS.MAX_JSON_CHARS) return fail('evidence-too-large', 'text');
+  return ok(text);
 }
 
 export interface VerifyEvidenceOptions {
@@ -327,12 +330,14 @@ export interface VerifiedEvidence extends VerifiedTimestamp {
   /**
    * Only for evidence with `renewals`: the values above are those of the ORIGINAL stamp (the hash existed at the
    * latest then); these are the chain's: the number of renewals, the renewed link with the smallest margin, the
-   * time of the latest renewal and the end of the validity of its signer (renew before that).
+   * time of the latest renewal, the end of the validity of its signer and the earliest end in its whole certificate chain
+   * (`lastChainNotAfter`: renew before that).
    */
   renewalLinks?: number;
   weakestLink?: { index: number; marginMs: number } | null;
   lastGenTime?: string;
   lastSignerNotAfter?: string;
+  lastChainNotAfter?: string;
 }
 
 const OPTION_FIELDS = [
@@ -406,6 +411,7 @@ async function verifyRenewed(
     weakestLink: c.weakestLink,
     lastGenTime: c.lastGenTime,
     lastSignerNotAfter: c.lastSignerNotAfter,
+    lastChainNotAfter: c.lastChainNotAfter,
   });
 }
 

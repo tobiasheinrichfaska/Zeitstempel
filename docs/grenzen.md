@@ -560,7 +560,7 @@ gilt es.
 ## Langzeitaussage
 
 Geprüft wird die Kette **zur `genTime`** des Tokens (und, wenn gegeben, zu `at`), nicht zum Zeitpunkt der Prüfung.
-Das Ergebnis nennt dazu `signerNotBefore` und `signerNotAfter`, die Gültigkeit des Zeitstempel-Zertifikats. Daraus
+Das Ergebnis nennt dazu `signerNotBefore` und `signerNotAfter`, die Gültigkeit des Zeitstempel-Zertifikats, und `chainNotAfter`, das früheste Ende unter allen Zertifikaten der gefundenen Kette (Zwischenzertifikate und Anker eingeschlossen; nach diesem Datum ist die Kette nicht mehr zu gebrauchen, auch wenn das Zeitstempel-Zertifikat länger gilt). Daraus
 folgt ehrlich:
 
 - Ein Token bleibt nicht beliebig lange „bewiesen“. Ein Zeitstempel-Zertifikat hat eine begrenzte Gültigkeit (bei
@@ -578,7 +578,7 @@ folgt ehrlich:
 - Ein frisch ausgestelltes Token prüft man mit `minGenTime` (s. „Frische“ oben), solange man weiß, wann man es
   angefordert hat; später nicht mehr.
 - **Erneuerungskette** (`renewalImprint`, `verifyRenewalChain`, `client.renew`, `docs/client.md`): der Beleg wird **vor**
-  `signerNotAfter` mit seinem ganzen Inhalt (Hash, alle Token bis dahin) neu gestempelt, jedes Glied bindet genau seinen Vorgänger (SHA-256 des Tokens davor, die Bindung von RFC 4998 Abschnitt 5.2).
+  `chainNotAfter` (`lastChainNotAfter` im Ergebnis; nicht nur vor `signerNotAfter`) mit seinem ganzen Inhalt (Hash, alle Token bis dahin) neu gestempelt, jedes Glied bindet genau seinen Vorgänger (SHA-256 des Tokens davor, die Bindung von RFC 4998 Abschnitt 5.2).
   Die Prüfung beurteilt die Zertifikate jedes Glieds **zur Zeit des nächsten Glieds** (`at`) und verlangt nicht fallende Zeiten;
   war ein Zertifikat zur Erneuerung schon abgelaufen, ist das `renewal-too-late`. Was die Kette **nicht** leistet: sie ist so stark wie
   ihr schwächstes rechtzeitig erneuertes Glied (`weakestLink`), sie beruht auf der Annahme, dass die Dienste ihre Zeit zum jeweiligen
@@ -587,8 +587,8 @@ folgt ehrlich:
   muss zur Prüfzeit des Glieds gültig sein, `docs/client.md`). Keine Erneuerung von selbst, kein
   rechtlicher Wert. Ausgabe als **Evidence Record nach RFC 4998** (`exportEvidenceRecord`, `serializeEvidenceRecord`, Lesen und Prüfen mit `readEvidenceRecord`,
   `verifyEvidenceRecord`; `docs/client.md`, „ERS-Export“): nur eine Kette mit SHA-256, Einzelstempel; Sammelbetrieb-Belege sind `export-unsupported` (anderer Baum, anderer
-  gestempelter Wert, Salz ohne Platz), `reducedHashtree`, `attributes`, `cryptoInfos`, `encryptionInfo` und mehrere Ketten (Hash-Erneuerung) beim Lesen `ers-unsupported`; die
-  Prüfung ist die der Kette, mit **keinem** fremden ERS-Werkzeug gegengeprüft (nur OpenSSL für Struktur und einzelne Token und ein eigener Referenz-Leser).
+  gestempelter Wert, Salz ohne Platz), `reducedHashtree`, `attributes`, `cryptoInfos`, `encryptionInfo`, mehrere Ketten und mehrere Algorithmen in `digestAlgorithms` (Hash-Erneuerung) beim Lesen `ers-unsupported`; die
+  Prüfung ist die der Kette (auch ein Record mit **einem** `ArchiveTimeStamp` wird zu `at`, sonst `now`, geprüft und gibt nach Ablauf des Zertifikats `certificate-not-valid-at-time`, anders als `verifyEvidence` ohne `renewals`), mit **keinem** fremden ERS-Werkzeug gegengeprüft (nur OpenSSL für Struktur und einzelne Token und ein eigener Referenz-Leser).
 
 ## Solo-Stempel (Schlüsselart 2)
 

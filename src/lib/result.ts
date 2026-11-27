@@ -10,6 +10,7 @@ export type Reason =
   | 'bad-key-file'
   | 'bad-batch'
   | 'bad-evidence'
+  | 'evidence-too-large'
   | 'evidence-hash-mismatch'
   // DER / structure
   | 'too-large'
