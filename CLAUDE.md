@@ -260,7 +260,7 @@ npm run spike   # by hand, needs the network (see manual_tests/)
   the main entry has no network code (it keeps the pure relay address helpers of `src/lib/relayAddress.ts`). Ported from it
   (`tests/client-port.test.ts`): the pause after a `429`/`503 busy` that ends a call holds across calls (`pausedForMs()`, reason
   `paused`, at most `MAX_PAUSE_MS` 3600 s, on the monotonic `monoNow`, default `performance.now`; a longer rest is forgotten),
-  `Retry-After` as an HTTP date (against the answer's `Date`), `attemptTimeoutMs` (deadline of one send, then failover, `timeout`)
+  `Retry-After` as an HTTP date (against the answer's `Date`, without one against the client clock plus the learned offset; a 429 whose body `attemptTimeoutMs` cut still pauses, no failover), `attemptTimeoutMs` (deadline of one send, then failover, `timeout`)
   and the relay's `serial` claim must equal the verified token's (`bad-response`, `serial`). Not taken over: the service list
   (`GET /v1/services`; the caller passes `services`) and unsigned requests (`RELAY_AUTH=off`).
 - **Audit 8 (relay, `tests/relay-waiting.test.ts`):** a waiting request (single: for the minimum spacing; collecting: in a window, the queue or a solo wait) looks at its key again when it is stamped (removed, `revoked`, `notAfter`:

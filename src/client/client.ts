@@ -427,13 +427,12 @@ class Session {
       cause = 'aborted';
       control.abort();
     };
+    let startedAt: number;
     try {
       if (userSignal?.aborted) return failure('aborted');
-      userSignal?.addEventListener('abort', onAbort, { once: true });
     } catch {
       return failure('bad-options', { detail: 'signal' }); // a signal of this realm that misbehaves
     }
-    let startedAt: number;
     try {
       startedAt = this.mono();
       const paused = this.pausedForMs();
@@ -442,6 +441,12 @@ class Session {
       }
     } catch {
       return failure('bad-options', { detail: 'monoNow' });
+    }
+    // added only now: every early end above leaves no listener on the caller's signal
+    try {
+      userSignal?.addEventListener('abort', onAbort, { once: true });
+    } catch {
+      return failure('bad-options', { detail: 'signal' });
     }
     const timer = setTimeout(() => control.abort(), this.c.timeoutMs);
     try {
@@ -551,8 +556,12 @@ class Session {
         }
         if (fixPending && status !== 401) this.offsetMs = offset;
         if (status === 200) {
-          const verified = await this.finish(res, hash, service, sentMs, offset, mode);
-          endAttempt();
+          let verified: ClientResult<Evidence>;
+          try {
+            verified = await this.finish(res, hash, service, sentMs, offset, mode);
+          } finally {
+            endAttempt(); // also when `finish` throws `BadClock`
+          }
           if (!verified.ok && timedOutHere()) {
             last = failure('timeout', { detail: service });
             break; // the body did not come in time: the next service
@@ -561,7 +570,8 @@ class Session {
         }
         const error = await readError(res);
         endAttempt();
-        if (timedOutHere()) {
+        // a 429 says what it means by its status and `Retry-After`: a body cut by the deadline still pauses
+        if (timedOutHere() && status !== 429) {
           last = failure('timeout', { detail: service });
           break;
         }
@@ -582,7 +592,7 @@ class Session {
           continue;
         }
         if (status === 429 || (status === 503 && error.code === 'busy')) {
-          const asked = retryAfterMs(res, () => this.now(0));
+          const asked = retryAfterMs(res, () => this.now(offset)); // the learned offset: relay time
           const wait = Math.min(asked, c.timeoutMs);
           const left = c.timeoutMs - (this.mono() - startedAt);
           if (attempts >= c.maxAttempts || wait >= left) {
