@@ -1,5 +1,5 @@
 // Name constraints (RFC 5280 § 4.2.1.10, § 6.1.3 (b) and (c)): the reader of the extension and the check of a finished chain.
-// Rules measured against `openssl ts -verify` 3.0.13 (tests/name-constraints.test.ts, rows F31 to F40 of docs/grenzen.md).
+// Rules measured against `openssl ts -verify` 3.0.13 (tests/name-constraints.test.ts, rows F31 to F41 of docs/grenzen.md).
 import { TAG, children, ctx, expect, inner, oid, ownBytes, parseDer, type Node } from './der.ts';
 import { OID } from './oids.ts';
 import { ReaderError } from './result.ts';
@@ -64,7 +64,8 @@ function readSubtree(node: Node): { subtree: Subtree | null; tag: number } {
   const base = parts[0]!;
   const tag = base.tag;
   if (UNSUPPORTED_TAGS.has(tag)) {
-    if (tag !== 0x88) children(base); // the content must still be well-formed
+    // the content of the form is not looked at; `parseDer` has already walked every constructed element, so it is
+    // well-formed (tests/name-constraints-gaps.test.ts)
     return { subtree: null, tag };
   }
   if (tag === T_DNS || tag === T_EMAIL || tag === T_URI) {
@@ -146,9 +147,10 @@ function matchDns(name: Uint8Array, base: Uint8Array): Verdict {
 }
 
 function matchEmail(name: Uint8Array, base: Uint8Array): Verdict {
-  const at = name.indexOf(0x40);
+  // the host of a mailbox stands behind the LAST @ (the local part may be a quoted string with an @ inside)
+  const at = name.lastIndexOf(0x40);
   if (at < 0) return 'syntax';
-  const baseAt = base.indexOf(0x40);
+  const baseAt = base.lastIndexOf(0x40);
   if (baseAt < 0 && base.length > 0 && base[0] === 0x2e) {
     // a base that starts with a dot: any mailbox in a host below it
     return name.length > base.length &&
@@ -177,6 +179,14 @@ function uriHost(uri: Uint8Array): { start: number; length: number } | null {
   let start = colon + 3;
   let end = start;
   while (end < uri.length && uri[end] !== 0x2f && uri[end] !== 0x3f && uri[end] !== 0x23) end += 1;
+  // a backslash (a browser reads it as `/`, so the host ends there) or a second @ (user information may not hold
+  // one, readers disagree on where the host starts): no host name that can be trusted
+  let ats = 0;
+  for (let k = start; k < end; k += 1) {
+    if (uri[k] === 0x5c) return null;
+    if (uri[k] === 0x40) ats += 1;
+  }
+  if (ats > 1) return null;
   for (let k = end - 1; k >= start; k -= 1) {
     if (uri[k] === 0x40) {
       start = k + 1; // user information ends at the last @
@@ -256,7 +266,7 @@ function namesOf(
   const rdns = canonicalRdns(cert.subject);
   if (!rdns) throw bad();
   // the attributes of the subject: emailAddress is an rfc822Name; a commonName of the signer may be a host name
-  const cns: Uint8Array[] = [];
+  const cns: { tag: number; value: Uint8Array }[] = [];
   let nulCn = false;
   try {
     for (const rdn of children(expect(parseDer(cert.subject), TAG.sequence))) {
@@ -264,13 +274,8 @@ function namesOf(
         const [type, value] = children(expect(atv, TAG.sequence));
         const id = oid(type!);
         if (id === OID.emailAddress) names.push({ tag: T_EMAIL, bytes: value!.value });
-        else if (
-          id === OID.commonName &&
-          isSigner &&
-          [0x0c, 0x13, 0x14, 0x16].includes(value!.tag)
-        ) {
-          cns.push(value!.value);
-        }
+        else if (id === OID.commonName && isSigner)
+          cns.push({ tag: value!.tag, value: value!.value });
       }
     }
   } catch {
@@ -299,7 +304,12 @@ function namesOf(
   }
   if (!hasDns) {
     // a signer without a dNSName: its commonName counts as a host name when it looks like one (as OpenSSL does)
-    for (const raw of cns) {
+    for (const cn of cns) {
+      const raw = cnText(cn.tag, cn.value);
+      if (!raw) {
+        nulCn = true; // a type or an encoding that cannot be read as text: it could hide a host name
+        continue;
+      }
       let end = raw.length;
       while (end > 0 && raw[end - 1] === 0) end -= 1;
       const text = raw.subarray(0, end);
@@ -313,6 +323,35 @@ function namesOf(
   if (names.length > NAME_CONSTRAINT_LIMITS.maxNames) throw bad(); // the subject itself does not count
   if (rdns.length > 0) names.push({ tag: T_DIR, bytes: cert.subject, rdns }); // an empty subject is not checked
   return { names, sanTags, nulCn };
+}
+
+/**
+ * The commonName of a signer as bytes for the host name test, or null when it cannot be read as text. UTF8String,
+ * NumericString, PrintableString, TeletexString and IA5String as they are; BMPString and UniversalString by
+ * character (a character above 127 becomes the byte 0x80, which is no part of a host name). Any other type
+ * (VisibleString, an unknown tag) and any broken encoding is null (OpenSSL cannot read such a name at all).
+ */
+function cnText(tag: number, v: Uint8Array): Uint8Array | null {
+  if (tag === 0x13 || tag === 0x14 || tag === 0x16 || tag === 0x12) return v;
+  if (tag === 0x0c) {
+    try {
+      new TextDecoder('utf-8', { fatal: true }).decode(v);
+      return v;
+    } catch {
+      return null;
+    }
+  }
+  if (tag !== 0x1e && tag !== 0x1c) return null;
+  const width = tag === 0x1e ? 2 : 4;
+  if (v.length % width !== 0) return null;
+  const out = new Uint8Array(v.length / width);
+  for (let k = 0; k < out.length; k += 1) {
+    let cp = 0;
+    for (let j = 0; j < width; j += 1) cp = cp * 256 + v[k * width + j]!;
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+    out[k] = cp < 0x80 ? cp : 0x80;
+  }
+  return out;
 }
 
 /** At least two labels of letters, digits, `_` and inner `-`, no empty label (a trailing dot makes it no host name). */
@@ -388,6 +427,11 @@ export function checkNameConstraints(path: readonly Certificate[]): ReaderError 
           const permitted = nc.permitted.filter((s) => s.tag === name.tag);
           const excluded = nc.excluded.filter((s) => s.tag === name.tag);
           if (permitted.length === 0 && excluded.length === 0) continue;
+          // an address of neither 4 nor 16 bytes can be no address: against any constraint of its kind it is
+          // refused, an excluded subtree cannot be compared with it (OpenSSL: an error)
+          if (name.tag === T_IP && name.bytes.length !== 4 && name.bytes.length !== 16) {
+            return new ReaderError('name-constraint-violation');
+          }
           if (name.tag !== T_DIR && !(name.tag === T_IP) && !isAscii(name.bytes)) {
             return new ReaderError('name-constraint-violation'); // a NUL or a byte above 127: a C string would end or differ
           }

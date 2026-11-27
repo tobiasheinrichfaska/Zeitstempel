@@ -240,29 +240,57 @@ function equalNode(a: Node, b: Node): boolean {
   return a.raw.length === b.raw.length && a.raw.every((v, k) => v === b.raw[k]);
 }
 
-const STRING_TAGS = new Set([0x0c, 0x13, 0x14, 0x16, 0x1e]);
+const OUTER_SPACE = /^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/g;
+const INNER_SPACE = /[ \t\n\v\f\r]+/g;
 
-/** The text of a directory string, or the bytes as hex when the type is unknown or not decodable. */
+/** One byte per character (Latin-1, as OpenSSL reads T61String); `String.fromCharCode` maps 0x80 to U+0080, a decoder named `latin1` would not. */
+function latin1(v: Uint8Array): string {
+  let text = '';
+  for (const b of v) text += String.fromCharCode(b);
+  return text;
+}
+
+/** UniversalString: four bytes per character, none above U+10FFFF or in the surrogate range; null otherwise. */
+function ucs4(v: Uint8Array): string | null {
+  if (v.length % 4 !== 0) return null;
+  let text = '';
+  for (let k = 0; k < v.length; k += 4) {
+    const cp = ((v[k]! << 24) | (v[k + 1]! << 16) | (v[k + 2]! << 8) | v[k + 3]!) >>> 0;
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+    text += String.fromCodePoint(cp);
+  }
+  return text;
+}
+
+/**
+ * The text of a directory string, or the bytes as hex (with the tag) when the type is unknown or not decodable.
+ * UTF8String, BMPString, UniversalString and the one-byte types (Printable, Teletex, IA5, Visible) become one
+ * text; NumericString and the unknown types are compared by tag and bytes, as OpenSSL does.
+ */
 function nameValue(node: Node): string {
   const v = node.value;
   let text: string | null = null;
   try {
-    if (node.tag === 0x0c) text = new TextDecoder('utf-8', { fatal: true }).decode(v);
-    else if (node.tag === 0x1e) text = new TextDecoder('utf-16be', { fatal: true }).decode(v);
-    else if (node.tag === 0x14)
-      text = new TextDecoder('latin1').decode(v); // TeletexString: Latin-1 subset
-    else if (STRING_TAGS.has(node.tag)) text = new TextDecoder('latin1').decode(v);
+    // `ignoreBOM`: a byte order mark stays a character of the name and is not dropped
+    if (node.tag === 0x0c)
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(v);
+    else if (node.tag === 0x1e)
+      text = new TextDecoder('utf-16be', { fatal: true, ignoreBOM: true }).decode(v);
+    else if (node.tag === 0x1c) text = ucs4(v);
+    else if (node.tag === 0x13 || node.tag === 0x14 || node.tag === 0x16 || node.tag === 0x1a)
+      text = latin1(v);
   } catch {
     text = null;
   }
   if (text === null)
     return `#${node.tag.toString(16)}:${Array.from(v, (b) => b.toString(16).padStart(2, '0')).join('')}`;
-  // RFC 5280 § 7.1, simplified: ASCII letters case-insensitive, outer spaces dropped, inner runs of spaces
-  // become one space
+  // RFC 5280 § 7.1, simplified as in OpenSSL: ASCII letters case-insensitive; a run of ASCII white space (space,
+  // tab, line feed, vertical tab, form feed, carriage return) becomes one space, outer runs are dropped. No other
+  // character is white space (U+00A0, U+2003, a byte order mark stay what they are)
   const folded = text
     .replace(/[A-Z]/g, (c) => c.toLowerCase())
-    .replace(/ +/g, ' ')
-    .trim();
+    .replace(OUTER_SPACE, '')
+    .replace(INNER_SPACE, ' ');
   return `s:${folded}`;
 }
 

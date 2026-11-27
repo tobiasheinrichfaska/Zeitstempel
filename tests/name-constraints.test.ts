@@ -10,7 +10,8 @@ import { sameName } from '../src/lib/x509.ts';
 import { parseNameConstraints } from '../src/lib/nameconstraints.ts';
 import { encodeOid, tlv } from '../src/lib/der.ts';
 import { build, ext, seq, type Opts } from './token-builder.ts';
-import { ROWS } from './name-constraints-rows.ts';
+import { ROWS as ROWS_A } from './name-constraints-rows.ts';
+import { ROWS14 } from './name-constraints-rows14.ts';
 import {
   C,
   CN,
@@ -25,6 +26,8 @@ import {
   san,
   sub,
 } from './nc-builder.ts';
+
+const ROWS = [...ROWS_A, ...ROWS14];
 
 const probe = spawnSync('openssl', ['version'], { encoding: 'utf8' });
 const major = Number(/^OpenSSL (\d+)/.exec(probe.stdout ?? '')?.[1] ?? 0);
