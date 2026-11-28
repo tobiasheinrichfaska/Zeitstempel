@@ -91,8 +91,8 @@ das Relay seine 10 s zum Beenden hat. Der Container läuft als Benutzer 10001; d
 
 ## Container-Dienst ohne Datei-Mount
 
-Für Dienste, die ein Image starten, aber keine Datei einhängen können. **Noch bei keinem Anbieter erprobt**; die CI baut
-das Image, startet es mit einem Wegwerf-Schlüssel und fragt `/health`, mehr nicht.
+Für Dienste, die ein Image starten, aber keine Datei einhängen können. Erprobt bei einem Anbieter (Bunny Magic Containers, 2026-11-27, ein Stempel); die CI baut
+das Image, startet es mit einem Wegwerf-Schlüssel und fragt `/health`.
 
 1. **Image:** der Job „Image“ der Prüfung „Tests“ legt `ghcr.io/<Konto>/zeitstempel-relay:<Commit>` ab (nur von `main`,
    nur nach grünen Prüfungen). Das Paket ist beim ersten Mal privat: einmal auf öffentlich stellen oder dem Dienst einen
@@ -104,6 +104,18 @@ das Image, startet es mit einem Wegwerf-Schlüssel und fragt `/health`, mehr nic
    Widerruf wirkt erst, wenn der neue Container läuft und der alte beendet ist.
 5. **Offen je Anbieter, vor echtem Betrieb zu prüfen:** TLS und das Limit je Adresse (nur `/v1/stamp/`), Weitergabe der
    Köpfe `X-Zeitstempel-Auth` und `Origin`, kein Zwischenspeichern, Uhr des Containers, Lese-Frist mindestens 50 s.
+
+### Erfahrung mit Bunny Magic Containers (2026-11-27)
+
+Einmal beobachtet, nicht zugesagt; die Oberfläche kann sich ändern.
+
+- Angelegt über „Quick Deploy“. Vorbelegte Variablen aus dem Image entfernen (es gelten die Werte des Images).
+- **Nach dem Anlegen ändern:** die Instanzzahl stand auf 1 bis 5 (auf 1 bis 1 setzen), alle Health Checks waren aus.
+- `RELAY_AUDIENCE` zunächst als Platzhalter, nach Kenntnis der Adresse setzen (neuer Start).
+- `http://` wurde ohne Umleitung beantwortet: an der Pull-Zone TLS erzwingen.
+- Beobachtet: Anmeldekopf kam an, fremde Herkunft 403, `/health` zweimal nicht aus dem Zwischenspeicher, FreeTSA nahm die
+  ausgehende Adresse an (ein Aufruf).
+- **Nicht geklärt:** Limit je Adresse, Lese-Frist unter Last, Uhr, geteilte ausgehende Adressen, Kosten.
 
 ## Zähler beobachten
 
